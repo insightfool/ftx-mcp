@@ -125,3 +125,23 @@ def test_bridge_http_no_retry_by_default(cfg, monkeypatch):
         core._bridge_http(cfg, "/bridge/thing")  # retries=0 default
     # the single failed attempt was still logged
     assert any(e["ok"] is False for e in _events(cfg))
+
+
+# --- post-rebuild bridge-drop recovery nudge --------------------------------
+
+def test_drop_note_quiet_when_bridge_never_used(cfg):
+    core._bridge_last_ok_at = None  # never used this session
+    assert core._bridge_drop_note(cfg) is None
+
+
+def test_drop_note_quiet_when_bridge_survived(cfg, monkeypatch):
+    core._bridge_last_ok_at = "2026-01-01T00:00:00+00:00"
+    monkeypatch.setattr(core, "bridge_state", lambda c, force=False: {"available": True})
+    assert core._bridge_drop_note(cfg) is None
+
+
+def test_drop_note_fires_when_bridge_dropped(cfg, monkeypatch):
+    core._bridge_last_ok_at = "2026-01-01T00:00:00+00:00"
+    monkeypatch.setattr(core, "bridge_state", lambda c, force=False: {"available": False})
+    note = core._bridge_drop_note(cfg)
+    assert note and "StartBridge" in note

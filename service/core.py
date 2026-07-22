@@ -4234,12 +4234,37 @@ def get_skill(cfg: Config, name: str) -> dict:
     return {"name": name, "content": p.read_text(encoding="utf-8", errors="replace")}
 
 
+def _bridge_drop_note(cfg: Config) -> str | None:
+    """If the design-time bridge was working earlier this session but is
+    unreachable NOW, return a one-step recovery nudge; else None.
+
+    Detection-based, never preemptive: a NetLogic (C#) recompile unloads the
+    in-Studio bridge listener's assembly and kills it, but a pure model/YAML save
+    doesn't recompile — so the bridge survives some ops and not others. We nudge
+    only when it actually dropped (last_ok set, but unreachable now)."""
+    if not cfg.bridge_enabled or _bridge_last_ok_at is None:
+        return None  # disabled, or never used this session — nothing to recover
+    if bridge_state(cfg, force=True).get("available"):
+        return None  # survived
+    return (
+        "design-time bridge is unreachable after this operation. A NetLogic (C#) "
+        "recompile unloads the in-Studio bridge listener (a model/YAML-only save "
+        f"leaves it alive; last OK {_bridge_last_ok_at}). Restore authoring: right-"
+        "click the StudioBridge NetLogic node in Studio -> Run -> StartBridge. "
+        "Reads/writes fall back or fail until then; see optix_bridge_log_tail."
+    )
+
+
 def restart_emulator(
     cfg: Config, project: str, runner: Runner = _DEFAULT_RUNNER,
 ) -> dict:
     """Stop-if-running -> start -> wait serving. THE way to make a structural
     edit visible: one call replaces the status/stop/run dance and removes the
-    F5-toggle footgun entirely (F5 on a running emulator stops it)."""
+    F5-toggle footgun entirely (F5 on a running emulator stops it).
+
+    A restart rebuilds; if that recompiled NetLogic it will have dropped the
+    design-time bridge, so we attach a `bridge_note` recovery nudge when the
+    bridge was working before but is unreachable after (see _bridge_drop_note)."""
     st = emulator_status(cfg, runner)
     stopped = None
     if st.get("pids"):
@@ -4248,6 +4273,9 @@ def restart_emulator(
     out["restarted"] = bool(st.get("pids"))
     if stopped is not None:
         out["stopped_pids"] = stopped.get("killed_pids", [])
+    note = _bridge_drop_note(cfg)
+    if note:
+        out["bridge_note"] = note
     return out
 
 
