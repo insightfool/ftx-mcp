@@ -1485,6 +1485,30 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         return core.runtime_log_tail(cfg, proj, lines=lines, contains=contains)
 
     @mcp.tool(annotations=_RO)
+    def optix_bridge_log_tail(lines: int = 100, contains: str | None = None) -> dict:
+        """Tail the design-time bridge's transport diagnostics — the forensic
+        trail for bridge drops/timeouts (why did :8768 go unreachable?).
+
+        Each event is {ts, path, method, latency_ms, status, ok, error}. The log
+        captures every transport FAILURE (timeout / connection aborted — e.g. a
+        rebuild unloading the bridge NetLogic), every non-2xx, every real
+        authoring op, and every health up<->down TRANSITION; the steady-state 2s
+        health poll is deduped out so the log stays signal-dense. `contains`
+        filters case-insensitively. Returns {file, mtime, events, returned,
+        last_ok, ...} or {error:"no_bridge_log"} if no bridge call is logged yet.
+
+        Use this when:
+          - a bridge call just failed / the bridge 'dropped' and you want to see
+            WHEN and WHY (pair with optix_bridge_status for the live state)
+          - diagnosing intermittent bridge availability across a long session
+
+        Do NOT use this when:
+          - you want the live up/down state — that's optix_bridge_status
+          - you want NetLogic/runtime output — that's optix_runtime_log_tail
+        """
+        return core.bridge_log_tail(cfg, lines=lines, contains=contains)
+
+    @mcp.tool(annotations=_RO)
     def optix_active_target(project: str | None = None) -> dict:
         """Which deployment target Studio's dropdown has selected — the thing an
         F5 (optix_emulator action="run") would actually run.

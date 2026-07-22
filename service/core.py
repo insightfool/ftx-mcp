@@ -1055,36 +1055,108 @@ _bridge_cache: dict[str, dict] = {}
 _bridge_cache_at: dict[str, float] = {}
 _BRIDGE_CACHE_TTL = 2.0
 
+# --- Bridge transport diagnostics (state_dir/logs/bridge.jsonl) ---------------
+# The design-time bridge lives inside Studio; its socket dies whenever a rebuild
+# unloads the NetLogic assembly, so drops/timeouts are EXPECTED and must stay
+# diagnosable after the fact. Every _bridge_http call is timed and, per the
+# verbosity policy in _bridge_log_call, appended to a size-rotated bridge.jsonl:
+# every transport failure, every non-2xx, every real (non-health) op, and every
+# health up<->down transition — the steady-state 2s health poll is deduped out.
+_BRIDGE_LOG_MAX_BYTES = 2_000_000
+_BRIDGE_LOG_BACKUPS = 2
+_bridge_last_ok_at: str | None = None        # iso ts of the last OK transport call
+_bridge_last_health_ok: bool | None = None   # health-probe transition dedupe
+
+
+def bridge_event(cfg: Config, **fields) -> None:
+    """Append one JSONL line to the bridge transport log
+    (state_dir/logs/bridge.jsonl), size-rotated (.jsonl -> .1 -> .2). Best-effort;
+    diagnostics must never break a bridge call."""
+    try:
+        d = cfg.state_dir / "logs"
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / "bridge.jsonl"
+        try:
+            if p.exists() and p.stat().st_size >= _BRIDGE_LOG_MAX_BYTES:
+                for i in range(_BRIDGE_LOG_BACKUPS, 0, -1):
+                    src = p if i == 1 else d / f"bridge.jsonl.{i - 1}"
+                    if src.exists():
+                        os.replace(src, d / f"bridge.jsonl.{i}")
+        except Exception:
+            pass
+        rec = {"ts": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="milliseconds"),
+               **fields}
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+
+
+def _bridge_log_call(cfg: Config, path: str, method: str, latency_ms: int,
+                     status: int | None, error: str | None) -> None:
+    """Record one transport call + maintain last-seen state, applying the
+    verbosity policy: log every failure / non-2xx / non-health op, and only
+    health up<->down TRANSITIONS (never the steady 2s health poll)."""
+    global _bridge_last_ok_at, _bridge_last_health_ok
+    ok = error is None and status is not None and status < 400
+    if ok:
+        _bridge_last_ok_at = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    if path.startswith("/bridge/health"):
+        should_log = ok != _bridge_last_health_ok   # transition (or first probe) only
+        _bridge_last_health_ok = ok
+    else:
+        should_log = True
+    if should_log:
+        bridge_event(cfg, path=path, method=method, latency_ms=latency_ms,
+                     status=status, ok=ok, error=error)
+
 
 def _bridge_http(
-    cfg: Config, path: str, method: str = "GET", timeout: float = 5.0
+    cfg: Config, path: str, method: str = "GET", timeout: float = 5.0,
+    retries: int = 0,
 ) -> tuple[int, bytes]:
     """Request cfg.bridge_url + path. Raises BridgeUnavailable on transport error.
 
     Short timeout: a hung Studio must never stall a call — a timeout means
     "bridge unavailable, fall back", not a hard error. The bridge's write
     endpoints take their params in the query string (no body), so POST sends an
-    empty body purely to select the verb.
+    empty body purely to select the verb. Every attempt is timed and logged to
+    bridge.jsonl (see _bridge_log_call). `retries` re-attempts ONLY the transport-
+    failure path (safe for idempotent GETs), backoff 0.3s; writes pass retries=0.
     """
     import urllib.error
     import urllib.request
     url = cfg.bridge_url.rstrip("/") + path
     data = b"" if method == "POST" else None
-    req = urllib.request.Request(url, method=method, data=data)
-    if cfg.bridge_token:
-        req.add_header("Authorization", f"Bearer {cfg.bridge_token}")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read() or b""
-    except (urllib.error.URLError, OSError) as e:
-        raise BridgeUnavailable(f"bridge unreachable at {url}: {e}") from e
+    attempt = 0
+    while True:
+        req = urllib.request.Request(url, method=method, data=data)
+        if cfg.bridge_token:
+            req.add_header("Authorization", f"Bearer {cfg.bridge_token}")
+        t0 = time.monotonic()
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                status, body = resp.status, resp.read()
+            _bridge_log_call(cfg, path, method, int((time.monotonic() - t0) * 1000), status, None)
+            return status, body
+        except urllib.error.HTTPError as e:
+            body = e.read() or b""
+            _bridge_log_call(cfg, path, method, int((time.monotonic() - t0) * 1000), e.code, None)
+            return e.code, body
+        except (urllib.error.URLError, OSError) as e:
+            _bridge_log_call(cfg, path, method, int((time.monotonic() - t0) * 1000), None, str(e))
+            if attempt < retries:
+                attempt += 1
+                time.sleep(0.3)
+                continue
+            raise BridgeUnavailable(f"bridge unreachable at {url}: {e}") from e
 
 
-def _bridge_get_json(cfg: Config, path: str, timeout: float = 5.0) -> tuple[int, dict]:
-    """_bridge_http + JSON decode. Non-JSON / empty body -> {}."""
-    status, raw = _bridge_http(cfg, path, timeout=timeout)
+def _bridge_get_json(cfg: Config, path: str, timeout: float = 5.0, retries: int = 1) -> tuple[int, dict]:
+    """_bridge_http + JSON decode. Non-JSON / empty body -> {}. GETs are
+    idempotent, so one transport retry by default smooths a transient blip (heavy
+    Studio work briefly stops the single-threaded listener from accepting)."""
+    status, raw = _bridge_http(cfg, path, timeout=timeout, retries=retries)
     try:
         data = json.loads(raw.decode("utf-8")) if raw else {}
     except (ValueError, UnicodeDecodeError):
@@ -2389,7 +2461,8 @@ def _bridge_health_at(cfg: Config, port: int, force: bool = False) -> dict:
                   "bridge_version": None, "port": port, "reason": "unreachable"}
         for i in range(3):
             try:
-                status, data = _bridge_get_json(bcfg, "/bridge/health", timeout=2.5)
+                # retries=0: this loop already retries the transport-failure path.
+                status, data = _bridge_get_json(bcfg, "/bridge/health", timeout=2.5, retries=0)
                 if status == 200 and data.get("model_loaded"):
                     state = {
                         "available": True,
@@ -2422,6 +2495,7 @@ def _bridge_health_at(cfg: Config, port: int, force: bool = False) -> dict:
                     break
                 if i < 2:
                     time.sleep(0.4)
+    state["last_ok"] = _bridge_last_ok_at
     _bridge_cache[url] = state
     _bridge_cache_at[url] = now
     return state
@@ -4062,6 +4136,49 @@ def runtime_log_tail(
             "lines": _untrusted("\n".join(tail), "runtime_log"),
             "returned_lines": len(tail), "truncated": truncated,
             "filtered": bool(contains)}
+
+
+def bridge_log_tail(
+    cfg: Config, lines: int = 100, contains: str | None = None,
+    max_bytes: int = 262144,
+) -> dict:
+    """Tail the bridge transport diagnostics log (state_dir/logs/bridge.jsonl) —
+    the forensic trail for why the design-time bridge dropped/timed out.
+
+    Each line is a JSON event {ts, path, method, latency_ms, status, ok, error}.
+    `contains` filters case-insensitively AFTER the tail window is read. Returns
+    parsed events (oldest→newest) plus the current `last_ok`, or
+    {error:"no_bridge_log"} when nothing has been logged yet (fresh install / no
+    bridge call since this build)."""
+    d = cfg.state_dir / "logs"
+    p = d / "bridge.jsonl"
+    if not p.is_file():
+        return {"error": "no_bridge_log", "file": str(p), "last_ok": _bridge_last_ok_at,
+                "hint": ("no bridge calls logged yet — bridge.jsonl is written on the "
+                         "first bridge call; make one (e.g. optix_bridge_status) then retry")}
+    st = p.stat()
+    with open(p, "rb") as fh:
+        if st.st_size > max_bytes:
+            fh.seek(st.st_size - max_bytes)
+            data = fh.read(max_bytes).split(b"\n", 1)[-1]
+            truncated = True
+        else:
+            data = fh.read()
+            truncated = False
+    raw_lines = data.decode("utf-8", errors="replace").splitlines()
+    if contains:
+        needle = contains.lower()
+        raw_lines = [ln for ln in raw_lines if needle in ln.lower()]
+    tail = raw_lines[-max(1, int(lines)):]
+    events: list = []
+    for ln in tail:
+        try:
+            events.append(json.loads(ln))
+        except ValueError:
+            events.append({"raw": ln})
+    return {"file": str(p), "size": st.st_size, "mtime": _now_iso(st.st_mtime),
+            "events": events, "returned": len(events), "truncated": truncated,
+            "filtered": bool(contains), "last_ok": _bridge_last_ok_at}
 
 
 def _skills_dir() -> Path:

@@ -54,7 +54,7 @@ def _bridge_serving(project: str = "Alpha", tree: dict | None = None,
     """Fake core._bridge_http: /bridge/health healthy + /bridge/nodes from `tree`."""
     tree = _TREE if tree is None else tree
 
-    def fake(cfg, path, timeout=5.0):
+    def fake(cfg, path, timeout=5.0, **_kwargs):
         if unreachable:
             raise core.BridgeUnavailable("bridge unreachable at test")
         if path.startswith("/bridge/health"):

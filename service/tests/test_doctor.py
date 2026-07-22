@@ -14,7 +14,7 @@ def _no_bridge(monkeypatch):
     # deterministic: bridge unreachable (no live Studio in CI)
     core.reset_bridge_cache()
 
-    def _down(cfg, path, method="GET", timeout=5.0):
+    def _down(cfg, path, method="GET", timeout=5.0, **_kwargs):
         raise core.BridgeUnavailable("no bridge in test")
 
     monkeypatch.setattr(core, "_bridge_http", _down)

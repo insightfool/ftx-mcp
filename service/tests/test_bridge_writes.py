@@ -30,7 +30,7 @@ def _fake_bridge(routes, *, capture=None, unreachable=False):
     """Fake core._bridge_http accepting the new `method` kwarg (GET + POST)."""
     merged = {**_HEALTHY, **routes}
 
-    def fake(cfg, path, method="GET", timeout=5.0):
+    def fake(cfg, path, method="GET", timeout=5.0, **_kwargs):
         if capture is not None:
             capture.append((method, path))
         if unreachable:

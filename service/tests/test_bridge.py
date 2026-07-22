@@ -24,7 +24,7 @@ def _clear_bridge_cache() -> None:
 
 def _bridge(routes: dict, *, unreachable: bool = False):
     """Fake core._bridge_http: route path-prefix -> (status, dict|bytes)."""
-    def fake(cfg: core.Config, path: str, timeout: float = 5.0):
+    def fake(cfg: core.Config, path: str, timeout: float = 5.0, **_kwargs):
         if unreachable:
             raise core.BridgeUnavailable("bridge unreachable at test")
         for prefix, (status, body) in routes.items():
@@ -105,7 +105,7 @@ def test_bridge_state_retries_transient_block(cfg: core.Config, monkeypatch) -> 
     work) is retried, not cached as down (battle-test 2026-07-16)."""
     calls = {"n": 0}
 
-    def fake(cfg_, path, timeout=5.0):
+    def fake(cfg_, path, timeout=5.0, **_kwargs):
         calls["n"] += 1
         if calls["n"] < 3:
             raise core.BridgeUnavailable("transient listener block")
@@ -123,7 +123,7 @@ def test_bridge_state_not_ready_does_not_retry(cfg: core.Config, monkeypatch) ->
     up -> decide immediately, do NOT burn retries."""
     calls = {"n": 0}
 
-    def fake(cfg_, path, timeout=5.0):
+    def fake(cfg_, path, timeout=5.0, **_kwargs):
         calls["n"] += 1
         return 200, json.dumps({"project": "Alpha", "model_loaded": False}).encode()
 
@@ -136,7 +136,7 @@ def test_bridge_state_not_ready_does_not_retry(cfg: core.Config, monkeypatch) ->
 def test_bridge_state_cached(cfg: core.Config, monkeypatch) -> None:
     calls = {"n": 0}
 
-    def fake(cfg_, path, timeout=5.0):
+    def fake(cfg_, path, timeout=5.0, **_kwargs):
         calls["n"] += 1
         return 200, json.dumps({"project": "Alpha", "model_loaded": True}).encode()
 

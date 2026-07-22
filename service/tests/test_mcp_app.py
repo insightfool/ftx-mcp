@@ -57,6 +57,7 @@ EXPECTED_TOOLS = {
     # test_bridge_primitives_absent_by_default below.
     "optix_save",
     "optix_emulator",  # consolidated run/restart/stop/status/log
+    "optix_bridge_log_tail",
     "optix_deploy_updatesvc",
     "optix_add_widget",
     "optix_add_model_variable",
@@ -189,7 +190,8 @@ def test_mcp_tools_carry_readonly_destructive_annotations(cfg: core.Config) -> N
             "optix_status",  # consolidated health/doctor/services/version — all read-only
             "optix_active_target",
             # U14 consolidated read-side capture
-            "optix_observe"}
+            "optix_observe",
+            "optix_bridge_log_tail"}
     DESTRUCTIVE = {"optix_deploy","optix_deploy_updatesvc","optix_bridge_delete_node",
                    "optix_runtime_stop","optix_cdp_click","optix_cdp_type",
                    "optix_cdp_key","optix_cdp_fill","optix_cdp_navigate",
