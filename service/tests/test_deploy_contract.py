@@ -10,13 +10,17 @@ tests should be the gate.
 """
 from __future__ import annotations
 
+import datetime as _dt
+import json
 import threading
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from service import core
-from service.deploy_lock import DeployLock, LockHeld
+from service.deploy_lock import DeployLock, DeployLockEvicted, LockHeld
+from service.http_app import make_app
 from service.tests.conftest import FakeProc, make_export_handler, make_fake_runner, make_project
 
 # ---- schema lock-in --------------------------------------------------
@@ -270,6 +274,101 @@ def test_concurrent_deploy_raises_lock_held(cfg: core.Config, projects_root: Pat
 
     assert len(second_error) == 1
     assert isinstance(second_error[0], LockHeld)
+
+
+def test_deploy_fails_closed_when_lock_evicted_mid_flight(
+    cfg: core.Config, projects_root: Path
+) -> None:
+    """U4 fencing: if the deploy's lock is age-broken and re-acquired by a
+    concurrent probe while it is blocked at Studio export, the blocked deploy
+    must fail closed (DeployLockEvicted) at the pre-swap checkpoint rather than
+    racing a second holder on the shared runtime tree."""
+    make_project(projects_root, "Alpha")
+
+    started = threading.Event()
+    release = threading.Event()
+    first_error: list[BaseException] = []
+
+    def slow_studio(cmd: list[str], _kwargs: dict) -> FakeProc:
+        if "export" in cmd and any(c.endswith("FTOptixStudio.exe") for c in cmd):
+            started.set()
+            release.wait(timeout=5)
+        return FakeProc(returncode=0)
+
+    runner = make_fake_runner(slow_studio)
+
+    def first() -> None:
+        try:
+            core.deploy(
+                cfg, "Alpha", core.DeployRequest(),
+                runner=runner, runtime=_NoopRuntime(),
+            )
+        except BaseException as e:  # noqa: BLE001 — record whatever propagates
+            first_error.append(e)
+
+    t1 = threading.Thread(target=first)
+    t1.start()
+    started.wait(timeout=5)
+
+    # The blocked deploy holds the lock. Forge it stale (dead pid) so a probe
+    # can break + re-acquire it, simulating a second process stealing the lock
+    # out from under the in-flight deploy.
+    lock_path = cfg.state_dir / "deploy.lock"
+    forged_stale = {
+        "pid": 999_999_999,  # dead -> is_stale True
+        "started_at": _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds"),
+        "caller": "in-flight",
+        "epoch": 1,
+        "pid_create_time": None,
+    }
+    lock_path.write_text(json.dumps(forged_stale), encoding="utf-8")
+    probe = DeployLock(lock_path, caller="probe")
+    probe._try_acquire()  # breaks the (now-stale) lock and stamps a new epoch
+
+    # Let the blocked deploy proceed toward its fencing checkpoints.
+    release.set()
+    t1.join(timeout=5)
+
+    assert len(first_error) == 1, "the evicted deploy should have raised"
+    assert isinstance(first_error[0], DeployLockEvicted)
+
+    # The failed outcome is still recorded, carrying the eviction in stderr.
+    entry = core.last_deploy_tail(cfg, project="Alpha")
+    assert entry is not None
+    assert entry["state"] == "failed"
+    assert "DeployLockEvicted" in entry["stderr_tail"]
+
+
+@pytest.mark.parametrize(
+    "exc, expected_code",
+    [
+        (LockHeld({"pid": 4321, "caller": "held"}), "deploy_lock_held"),
+        (DeployLockEvicted({"pid": 4321, "epoch": 7}), "deploy_lock_evicted"),
+    ],
+)
+def test_deploy_lock_exceptions_map_to_409_envelope(
+    cfg: core.Config,
+    projects_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exc: Exception,
+    expected_code: str,
+) -> None:
+    """Both deploy-lock exceptions surface through the HTTP layer as a 409
+    with a structured envelope carrying the offending lock state. (Also closes
+    a pre-existing coverage gap: LockHeld had no HTTP-layer test.)"""
+    make_project(projects_root, "Alpha")
+
+    def boom(*_a, **_k):
+        raise exc
+
+    monkeypatch.setattr(core, "deploy", boom)
+    client = TestClient(make_app(cfg))
+    r = client.post("/projects/Alpha/deploy", json={"edits": []})
+    assert r.status_code == 409
+    body = r.json()
+    assert body["code"] == expected_code
+    assert "hint" in body
+    assert body["lock"] == getattr(exc, "lock_state")
 
 
 # ---- git_state surfacing (H) ----------------------------------------

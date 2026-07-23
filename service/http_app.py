@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from . import __version__, core
-from .deploy_lock import LockHeld
+from .deploy_lock import DeployLockEvicted, LockHeld
 
 
 class Edit(BaseModel):
@@ -102,6 +102,18 @@ def make_app(cfg: core.Config) -> FastAPI:
                 "code": "deploy_lock_held",
                 "message": "another deploy is in flight",
                 "hint": "wait for the in-flight deploy to finish, or check the lock holder PID",
+                "lock": exc.lock_state,
+            },
+        )
+
+    @app.exception_handler(DeployLockEvicted)
+    async def _evicted_handler(_: Request, exc: DeployLockEvicted) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": "deploy_lock_evicted",
+                "message": "the deploy lock was broken by a concurrent acquirer mid-deploy",
+                "hint": "the runtime tree may be in a partially-swapped state; re-run optix_deploy_preflight before retrying",
                 "lock": exc.lock_state,
             },
         )

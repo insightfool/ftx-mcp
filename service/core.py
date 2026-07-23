@@ -5688,8 +5688,17 @@ def deploy(
 
             # Bounce the runtime so the swap can complete without a file lock.
             if req.run_after_deploy:
+                # Fencing checkpoint #1: stopping the runtime is operator-
+                # visible. If our lock was age-broken + re-taken since acquire,
+                # fail closed (DeployLockEvicted) rather than racing a second
+                # holder on runtime.stop/start against the same tree.
+                lock.check_still_held()
                 runtime.stop(cfg, runtime_project_dir)
 
+            # Fencing checkpoint #2: the tree swap is the genuinely
+            # irreversible step (a concurrent swap racing on the same .bak
+            # name is the corruption this guards against). Re-check ownership.
+            lock.check_still_held()
             try:
                 _atomic_swap(staging_dir, runtime_project_dir)
             except TreeSwapFailed as e:
