@@ -128,7 +128,7 @@ def test_read_file_ok_when_studio_closed(
     (p / "Nodes" / "UI.yaml").write_text("Name: UI\n", encoding="utf-8", newline="\n")
     set_procs(monkeypatch, [])
     out = core.read_file(cfg, "Alpha", "Nodes/UI.yaml")
-    assert out["content"] == "Name: UI\n"
+    assert out["content"] == core._untrusted("Name: UI\n", "read_file")
 
 
 def test_read_file_proceeds_on_detection_error(
@@ -145,7 +145,7 @@ def test_read_file_proceeds_on_detection_error(
 
     monkeypatch.setattr(studio_guard, "_scan", boom)
     studio_guard.reset_cache()
-    assert core.read_file(cfg, "Alpha", "f.yaml")["content"] == "x: 1\n"
+    assert core.read_file(cfg, "Alpha", "f.yaml")["content"] == core._untrusted("x: 1\n", "read_file")
 
 
 def test_read_file_http_409_envelope(
@@ -350,7 +350,7 @@ def test_attributed_mode_allows_when_studio_serves_other_project(
     monkeypatch.setattr(core, "_bridge_http", _bridge(_serving("Beta")))
     core.reset_bridge_cache()
     out = core.read_file(_attr(cfg), "Alpha", "Nodes/UI.yaml")
-    assert out["content"] == "Name: UI\n"
+    assert out["content"] == core._untrusted("Name: UI\n", "read_file")
     assert out["studio_guard"] == "attributed"
     assert out["studio_serving"] == "Beta"
 

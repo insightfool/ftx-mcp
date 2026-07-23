@@ -1,0 +1,37 @@
+{
+  "_comment_top": "Example Claude Code settings.json for ftx-mcp, hardening against untrusted project/runtime content that flows back through read-tool responses (see docs/security.md, 'Untrusted tool-response content', and docs/errors.md '<untrusted> delimiting'). Two protections: (1) 'deny' blocks the classic 'OCR'd/logged text told the agent to curl-pipe-to-shell' escalation path; (2) 'ask' forces a human prompt before any deploy tool writes files or swaps the runtime bundle. Adapt the mcp__<server>__ prefix to the name you registered the server under: this repo's docs use 'ftx-mcp' (README.md / docs/claude-code-setup.md: `claude mcp add --transport http ftx-mcp ...`); if you registered it under another name, rename every mcp__ftx-mcp__ key to match. The 'allow' list is the read-only tool surface and is NOT exhaustive — add the authoring/runtime tools you actually use, and keep the deploy tools OUT of 'allow' so they fall through to 'ask'.",
+  "permissions": {
+    "allow": [
+      "mcp__ftx-mcp__optix_health",
+      "mcp__ftx-mcp__optix_doctor",
+      "mcp__ftx-mcp__optix_list_projects",
+      "mcp__ftx-mcp__optix_list_skills",
+      "mcp__ftx-mcp__optix_get_skill",
+      "mcp__ftx-mcp__optix_read_file",
+      "mcp__ftx-mcp__optix_find",
+      "mcp__ftx-mcp__optix_list_screens",
+      "mcp__ftx-mcp__optix_describe_node",
+      "mcp__ftx-mcp__optix_get_project_map",
+      "mcp__ftx-mcp__optix_cdp_screenshot",
+      "mcp__ftx-mcp__optix_cdp_ocr",
+      "mcp__ftx-mcp__optix_cdp_read_text",
+      "mcp__ftx-mcp__optix_runtime_log_tail"
+    ],
+    "deny": [
+      "Bash(curl * | sh)",
+      "Bash(curl * | bash)",
+      "Bash(wget * | sh)",
+      "Bash(wget * | bash)",
+      "Bash(iwr * | iex)",
+      "Bash(irm * | iex)",
+      "Bash(Invoke-Expression *)",
+      "Bash(powershell -enc *)",
+      "Bash(powershell -EncodedCommand *)"
+    ],
+    "ask": [
+      "mcp__ftx-mcp__optix_deploy",
+      "mcp__ftx-mcp__optix_deploy_preflight",
+      "mcp__ftx-mcp__optix_deploy_updatesvc"
+    ]
+  }
+}

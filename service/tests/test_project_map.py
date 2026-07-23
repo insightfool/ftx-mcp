@@ -5,6 +5,15 @@ import pytest
 
 from service import core
 
+
+def _inner(wrapped: str) -> str:
+    """Strip the U11 `<untrusted source="get_project_map"> ... </untrusted>`
+    wrapper so the outline can be asserted line-by-line as before."""
+    assert wrapped.startswith('<untrusted source="get_project_map">'), wrapped
+    assert wrapped.endswith("</untrusted>"), wrapped
+    return wrapped[wrapped.index(">") + 1 : -len("</untrusted>")]
+
+
 TREE = {
     "path": "", "budget_left": 12,
     "map": {"name": "NewProj", "type": "Project", "children": [
@@ -33,7 +42,9 @@ def test_map_outline_rendering(cfg: core.Config, monkeypatch) -> None:
         return 200, TREE
     monkeypatch.setattr(core, "_bridge_get_json", fake_get)
     out = core.get_project_map(cfg, "NewProj")
-    lines = out["map"].splitlines()
+    # the whole outline is wrapped exactly once as untrusted (U11)
+    assert out["map"].count('<untrusted source="get_project_map">') == 1
+    lines = _inner(out["map"]).splitlines()
     assert lines[0] == "NewProj (Project)"
     assert "  UI (Folder)" in lines
     assert "      NavPanel (NavigationPanel)" in lines
@@ -68,7 +79,7 @@ def test_map_overview_skip_rendering(cfg: core.Config, monkeypatch) -> None:
     monkeypatch.setattr(core, "_bridge_get_json", lambda c, q: (200, tree))
     out = core.get_project_map(cfg, "P")
     assert out["mode"] == "overview"
-    lines = out["map"].splitlines()
+    lines = _inner(out["map"]).splitlines()
     assert "  Model (Folder)  (3 vars)" in lines
     assert "  MainWindow (WindowType)  (+24 inside)" in lines
 
@@ -118,7 +129,7 @@ def test_map_search_mode(cfg: core.Config, monkeypatch) -> None:
     out = core.get_project_map(cfg, "P", match="Label")
     assert "match=Label" in seen["q"]
     assert out["mode"] == "search" and out["hit_count"] == 2
-    assert out["map"].splitlines() == [
+    assert _inner(out["map"]).splitlines() == [
         "UI/Screens/ScreenA/HelloLabel (Label)",
         "UI/Screens/ScreenB/T1 (Label)"]
     # json format returns the structured matches
