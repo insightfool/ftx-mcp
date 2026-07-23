@@ -650,3 +650,69 @@ def test_failed_bridge_write_audited_with_error(alpha, monkeypatch):
     rec = json.loads((alpha.state_dir / "logs" / "audit.jsonl")
                      .read_text().strip().splitlines()[-1])
     assert rec["ok"] is False and "no prop X" in rec["error"]
+
+
+# ---- unknown_property did-you-mean (C# DeclaredPropertyGuard suggestion) ----
+#
+# The bridge's DeclaredPropertyGuard bakes a best-effort suggestion into the
+# error `message` (not just a sibling did_you_mean field) precisely because
+# _bridge_write_result flattens the error dict down to message + code and
+# discards every other key. These pin that the suggestion text survives that
+# flattening to the raised exception (and thus to classify_bridge_failure's
+# `detail`, which is all the MCP tool caller ever sees), and that the extra
+# structured fields remain backward-compatible (silently ignored).
+
+def test_unknown_property_suggestion_surfaces_in_raised_message(alpha, monkeypatch):
+    """Mirrors test_wire_event_nudges_wrong_event_name_before_bridge's assertion
+    shape for the property path: the suggestion, baked into `message` by the C#
+    guard, must survive _bridge_write_result's message/code flattening."""
+    routes = {"/bridge/node/property": (200, {"error": {
+        "code": "unknown_property",
+        "message": "Panel has no settable property 'BackgroundColor' "
+                   "(did you mean Color?) (call describe_type/describe_node "
+                   "for the valid set)",
+        "did_you_mean": "Color",
+        "valid_properties": ["Color", "Width"]}})}
+    monkeypatch.setattr(core, "_bridge_http", _fake_bridge(routes))
+    with pytest.raises(core.BridgeWriteFailed) as e:
+        core.bridge_set_property(alpha, "Alpha", "UI/MainWindow/P1",
+                                 "BackgroundColor", "red")
+    assert "did you mean Color?" in str(e.value)
+    assert "unknown_property" in str(e.value)
+
+
+def test_unknown_property_suggestion_reaches_classify_detail(alpha, monkeypatch):
+    """The suggestion has to reach the LLM caller, which only sees
+    classify_bridge_failure()'s `detail` (= str(exc)). Assert the passthrough."""
+    routes = {"/bridge/node/property": (200, {"error": {
+        "code": "unknown_property",
+        "message": "Panel has no settable property 'BackgroundColor' "
+                   "(did you mean Color?) (call describe_type/describe_node "
+                   "for the valid set)",
+        "did_you_mean": "Color",
+        "valid_properties": ["Color", "Width"]}})}
+    monkeypatch.setattr(core, "_bridge_http", _fake_bridge(routes))
+    try:
+        core.bridge_set_property(alpha, "Alpha", "UI/MainWindow/P1",
+                                 "BackgroundColor", "red")
+        raise AssertionError("expected BridgeWriteFailed")
+    except core.BridgeWriteFailed as exc:
+        out = core.classify_bridge_failure(alpha, "Alpha", exc)
+    assert out["reason_code"] == "write_failed"
+    assert "did you mean Color?" in out["detail"]
+
+
+def test_unknown_property_no_suggestion_raises_cleanly(alpha, monkeypatch):
+    """When the guard finds no close match it emits no did_you_mean and no
+    '(did you mean ...)' clause; the plain message must still raise cleanly
+    (the did_you_mean-absent path is the SuggestPropertyName null contract)."""
+    routes = {"/bridge/node/property": (200, {"error": {
+        "code": "unknown_property",
+        "message": "Panel has no settable property 'Zzz' "
+                   "(call describe_type/describe_node for the valid set)",
+        "valid_properties": ["Color", "Width"]}})}
+    monkeypatch.setattr(core, "_bridge_http", _fake_bridge(routes))
+    with pytest.raises(core.BridgeWriteFailed) as e:
+        core.bridge_set_property(alpha, "Alpha", "UI/MainWindow/P1", "Zzz", "v")
+    assert "did you mean" not in str(e.value)
+    assert "unknown_property" in str(e.value) and "Zzz" in str(e.value)

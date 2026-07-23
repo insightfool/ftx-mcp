@@ -845,15 +845,23 @@ public class StudioMCPBridge : BaseNetLogic
 
     // Inheritance-aware list of a live node's settable property names, filtered to
     // FTOptix-declared props (drops UAManagedCore infra like NodeId/BrowseName).
-    // The valid set the validity gate hands back on an unknown-property rejection.
+    // The valid set the validity gate hands back on an unknown-property rejection,
+    // and the candidate pool the did-you-mean suggestion matches against.
+    private System.Collections.Generic.List<string> DeclaredPropertyNames(object node)
+    {
+        return node.GetType()
+                   .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                   .Where(IsLegendProp)
+                   .Select(pi => pi.Name).Distinct().OrderBy(x => x).ToList();
+    }
+
+    // JSON-array-fragment form of DeclaredPropertyNames, capped at MaxItems, for
+    // embedding in an unknown_property error's valid_properties list.
     private string PropertyNamesJsonList(object node)
     {
         var sb = new StringBuilder();
         int count = 0;
-        foreach (var pn in node.GetType()
-                     .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                     .Where(IsLegendProp)
-                     .Select(pi => pi.Name).Distinct().OrderBy(x => x))
+        foreach (var pn in DeclaredPropertyNames(node))
         {
             if (count >= MaxItems) break;
             if (count++ > 0) sb.Append(",");
@@ -874,10 +882,26 @@ public class StudioMCPBridge : BaseNetLogic
         if (node.GetVariable(name) != null) return null;   // already materialized
         if (node.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance)
                 .Any(p => p.Name == name)) return null;    // type-declared -> safe
-        return "{\"error\":{\"code\":\"unknown_property\",\"message\":\"" +
-               JsonEscape(node.GetType().Name + " has no settable property '" + name +
-                          "' (call describe_type/describe_node for the valid set)") +
-               "\",\"valid_properties\":[" + PropertyNamesJsonList(node) + "]}}";
+        // Mirror the wire_event reject-with-valid-list: hand back the authoritative
+        // set + a best-effort suggestion, baked into the message so it survives the
+        // Python-side message/code flattening (a sibling did_you_mean field alone is
+        // dropped there). The property_not_found sites downstream are only reached
+        // AFTER this returns null (name already matched a real property), so they
+        // deliberately carry no suggestion - the name is not a typo there.
+        var valid = DeclaredPropertyNames(node);
+        var suggestion = SuggestPropertyName(name, valid);
+        var sb = new StringBuilder();
+        sb.Append("{\"error\":{\"code\":\"unknown_property\",\"message\":\"");
+        sb.Append(JsonEscape(node.GetType().Name + " has no settable property '" + name + "'" +
+            (suggestion != null ? " (did you mean " + suggestion + "?)" : "") +
+            " (call describe_type/describe_node for the valid set)"));
+        sb.Append("\"");
+        if (suggestion != null)
+        {
+            sb.Append(",\"did_you_mean\":\""); sb.Append(JsonEscape(suggestion)); sb.Append("\"");
+        }
+        sb.Append(",\"valid_properties\":[" + PropertyNamesJsonList(node) + "]}}");
+        return sb.ToString();
     }
 
     // ---- live-model write endpoints (inline mutation from the HTTP thread) ----
@@ -2536,6 +2560,24 @@ public class StudioMCPBridge : BaseNetLogic
         {
             var n = v.ToLowerInvariant();
             if (n.EndsWith("event")) n = n.Substring(0, n.Length - 5);
+            if (n == g || n.Contains(g) || g.Contains(n)) return v;
+        }
+        return null;
+    }
+
+    // Best-effort "did you mean" for a wrong property name, sharing SuggestUiEvent's
+    // algorithm: normalize both sides (letters only, lowercased) and match on
+    // containment either way, so "backgroundcolor"/"colour" -> ... (whatever the
+    // type declares that contains or is contained by the input). Property names have
+    // no "Event" suffix to trim, so normalization is just lowercase + strip-letters.
+    // Returns null on no match (the valid_properties list still carries the full set).
+    private static string SuggestPropertyName(string given, System.Collections.Generic.List<string> valid)
+    {
+        var g = new string((given ?? "").ToLowerInvariant().Where(char.IsLetter).ToArray());
+        if (g.Length == 0) return null;
+        foreach (var v in valid)
+        {
+            var n = v.ToLowerInvariant();
             if (n == g || n.Contains(g) || g.Contains(n)) return v;
         }
         return null;
