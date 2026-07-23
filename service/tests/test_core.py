@@ -52,7 +52,8 @@ def test_read_file_returns_sha256(cfg: core.Config, projects_root: Path) -> None
     (p / "screen.yaml").write_bytes(b"Hello, World!\n")
     out = core.read_file(cfg, "Alpha", "screen.yaml")
     import hashlib
-    assert out["content"] == "Hello, World!\n"
+    # content is <untrusted>-delimited (U11); sha256/size describe the raw file
+    assert out["content"] == core._untrusted("Hello, World!\n", "read_file")
     assert out["size"] == 14
     assert out["sha256"] == hashlib.sha256(b"Hello, World!\n").hexdigest()
 

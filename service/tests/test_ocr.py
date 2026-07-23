@@ -57,9 +57,12 @@ def test_ocr_returns_recognized_text(cfg, monkeypatch) -> None:
     out = core.cdp_ocr_runtime(cfg, runner=runner)
     assert out["state"] == "succeeded"
     assert "Hello Optix" in out["text"]
+    # OCR text is <untrusted>-delimited (U11): a substring check still holds,
+    # but exact-equality must compare against the wrapped form.
+    assert out["text"].startswith('<untrusted source="cdp_ocr">')
     # reconstruction preserves per-line grouping (words space-joined, lines
     # newline-joined) — not byte-identical to tesseract's text renderer.
-    assert out["text"] == "Hello Optix\nStart"
+    assert out["text"] == core._untrusted("Hello Optix\nStart", "cdp_ocr")
     assert out["size_bytes"] == 42 and out["navigated"] is True
     assert "low_confidence" not in out  # all words high-conf
     # invoked tesseract in TSV mode with a psm and stdout target
@@ -103,7 +106,7 @@ def test_read_text_returns_recognized_text(cfg, monkeypatch) -> None:
     runner = make_fake_runner(lambda cmd, kw: FakeProc(0, _tsv(("SP-101", 92.0))))
     out = core.cdp_read_text_runtime(cfg, region=[0.1, 0.1, 0.2, 0.2], runner=runner)
     assert out["state"] == "succeeded"
-    assert out["text"] == "SP-101"
+    assert out["text"] == core._untrusted("SP-101", "cdp_read_text")
     assert out["region"] == [10.0, 20.0, 30.0, 40.0]
     assert out["confidence"] == {"mean": 0.92, "min": 0.92}
     cmd = runner.calls[0][0]
@@ -158,7 +161,7 @@ def test_ocr_confidence_reported_when_high(cfg, monkeypatch) -> None:
     runner = make_fake_runner(lambda cmd, kw: FakeProc(0, tsv))
     out = core.cdp_ocr_runtime(cfg, runner=runner)
     assert out["state"] == "succeeded"
-    assert out["text"] == "Alarm Active"
+    assert out["text"] == core._untrusted("Alarm Active", "cdp_ocr")
     assert out["confidence"] == {"mean": 0.93, "min": 0.90}
     assert out["confidence"]["mean"] >= cfg.ocr_conf_threshold
     assert "low_confidence" not in out and "next_step" not in out
@@ -187,7 +190,8 @@ def test_ocr_no_words_has_no_confidence_field(cfg, monkeypatch) -> None:
     runner = make_fake_runner(lambda cmd, kw: FakeProc(0, _TSV_HEADER + "\n"))
     out = core.cdp_ocr_runtime(cfg, runner=runner)
     assert out["state"] == "succeeded"
-    assert out["text"] == "" and "confidence" not in out
+    # empty frame -> empty inner text, still wrapped for a consistent contract
+    assert out["text"] == core._untrusted("", "cdp_ocr") and "confidence" not in out
     assert "low_confidence" not in out
 
 
@@ -198,7 +202,7 @@ def test_read_text_confidence_reported_when_high(cfg, monkeypatch) -> None:
     runner = make_fake_runner(lambda cmd, kw: FakeProc(0, tsv))
     out = core.cdp_read_text_runtime(cfg, region=[0.1, 0.1, 0.2, 0.2], runner=runner)
     assert out["state"] == "succeeded"
-    assert out["text"] == "Setpoint 42"
+    assert out["text"] == core._untrusted("Setpoint 42", "cdp_read_text")
     assert out["confidence"] == {"mean": 0.91, "min": 0.88}
     assert out["region"] == [1.0, 2.0, 3.0, 4.0]
     assert "low_confidence" not in out

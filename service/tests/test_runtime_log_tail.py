@@ -9,6 +9,14 @@ import pytest
 from service import core
 
 
+def _lines(wrapped: str) -> list[str]:
+    """Strip the U11 `<untrusted source="runtime_log"> ... </untrusted>` wrapper
+    and split — `lines` is now one delimited block, not a list[str]."""
+    assert wrapped.startswith('<untrusted source="runtime_log">'), wrapped
+    assert wrapped.endswith("</untrusted>"), wrapped
+    return wrapped[wrapped.index(">") + 1 : -len("</untrusted>")].splitlines()
+
+
 @pytest.fixture()
 def log_root(tmp_path: Path, monkeypatch) -> Path:
     root = tmp_path / "emulog"
@@ -30,7 +38,8 @@ def test_tail_returns_last_n_lines(cfg: core.Config, log_root: Path) -> None:
                [f"line {i}" for i in range(50)])
     out = core.runtime_log_tail(cfg, "Alpha", lines=10)
     assert out["returned_lines"] == 10
-    assert out["lines"][-1] == "line 49" and out["lines"][0] == "line 40"
+    tail = _lines(out["lines"])
+    assert tail[-1] == "line 49" and tail[0] == "line 40"
     assert out["truncated"] is False and out["filtered"] is False
 
 
@@ -42,14 +51,14 @@ def test_tail_picks_newest_rotation_file(cfg: core.Config, log_root: Path) -> No
     os.utime(old, (past, past))
     out = core.runtime_log_tail(cfg, "Alpha")
     assert out["file"].endswith("FTOptixRuntime.0.log")
-    assert out["lines"] == ["CURRENT"]
+    assert _lines(out["lines"]) == ["CURRENT"]
 
 
 def test_tail_contains_filter_case_insensitive(cfg: core.Config, log_root: Path) -> None:
     _write_log(log_root, "Alpha", "FTOptixRuntime.0.log",
                ["INFO ok", "ERROR boom", "info fine", "Error again"])
     out = core.runtime_log_tail(cfg, "Alpha", contains="error")
-    assert out["lines"] == ["ERROR boom", "Error again"]
+    assert _lines(out["lines"]) == ["ERROR boom", "Error again"]
     assert out["filtered"] is True
 
 
@@ -60,7 +69,7 @@ def test_tail_windows_large_file_and_drops_partial_line(cfg: core.Config, log_ro
     assert out["truncated"] is True
     assert out["returned_lines"] == 5
     # the seek lands mid-line; the partial first line must have been dropped
-    assert all(ln.startswith("padline") for ln in out["lines"])
+    assert all(ln.startswith("padline") for ln in _lines(out["lines"]))
 
 
 def test_tail_no_log_dir(cfg: core.Config, log_root: Path) -> None:

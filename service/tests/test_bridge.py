@@ -197,6 +197,19 @@ def test_describe_node_returns_live_shape(cfg: core.Config, projects_root: Path,
     assert out["source"] == "bridge"
 
 
+def test_describe_node_wraps_property_values_as_untrusted(
+    cfg: core.Config, projects_root: Path, monkeypatch
+) -> None:
+    """Property VALUES are author-settable model content -> <untrusted> (U11);
+    the property NAME (structural identity) stays raw."""
+    make_project(projects_root, "Alpha")
+    routes = {**_HEALTHY, "/bridge/nodes": (200, _NODE)}
+    monkeypatch.setattr(core, "_bridge_http", _bridge(routes))
+    out = core.describe_node(cfg, "Alpha", "UI/MainWindow")
+    assert out["properties"][0]["name"] == "Width"
+    assert out["properties"][0]["value"] == core._untrusted("800 (Float)", "bridge")
+
+
 def test_describe_node_raises_when_bridge_down(cfg: core.Config, projects_root: Path, monkeypatch) -> None:
     make_project(projects_root, "Alpha")
     monkeypatch.setattr(core, "_bridge_http", _bridge({}, unreachable=True))

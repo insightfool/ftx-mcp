@@ -51,15 +51,42 @@ grandfathered, not unified with the flat Python convention.
 
 ## `<untrusted>` delimiting
 
-Some envelope fields echo model- or user-supplied strings verbatim: a
-bridge `detail`, a rejected `given` value, an echoed node path. Delimit
-**only those values** — wrap them as `<untrusted>...</untrusted>` (or
-equivalent) inside `message`/`details` before returning. Do **not** wrap
-`code`, `hint`, or `docs_url` — those are service-authored constants, not
-untrusted input, and delimiting them adds noise for no safety benefit.
+Project- and runtime-derived strings that flow back into an LLM's context
+must read as DATA, never as instructions from the operator. Delimit them.
 
-This is a net-new rule (no shipped code implements it yet) — apply it the
-next time a message/details field is constructed from an echoed value.
+**Canonical form** (implemented by `core._untrusted(value, source)`):
+
+```
+<untrusted source="read_file">…value…</untrusted>
+```
+
+- `source` is a service-authored provenance constant — the same vocabulary
+  bridge responses already use (`source: "bridge"`), e.g. `read_file`,
+  `find_in_project`, `cdp_ocr`, `cdp_read_text`, `runtime_log`,
+  `get_project_map`, `bridge`. It is never caller input, so it is not escaped.
+- **Escaping rule:** any literal `</untrusted` in the value is rewritten to
+  `<\/untrusted` before wrapping. This is the load-bearing part — it
+  guarantees the closing `</untrusted>` the helper appends is the *only* real
+  boundary, so authored content cannot forge an early close and smuggle text
+  back out of the wrapper. A stray *opening* tag in the body is inert (only a
+  close can break out) and is left as-is.
+
+**Where it applies.** Two categories:
+
+1. *Error-envelope echoes* — a field that echoes a model/user string verbatim
+   (a bridge `detail`, a rejected `given` value, an echoed node path). Wrap
+   only that value inside `message` / `details`. Do **not** wrap `code`,
+   `hint`, or `docs_url` — those are service-authored constants; delimiting
+   them adds noise for no safety benefit.
+2. *Result-contract fields* (U11) — the project/runtime-derived values a read
+   tool returns: `read_file.content`, `find_in_project` match `text` /
+   `context_before` / `context_after`, `describe_node` property **values**
+   (not names/paths), `get_project_map.map` (the whole outline, wrapped once —
+   `fmt="json"` trees stay raw), `runtime_log_tail.lines` (joined to one
+   delimited block), and `cdp_ocr` / `cdp_read_text` `text`. Structural /
+   machine-consumed returns (`routes_get`'s dict, `cdp_sweep` manifests) and
+   server-shipped content (`get_skill`) are **not** wrapped. See
+   `docs/security.md`, "Untrusted tool-response content".
 
 ## Batch indexing
 

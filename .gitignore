@@ -62,7 +62,10 @@ bootstrap/launcher/
 bootstrap/build-exe.ps1
 bootstrap/install.ps1
 tools/
-examples/
+# examples/ is local/aux by default; the client-safety config is the one
+# deliberately-distributed example (docs/security.md references it).
+examples/*
+!examples/claude-code-settings.json
 docs/optix-patterns/
 docs/component-gallery.md
 docs/corp-it-install.md

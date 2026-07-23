@@ -52,7 +52,11 @@ def test_find_locates_node_with_context(cfg: core.Config, projects_root: Path) -
     m = out["matches"][0]
     assert m["path"] == "Nodes/UI/Screens.yaml"
     assert m["line"] == 4
+    # matched line + context are project file text -> <untrusted>-delimited (U11);
+    # a substring check still holds through the wrapper.
+    assert m["text"] == core._untrusted("  Type: Button", "find_in_project")
     assert "Name: Btn" in m["context_before"][-1]
+    assert m["context_before"][-1].startswith('<untrusted source="find_in_project">')
 
 
 def test_find_is_case_insensitive_by_default(cfg: core.Config, projects_root: Path) -> None:
@@ -96,7 +100,7 @@ def test_ranged_read_returns_slice_but_whole_file_metadata(
     f = _write(proj, "f.yaml", "L1\nL2\nL3\nL4\nL5\n")
     full = core.read_file(cfg, "Alpha", "f.yaml")
     out = core.read_file(cfg, "Alpha", "f.yaml", start_line=2, end_line=3)
-    assert out["content"] == "L2\nL3\n"
+    assert out["content"] == core._untrusted("L2\nL3\n", "read_file")
     assert out["start_line"] == 2 and out["end_line"] == 3
     assert out["total_lines"] == 5
     assert out["sha256"] == full["sha256"]  # fingerprint is whole-file
@@ -107,7 +111,7 @@ def test_ranged_read_clamps_end_to_eof(cfg: core.Config, projects_root: Path) ->
     proj = make_project(projects_root, "Alpha")
     _write(proj, "f.yaml", "L1\nL2\n")
     out = core.read_file(cfg, "Alpha", "f.yaml", start_line=2, end_line=99)
-    assert out["content"] == "L2\n"
+    assert out["content"] == core._untrusted("L2\n", "read_file")
     assert out["end_line"] == 2
 
 
