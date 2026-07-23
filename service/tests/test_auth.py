@@ -38,6 +38,25 @@ class TestScopeSatisfies:
     def test_read_does_not_satisfy_deploy(self) -> None:
         assert auth.scope_satisfies("read", "deploy") is False
 
+    # --- author tier (health <= read <= author <= deploy) ---
+    def test_author_satisfies_author(self) -> None:
+        assert auth.scope_satisfies("author", "author") is True
+
+    def test_author_satisfies_read(self) -> None:
+        assert auth.scope_satisfies("author", "read") is True
+
+    def test_author_satisfies_health(self) -> None:
+        assert auth.scope_satisfies("author", "health") is True
+
+    def test_deploy_satisfies_author(self) -> None:
+        assert auth.scope_satisfies("deploy", "author") is True
+
+    def test_read_does_not_satisfy_author(self) -> None:
+        assert auth.scope_satisfies("read", "author") is False
+
+    def test_health_does_not_satisfy_author(self) -> None:
+        assert auth.scope_satisfies("health", "author") is False
+
     def test_unknown_token_scope_raises(self) -> None:
         with pytest.raises(ValueError, match="unknown token scope"):
             auth.scope_satisfies("admin", "read")
@@ -337,6 +356,18 @@ class TestResolveRequiredScope:
 
     def test_deploy_preflight(self) -> None:
         assert auth.resolve_required_scope("POST", "/projects/foo/deploy/preflight") == "deploy"
+
+    def test_http_author_routes_stay_coarse_deploy(self) -> None:
+        # Decision pin (U3): the `author` tier is MCP-surface-only. The HTTP
+        # twins keep the coarse `deploy` on POST /projects/... mutations
+        # because resolve_required_scope matches by path PREFIX and the
+        # author/deploy discriminator is the suffix AFTER the variable
+        # {project} segment — a static prefix cannot split them at runtime.
+        # Authoring routes therefore resolve to `deploy` on HTTP, never
+        # `author`. HTTP is never more permissive than the MCP table.
+        assert auth.resolve_required_scope("POST", "/projects/foo/save") == "deploy"
+        assert auth.resolve_required_scope("POST", "/projects/foo/widgets") == "deploy"
+        assert "author" not in {s for _, _, s in auth.DEFAULT_SCOPE_RULES}
 
     def test_mcp_post(self) -> None:
         assert auth.resolve_required_scope("POST", "/mcp") == "read"

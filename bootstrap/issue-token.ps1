@@ -20,11 +20,15 @@
     Required.
 
 .PARAMETER Scope
-    One of: health | read | deploy. Per design SS1.2:
+    One of: health | read | author | deploy. Per design SS1.2:
         health  - health checks only
         read    - read endpoints (project list, git log, deploy tail)
-        deploy  - everything, including triggering a deploy
-    Required.
+        author  - live authoring: mutate the Studio project, preview in the
+                  emulator, drive the canvas (no runtime push). The routine
+                  token for day-to-day HMI editing.
+        deploy  - everything, including pushing to / controlling the runtime.
+    Required. (Coupled to service.auth._SCOPE_ORDER; keep in sync -- this
+    ValidateSet cannot import the Python scope model.)
 
 .PARAMETER ExpiresInDays
     Optional integer; if set, the token expires N days from now.
@@ -44,7 +48,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$Label,
-    [Parameter(Mandatory=$true)][ValidateSet("health","read","deploy")][string]$Scope,
+    [Parameter(Mandatory=$true)][ValidateSet("health","read","author","deploy")][string]$Scope,
     [int]$ExpiresInDays,
     [string]$RepoRoot,
     # Machine-readable output: suppress the human banner and emit a single JSON
