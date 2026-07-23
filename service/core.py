@@ -328,6 +328,11 @@ def _default_studio_exe() -> Path:
     return _STUDIO_INSTALL_ROOT / "Studio 1.7.1.46" / "FTOptixStudio.exe"
 
 
+# Recognized values for Config.studio_guard_mode / OPTIX_STUDIO_GUARD_MODE.
+# Anything else read from the environment collapses to "blanket".
+_STUDIO_GUARD_MODES = frozenset({"blanket", "attributed"})
+
+
 @dataclass(frozen=True)
 class Config:
     projects_root: Path
@@ -363,6 +368,20 @@ class Config:
     bridge_url: str = "http://127.0.0.1:8768"  # :8768 since bridge v0.5.0 (was :8767)
     bridge_token: str | None = None
     bridge_enabled: bool = True
+    # Studio-open corruption-guard mode. "blanket" (default) = the original
+    # 2026-03 behavior: any running FTOptixStudio.exe blocks every project's
+    # reads/writes with no per-project attribution (see docs/studio-open-detection.md
+    # "Why there is no override" — no in-band escape hatch is offered because it'd
+    # be reachable by the calling model). "attributed" = when Studio is running BUT
+    # the design-time bridge is up and reports it is serving a DIFFERENT project
+    # (Studio-open-on-A, file-op-on-B), treat that as attribution and let the
+    # operation proceed instead of blanket-refusing — Studio is not holding THIS
+    # project's model, so the on-disk bytes are safe to touch. Every ambiguous
+    # state (bridge down, multiple Studio PIDs, unresolvable/matching name) still
+    # falls back to blanket. This is an operator-set env knob, not a tool
+    # parameter — out-of-band, so it does not reopen the "escape hatch reachable
+    # by the LLM" hole the no-override design explicitly closed.
+    studio_guard_mode: str = "blanket"
     # UpdateSvc CLI-deploy ('deploy' verb) — the production path (vs export+swap).
     # Password is read by the Studio CLI from OPTIX_STUDIO_DEPLOYMENT_PASSWORD in
     # the inherited env, never stored here. ip = the UpdateSvc host (cert-bound
@@ -457,6 +476,14 @@ class Config:
             bridge_token=os.environ.get("OPTIX_BRIDGE_TOKEN"),
             bridge_enabled=os.environ.get("OPTIX_BRIDGE_ENABLED", "true").strip().lower()
                 in ("1", "true", "yes", "on"),
+            # Validated string enum — anything but a recognized mode (typos like
+            # "atributed", empty, junk) falls back to the safe "blanket" default
+            # rather than silently disabling the guard's attribution logic.
+            studio_guard_mode=(
+                _gm if (_gm := os.environ.get(
+                    "OPTIX_STUDIO_GUARD_MODE", "blanket").strip().lower())
+                in _STUDIO_GUARD_MODES else "blanket"
+            ),
             deploy_ip_address=os.environ.get("OPTIX_DEPLOY_IP", "127.0.0.1"),
             deploy_username=os.environ.get("OPTIX_DEPLOY_USERNAME"),
             deploy_thumbprint=os.environ.get("OPTIX_DEPLOY_THUMBPRINT"),
@@ -571,27 +598,93 @@ def list_projects(cfg: Config) -> list[dict]:
     return out
 
 
-def require_editors_closed(project_dir: Path, force: bool = False) -> None:
+def _attributed_studio_pass(
+    cfg: Config, state: dict, project_dir: Path
+) -> dict | None:
+    """Attributed-mode arbiter for a RUNNING Studio.
+
+    Returns a small audit dict {"studio_guard": "attributed",
+    "studio_serving": <name>} when attributed mode PERMITS treating the
+    running Studio as non-blocking for `project_dir`; returns None (block
+    with the blanket rule) otherwise.
+
+    Permits ONLY when every guard-narrowing condition holds:
+      * cfg.studio_guard_mode == "attributed" (operator opt-in);
+      * exactly one Studio PID — a second Studio instance could be serving
+        THIS project without the single-project bridge ever knowing;
+      * the bridge is available and names a served project;
+      * that served project differs from `project_dir` (Studio-open-on-A,
+        file-op-on-B) — Studio is NOT holding this project's model, so the
+        on-disk bytes are safe. A bridge that IS serving this project is the
+        real hazard the guard exists for and must keep blocking.
+    Any ambiguity (blanket mode, multi-PID, bridge down/error, name match)
+    returns None so the caller falls back to the blanket block. The name
+    comparison reuses `_bridge_name_match`, the same one `_use_bridge_for`
+    uses to decide "is the bridge serving THIS project".
+    """
+    if cfg.studio_guard_mode != "attributed":
+        return None
+    if len(state["studio"]["pids"]) != 1:
+        return None
+    try:
+        bstate = bridge_state(cfg)
+    except Exception:  # noqa: BLE001 — any bridge fault → ambiguous → blanket
+        return None
+    served = bstate.get("project")
+    if not bstate.get("available") or not served:
+        return None
+    if _bridge_name_match(served, project_dir.name):
+        return None  # Studio holds THIS project — keep blanket-blocking
+    return {"studio_guard": "attributed", "studio_serving": served}
+
+
+def require_editors_closed(
+    cfg: Config, project_dir: Path, force: bool = False
+) -> dict | None:
     """Corruption guard: refuse project reads/writes while FTOptixStudio.exe
     is running (blanket rule — Studio's open project is not attributable from
     the outside; see service/studio_guard.py),
     or while VS / VS Code attributably has this project open.
+
+    In "attributed" mode (cfg.studio_guard_mode == "attributed") a running
+    Studio no longer blanket-blocks WHEN the design-time bridge proves Studio
+    is serving a DIFFERENT project (see `_attributed_studio_pass`). The
+    separate VS / VS Code attributed-editor check is unchanged and still
+    fires. Returns None when the guard passed with nothing to report;
+    returns {"studio_guard": "attributed", "studio_serving": <name>} when it
+    passed ONLY because of Studio attribution — callers that surface guard
+    metadata (read_file) merge it into their result; every attributed
+    downgrade is also written to the audit trail here regardless of caller.
 
     Detection errors do NOT block: an enumeration fault is not evidence of
     Studio. deploy_preflight surfaces that condition as a warning instead.
     """
     state = studio_guard.studio_state(force=force)
     if state.get("error"):
-        return
+        return None
     if state["studio"]["running"]:
-        pids = ", ".join(str(p) for p in state["studio"]["pids"])
-        raise StudioOpen(f"FTOptixStudio.exe is running (pid {pids})")
+        downgrade = _attributed_studio_pass(cfg, state, project_dir)
+        if downgrade is None:
+            pids = ", ".join(str(p) for p in state["studio"]["pids"])
+            raise StudioOpen(f"FTOptixStudio.exe is running (pid {pids})")
+        # Attributed: Studio serves a different project. Fall through to the
+        # editor-attribution check, then report the downgrade + audit it.
+        hits = studio_guard.attributed_editors(state, project_dir)
+        if hits:
+            ed = hits[0]
+            raise EditorProjectOpen(
+                f"{ed['name']} (pid {ed['pid']}) has {project_dir.name} open"
+            )
+        audit(cfg, "studio_guard_attributed", project=project_dir.name,
+              studio_serving=downgrade["studio_serving"])
+        return downgrade
     hits = studio_guard.attributed_editors(state, project_dir)
     if hits:
         ed = hits[0]
         raise EditorProjectOpen(
             f"{ed['name']} (pid {ed['pid']}) has {project_dir.name} open"
         )
+    return None
 
 
 def read_file(
@@ -608,7 +701,7 @@ def read_file(
     only a slice of content is returned.
     """
     project_dir = resolve_project(cfg, project)
-    require_editors_closed(project_dir)
+    guard_info = require_editors_closed(cfg, project_dir)
     full = resolve_subpath(cfg, project, path)
     if not full.is_file():
         raise FileNotFound(f"file not found: {path}")
@@ -637,6 +730,8 @@ def read_file(
         out["content"] = "".join(lines[s - 1 : e])
         out["start_line"] = s
         out["end_line"] = e
+    if guard_info:  # attributed-mode downgrade — surface why the read was allowed
+        out.update(guard_info)
     return out
 
 
@@ -678,7 +773,7 @@ def find_in_project(
     if _use_bridge_for(cfg, project):
         return _bridge_find(cfg, project, query, max_results, case_sensitive)
     project_dir = resolve_project(cfg, project)
-    require_editors_closed(project_dir)
+    require_editors_closed(cfg, project_dir)
     context_lines = max(0, min(int(context_lines), 10))
     needle = query if case_sensitive else query.lower()
 
@@ -1607,6 +1702,16 @@ def default_project(cfg: Config) -> str | None:
         return None
 
 
+def _bridge_name_match(served: object, want: str) -> bool:
+    """Case-insensitive, whitespace-trimmed BrowseName ↔ dir-name compare.
+
+    The single comparison both `_use_bridge_for` and the attributed
+    studio-guard (`_attributed_studio_pass`) use to decide whether the
+    bridge's Project.Current.BrowseName names a given on-disk project dir.
+    """
+    return str(served or "").strip().lower() == want.strip().lower()
+
+
 def _use_bridge_for(cfg: Config, project: str) -> bool:
     """True iff the bridge is available AND serving THE requested project.
 
@@ -1628,7 +1733,7 @@ def _use_bridge_for(cfg: Config, project: str) -> bool:
         if not project or "/" in project or "\\" in project or ".." in project:
             return False
         want = project
-    return str(st["project"]).strip().lower() == want.strip().lower()
+    return _bridge_name_match(st["project"], want)
 
 
 # Standard Optix top-level roots under Project.Current (the bridge's ResolveNode is
@@ -2040,7 +2145,7 @@ def list_screens(cfg: Config, project: str, glob: str = "Nodes/UI/**/*.yaml") ->
     from . import optix_model
 
     project_dir = resolve_project(cfg, project)
-    require_editors_closed(project_dir)
+    require_editors_closed(cfg, project_dir)
     screens: list[dict] = []
     for p in sorted(project_dir.glob(glob)):
         if not p.is_file():
@@ -2093,7 +2198,7 @@ def add_widget(
 
     if not widgets:
         raise WidgetSpecInvalid("widgets list is empty")
-    require_editors_closed(resolve_project(cfg, project))
+    require_editors_closed(cfg, resolve_project(cfg, project))
     rel, lines, node = _locate_screen(cfg, project, screen, screen_file)
 
     blocks: list[str] = []
@@ -2149,7 +2254,7 @@ def add_model_variable(
         raise StructuralEditUnsupported(
             f"add_model_variable tier-1 supports Boolean only, got {datatype!r}"
         )
-    require_editors_closed(resolve_project(cfg, project))
+    require_editors_closed(cfg, resolve_project(cfg, project))
     lines = _read_lines(cfg, project, model_file)
     if lines is None:
         raise NodeNotFound(f"model file not found: {model_file}")
@@ -2189,7 +2294,7 @@ def set_property(
     """
     from . import optix_model
 
-    require_editors_closed(resolve_project(cfg, project))
+    require_editors_closed(cfg, resolve_project(cfg, project))
     lines = _read_lines(cfg, project, file)
     if lines is None:
         raise NodeNotFound(f"file not found: {file}")
@@ -5684,7 +5789,7 @@ def deploy(
 
     # Corruption guard, check #1 of 2 (cheap, cached): refuse before any
     # state change while Studio / an attributed editor holds the project.
-    require_editors_closed(project_dir)
+    require_editors_closed(cfg, project_dir)
 
     if lock is None:
         lock = DeployLock(
@@ -5720,7 +5825,7 @@ def deploy(
             # open between the entry check and this point (TOCTOU). This is
             # the last gate before bytes hit the project tree; a refusal here
             # is recorded in the outcome buffer by the finally block.
-            require_editors_closed(project_dir, force=True)
+            require_editors_closed(cfg, project_dir, force=True)
 
             # Two-phase edit application (docs/architecture.md, Edit modes): resolve every
             # edit to its post-edit bytes first — any anchor mismatch or
