@@ -369,6 +369,14 @@ class TestConfigFromEnv:
         assert cfg.deploy_disable_source_transfer is False  # keep source -> don't disable
         assert cfg.cdp_settle_seconds == 0.4
 
+    def test_ocr_conf_threshold_default_and_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("OPTIX_OCR_CONF_THRESHOLD", raising=False)
+        assert core.Config.from_env().ocr_conf_threshold == 0.60
+        monkeypatch.setenv("OPTIX_OCR_CONF_THRESHOLD", "0.8")
+        assert core.Config.from_env().ocr_conf_threshold == 0.8
+
 
 class TestDefaultStudioExe:
     """v1.0.1 (field report finding 2): the studio_exe default is a live

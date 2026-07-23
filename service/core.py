@@ -277,6 +277,18 @@ class Runner:
         kwargs.setdefault("check", False)
         return self.fn(cmd, **kwargs)
 
+    def run_powershell(
+        self, ps: str, timeout: float, **kwargs: Any
+    ) -> subprocess.CompletedProcess:
+        """Run a PowerShell script string via `powershell -NoProfile -Command`.
+
+        Shared shape for the many `-Command` call sites: `ps` stays the LAST
+        argv element (tests read `runner.calls[...][0][-1]`) and `"powershell"`
+        stays element 0 — do not reorder or add argv elements. Only expresses
+        the `-Command` form; `-File` launches build their own argv."""
+        return self.run(
+            ["powershell", "-NoProfile", "-Command", ps], timeout=timeout, **kwargs)
+
 
 _DEFAULT_RUNNER = Runner()
 
@@ -378,6 +390,15 @@ class Config:
     # disables it (surface the raw CDPUnavailable instead). See
     # core.ensure_chrome_cdp / _cdp_session.
     cdp_autoheal: bool = True
+    # Whole-frame OCR trust gate (cdp_ocr_runtime / cdp_read_text_runtime).
+    # Tesseract reports a per-word confidence; these tools aggregate it to a
+    # {mean, min} fraction in [0, 1]. When the mean falls below this threshold
+    # the read-back is flagged `low_confidence` with a `next_step` nudge toward
+    # ground-truth reads (optix_describe_node for the model, an
+    # optix_cdp_screenshot return_image=true for the render). Distinct from
+    # find_text's per-word 40-conf match filter — that gates word matching, this
+    # gates "is this whole OCR pass trustworthy." OPTIX_OCR_CONF_THRESHOLD tunes it.
+    ocr_conf_threshold: float = 0.60
 
     @classmethod
     def from_env(cls) -> Config:
@@ -446,6 +467,8 @@ class Config:
                 os.environ.get("OPTIX_CDP_SETTLE_SECONDS", "1.0")),
             cdp_autoheal=os.environ.get("OPTIX_CDP_AUTOHEAL", "true").strip().lower()
                 in ("1", "true", "yes", "on"),
+            ocr_conf_threshold=float(
+                os.environ.get("OPTIX_OCR_CONF_THRESHOLD", "0.60")),
         )
 
 
@@ -1118,6 +1141,38 @@ def _bridge_write(
     return out
 
 
+def _make_bridge_rollback_fail(
+    cfg: Config, project: str, node_path: str,
+    *, steps: list[str] | None = None,
+):
+    """Factory for the two bridge composites' transactional `_fail` closure:
+    delete the just-created node (rollback) and shape the failure envelope.
+
+    The two composites report DIFFERENT envelopes and both are load-bearing:
+    bridge_add_bound_widget carries `steps` (the running step-name list) AND a
+    remediation `hint` on rollback failure; bridge_add_navigation_panel_item
+    carries NEITHER. Passing `steps` (a list) reproduces the widget shape;
+    `steps=None` omits both keys, reproducing the nav-panel-item shape."""
+    def _fail(step: str, exc: Exception) -> dict:
+        rolled_back = False
+        try:
+            bridge_delete_node(cfg, project, node_path)
+            rolled_back = True
+        except Exception:
+            pass
+        out = {"ok": False, "failed_step": step,
+               "rolled_back": rolled_back, "error": str(exc)}
+        if steps is not None:
+            out["steps"] = steps
+        if not rolled_back:
+            out["orphaned_path"] = node_path
+            if steps is not None:
+                out["hint"] = ("rollback failed — delete the half-configured node "
+                               f"at {node_path} before retrying")
+        return out
+    return _fail
+
+
 def bridge_add_bound_widget(
     cfg: Config,
     project: str,
@@ -1146,20 +1201,7 @@ def bridge_add_bound_widget(
     created = bridge_create_widget(cfg, project, screen, name, widget_type)
     node_path = created.get("created_path") or f"{screen}/{name}"
 
-    def _fail(step: str, exc: Exception) -> dict:
-        rolled_back = False
-        try:
-            bridge_delete_node(cfg, project, node_path)
-            rolled_back = True
-        except Exception:
-            pass
-        out = {"ok": False, "failed_step": step, "steps": steps,
-               "rolled_back": rolled_back, "error": str(exc)}
-        if not rolled_back:
-            out["orphaned_path"] = node_path
-            out["hint"] = ("rollback failed — delete the half-configured node "
-                           f"at {node_path} before retrying")
-        return out
+    _fail = _make_bridge_rollback_fail(cfg, project, node_path, steps=steps)
 
     # LeftMargin/TopMargin are the settable position properties on Optix
     # visual items (Left/Top are not settable — same mapping add_label uses)
@@ -1202,18 +1244,9 @@ def bridge_add_navigation_panel_item(
                                    "NavigationPanelItem")
     node_path = created.get("created_path") or f"{panel_path}/Panels/{item_name}"
 
-    def _fail(step: str, exc: Exception) -> dict:
-        rolled_back = False
-        try:
-            bridge_delete_node(cfg, project, node_path)
-            rolled_back = True
-        except Exception:
-            pass
-        out = {"ok": False, "failed_step": step, "rolled_back": rolled_back,
-               "error": str(exc)}
-        if not rolled_back:
-            out["orphaned_path"] = node_path
-        return out
+    # steps=None: the nav-panel-item envelope intentionally carries no `steps`
+    # and no rollback `hint` (asymmetric with bridge_add_bound_widget).
+    _fail = _make_bridge_rollback_fail(cfg, project, node_path)
 
     try:
         bridge_set_property(cfg, project, node_path, "Title", title)
@@ -2256,7 +2289,7 @@ def _bridge_owner_pid(cfg: Config, runner: Runner = _DEFAULT_RUNNER) -> int | No
         f"if ($c) {{ Write-Output $c.OwningProcess }}"
     )
     try:
-        proc = runner.run(["powershell", "-NoProfile", "-Command", ps], timeout=10)
+        proc = runner.run_powershell(ps, timeout=10)
     except Exception:
         return None
     s = (proc.stdout or "").strip()
@@ -2382,9 +2415,8 @@ def save(
         bp = _bridge_owner_pid(cfg, runner)
         if bp:
             target_pid = bp
-    proc = runner.run(
-        ["powershell", "-NoProfile", "-Command", _build_save_ps(
-            target_pid, gentle=_gentle_focus())],
+    proc = runner.run_powershell(
+        _build_save_ps(target_pid, gentle=_gentle_focus()),
         timeout=30,
     )
     out = (proc.stdout or "").strip()
@@ -2562,9 +2594,8 @@ def run_emulator(
         bp = _bridge_owner_pid(cfg, runner)
         if bp:
             target_pid = bp
-    proc = runner.run(
-        ["powershell", "-NoProfile", "-Command",
-         _build_save_ps(target_pid, gentle=_gentle_focus(), send_key="{F5}")],
+    proc = runner.run_powershell(
+        _build_save_ps(target_pid, gentle=_gentle_focus(), send_key="{F5}"),
         timeout=30,
     )
     out = (proc.stdout or "").strip()
@@ -2688,7 +2719,7 @@ def _bare_runtime_running(cfg: Config, runner: Runner = _DEFAULT_RUNNER) -> bool
     ps = ("$p = Get-Process FTOptixRuntime -ErrorAction SilentlyContinue; "
           "if ($p) { 'RUNTIMES=' + $p.Count } else { 'RUNTIMES=0' }")
     try:
-        proc = runner.run(["powershell", "-NoProfile", "-Command", ps], timeout=15)
+        proc = runner.run_powershell(ps, timeout=15)
         m = re.search(r"RUNTIMES=(\d+)", proc.stdout or "")
         return bool(m) and int(m.group(1)) > 0
     except Exception:
@@ -2717,28 +2748,20 @@ def emulator_status(cfg: Config, runner: Runner = _DEFAULT_RUNNER) -> dict:
     is kept as a bool for back-compat and is True only in the `running` state.
     Adds a `hint` when the port is served by something that is NOT the emulator.
     """
-    import socket
     ps = ("$p = Get-CimInstance Win32_Process -Filter \"Name='FTOptixRuntime.exe'\" "
           "-ErrorAction SilentlyContinue | "
           "Where-Object { $_.CommandLine -match '--application-name=Emulator' }; "
           "if ($p) { 'PIDS=' + (($p | ForEach-Object { $_.ProcessId }) -join ',') } else { 'PIDS=' }")
     pids: list[int] = []
     try:
-        proc = runner.run(["powershell", "-NoProfile", "-Command", ps], timeout=15)
+        proc = runner.run_powershell(ps, timeout=15)
         m = re.search(r"PIDS=([\d,]*)", (proc.stdout or ""))
         if m and m.group(1):
             pids = [int(x) for x in m.group(1).split(",") if x]
     except Exception:
         pass
     port = cfg.runtime_test_port
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(0.5)
-    try:
-        reachable = s.connect_ex(("127.0.0.1", port)) == 0
-    except OSError:
-        reachable = False
-    finally:
-        s.close()
+    reachable = _tcp_probe("127.0.0.1", port)
     if pids and reachable:
         state = "running"
     elif pids:
@@ -2926,9 +2949,9 @@ def stop_emulator(cfg: Config, runner: Runner = _DEFAULT_RUNNER) -> dict:
         return {"stopped": False, "reason": "not_running", "killed_pids": []}
     ids = ",".join(str(p) for p in st["pids"])
     try:
-        runner.run(["powershell", "-NoProfile", "-Command",
-                    f"Stop-Process -Id {ids} -Force -ErrorAction SilentlyContinue"],
-                   timeout=15)
+        runner.run_powershell(
+            f"Stop-Process -Id {ids} -Force -ErrorAction SilentlyContinue",
+            timeout=15)
     except Exception as e:
         return {"stopped": False, "reason": f"stop_failed: {e}", "killed_pids": []}
     after = emulator_status(cfg, runner)
@@ -3496,7 +3519,7 @@ def _cleanup_stale_cdp_chrome(cfg: Config, runner: Runner = _DEFAULT_RUNNER) -> 
           "$_.CommandLine -match 'chrome-cdp-profile' } | ForEach-Object { "
           "Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }")
     try:
-        runner.run(["powershell", "-NoProfile", "-Command", ps], timeout=15)
+        runner.run_powershell(ps, timeout=15)
     except Exception:
         pass
     profile = _chrome_cdp_profile_dir()
@@ -3644,6 +3667,23 @@ def _point_screenshot_at_runtime(
     return True
 
 
+def _navigate_if_given(sess: Any, navigate_url: str | None, settle: float) -> bool:
+    """Navigate ONLY when an explicit truthy URL is given, then settle; return
+    whether we navigated. Shared by cdp_click/type/key_runtime.
+
+    Deliberately NOT `_point_screenshot_at_runtime`: that helper auto-navigates
+    to the runtime URL when navigate_url is None, whereas click/type/key must do
+    NOTHING without an explicit URL (they act on whatever the tab currently
+    shows — re-navigating would wipe prior click/focus state). The regression
+    guard is test_cdp.py::test_cdp_click_sends_trusted_mouse_sequence
+    (asserts navigated is False with no URL)."""
+    if not navigate_url:
+        return False
+    sess.navigate(navigate_url)
+    time.sleep(max(0.0, settle))
+    return True
+
+
 def cdp_click_runtime(
     cfg: Config, x: float, y: float, navigate_url: str | None = None,
     settle_seconds: float | None = None,
@@ -3662,11 +3702,7 @@ def cdp_click_runtime(
     settle = cfg.cdp_settle_seconds if settle_seconds is None else settle_seconds
     sess = _cdp_session(cfg)
     try:
-        navigated = False
-        if navigate_url:
-            sess.navigate(navigate_url)
-            time.sleep(max(0.0, settle))
-            navigated = True
+        navigated = _navigate_if_given(sess, navigate_url, settle)
         sess.click(float(x), float(y))
         return {
             "state": "succeeded", "x": float(x), "y": float(y),
@@ -3702,11 +3738,7 @@ def cdp_type_runtime(
     settle = cfg.cdp_settle_seconds if settle_seconds is None else settle_seconds
     sess = _cdp_session(cfg)
     try:
-        navigated = False
-        if navigate_url:
-            sess.navigate(navigate_url)
-            time.sleep(max(0.0, settle))
-            navigated = True
+        navigated = _navigate_if_given(sess, navigate_url, settle)
         tag = sess.active_element_tag()
         if tag in ("", "BODY", "HTML"):
             return {
@@ -3810,11 +3842,7 @@ def cdp_key_runtime(
     settle = cfg.cdp_settle_seconds if settle_seconds is None else settle_seconds
     sess = _cdp_session(cfg)
     try:
-        navigated = False
-        if navigate_url:
-            sess.navigate(navigate_url)
-            time.sleep(max(0.0, settle))
-            navigated = True
+        navigated = _navigate_if_given(sess, navigate_url, settle)
         sess.key(key)
         return {"state": "succeeded", "key": key, "navigated": navigated,
                 "pressed_at": _now_iso(), "error": None}
@@ -3969,6 +3997,123 @@ def _tesseract_missing_hint() -> str:
     )
 
 
+def _reconstruct_ocr_text(words: list[dict]) -> str:
+    """Rebuild plain text from parsed tesseract TSV word rows: one line per
+    (block, par, line) group in reading order, words space-joined, groups joined
+    with newlines.
+
+    Grouping mirrors _match_tsv_words' line key so both paths agree on what a
+    "line" is. NOT byte-identical to tesseract's native plain-text renderer —
+    that emits blank lines between paragraphs and its own inter-word spacing;
+    this collapses each line to single spaces. Sufficient for the "does the
+    screen say X" checks these tools serve; the confidence signal is the new
+    value-add, not exact whitespace fidelity (see test_ocr.py)."""
+    lines: list[str] = []
+    current_key: tuple[int, int, int] | None = None
+    current: list[str] = []
+    for w in words:
+        key = (w["block_num"], w["par_num"], w["line_num"])
+        if key != current_key:
+            if current:
+                lines.append(" ".join(current))
+            current = []
+            current_key = key
+        current.append(w["text"])
+    if current:
+        lines.append(" ".join(current))
+    return "\n".join(lines)
+
+
+def _ocr_confidence_fields(cfg: Config, words: list[dict]) -> dict:
+    """Aggregate word-level tesseract confidence into the OCR success envelope.
+
+    Returns {"confidence": {"mean", "min"}} as fractions in [0, 1] (tesseract
+    reports 0..100 per word). Below cfg.ocr_conf_threshold (on the mean) adds
+    `low_confidence: True` and a structured `next_step` nudge toward
+    ground-truth reads. No words (empty frame) => {} (no confidence signal to
+    report). The -1 aggregate rows are already dropped by _parse_tesseract_tsv's
+    level==5 filter; the >= 0 guard is defensive belt-and-suspenders."""
+    confs = [w["conf"] for w in words if w["conf"] >= 0]
+    if not confs:
+        return {}
+    mean = sum(confs) / len(confs) / 100.0
+    lowest = min(confs) / 100.0
+    fields: dict = {"confidence": {"mean": round(mean, 4), "min": round(lowest, 4)}}
+    if mean < cfg.ocr_conf_threshold:
+        fields["low_confidence"] = True
+        fields["next_step"] = (
+            "OCR mean confidence is below the trust threshold — this text "
+            "read-back may be wrong. For MODEL truth (what the project actually "
+            "declares) use optix_describe_node; for RENDER truth (what the canvas "
+            "actually shows) use optix_cdp_screenshot with return_image=true and "
+            "read it with vision."
+        )
+    return fields
+
+
+def _ocr_capture(
+    cfg: Config, *, navigate_url: str | None, settle_seconds: float | None,
+    psm: int, runner: Runner, region: list[float] | None, include_region: bool,
+) -> dict:
+    """Shared capture+OCR for cdp_ocr_runtime / cdp_read_text_runtime.
+
+    Captures via the tested cdp_screenshot_runtime path, then runs tesseract in
+    TSV mode (a single call) so word-level confidence is available; `text` is
+    reconstructed from the parsed words. `include_region` gates the `region`
+    key that only cdp_read_text_runtime carries. The tesseract_not_installed /
+    screenshot-failure / nonzero-return degradation contracts are preserved
+    byte-for-byte (never raises).
+    """
+    import tempfile
+    tesseract = _find_tesseract()
+    if tesseract is None:
+        return {
+            "state": "failed", "text": None, "error": "tesseract_not_installed",
+            "hint": _tesseract_missing_hint(),
+        }
+    with tempfile.TemporaryDirectory() as td:
+        img = Path(td) / "runtime.jpg"
+        shot = cdp_screenshot_runtime(
+            cfg, save_path=str(img), navigate_url=navigate_url,
+            settle_seconds=settle_seconds, region=region,
+        )
+        if shot.get("state") != "succeeded":
+            out = {
+                "state": "failed", "text": None,
+                "error": shot.get("error", "screenshot_failed"),
+                "navigated": shot.get("navigated", False),
+            }
+            if include_region:
+                out["region"] = shot.get("region")
+            return out
+        # TSV mode: options precede the `tsv` configfile keyword, per tesseract's
+        # `tesseract imagename outputbase [options] [configfile]` grammar. This
+        # combined `--psm N tsv` form is NOT exercised elsewhere in-repo
+        # (find_text's tsv call omits --psm) — validate on the Windows binary.
+        proc = runner.run(
+            [tesseract, str(img), "stdout", "--psm", str(int(psm)), "tsv"],
+            timeout=30, encoding="utf-8", errors="replace")
+        if proc.returncode != 0:
+            out = {
+                "state": "failed", "text": None,
+                "error": (proc.stderr or "tesseract failed").strip()[:400],
+                "navigated": shot.get("navigated", False),
+            }
+            if include_region:
+                out["region"] = shot.get("region")
+            return out
+        words = _parse_tesseract_tsv(proc.stdout or "")
+        out = {
+            "state": "succeeded", "text": _reconstruct_ocr_text(words),
+            "size_bytes": shot.get("size_bytes", 0),
+            "navigated": shot.get("navigated", False), "captured_at": _now_iso(),
+        }
+        if include_region:
+            out["region"] = shot.get("region")
+        out.update(_ocr_confidence_fields(cfg, words))
+        return out
+
+
 def cdp_ocr_runtime(
     cfg: Config, navigate_url: str | None = None,
     settle_seconds: float | None = None, *, psm: int = 6,
@@ -3983,46 +4128,19 @@ def cdp_ocr_runtime(
     for the case that path can't run (a cron/headless caller with no vision, or the
     blank-render edge we hit on the VM where a human still needs *some* text signal).
     It captures the runtime JPEG through the same tested screenshot path, then runs
-    the `tesseract` binary on it.
+    the `tesseract` binary on it in TSV mode to derive word-level confidence.
 
-    Returns {state, text, size_bytes, navigated, captured_at}. If tesseract is not on
+    Returns {state, text, size_bytes, navigated, captured_at, confidence:{mean,min}}.
+    When the mean confidence falls below cfg.ocr_conf_threshold the result also
+    carries low_confidence=True and a next_step nudge. If tesseract is not on
     PATH, returns state='failed', error='tesseract_not_installed' with an install
     hint rather than raising — it is optional infrastructure. Text-only: NOT a
     substitute for vision on color/layout checks.
     """
-    import tempfile
-    tesseract = _find_tesseract()
-    if tesseract is None:
-        return {
-            "state": "failed", "text": None, "error": "tesseract_not_installed",
-            "hint": _tesseract_missing_hint(),
-        }
-    with tempfile.TemporaryDirectory() as td:
-        img = Path(td) / "runtime.jpg"
-        shot = cdp_screenshot_runtime(
-            cfg, save_path=str(img), navigate_url=navigate_url,
-            settle_seconds=settle_seconds,
-        )
-        if shot.get("state") != "succeeded":
-            return {
-                "state": "failed", "text": None,
-                "error": shot.get("error", "screenshot_failed"),
-                "navigated": shot.get("navigated", False),
-            }
-        proc = runner.run(
-            [tesseract, str(img), "stdout", "--psm", str(int(psm))],
-            timeout=30, encoding="utf-8", errors="replace")
-        if proc.returncode != 0:
-            return {
-                "state": "failed", "text": None,
-                "error": (proc.stderr or "tesseract failed").strip()[:400],
-                "navigated": shot.get("navigated", False),
-            }
-        return {
-            "state": "succeeded", "text": (proc.stdout or "").strip(),
-            "size_bytes": shot.get("size_bytes", 0),
-            "navigated": shot.get("navigated", False), "captured_at": _now_iso(),
-        }
+    return _ocr_capture(
+        cfg, navigate_url=navigate_url, settle_seconds=settle_seconds,
+        psm=psm, runner=runner, region=None, include_region=False,
+    )
 
 
 def cdp_read_text_runtime(
@@ -4039,47 +4157,17 @@ def cdp_read_text_runtime(
     runs tesseract on the JPEG exactly like cdp_ocr_runtime. NOT a substitute
     for vision on color/layout checks — use cdp_screenshot_runtime for those.
 
-    Returns {state, text, region, size_bytes, navigated, captured_at}. If
+    Returns {state, text, region, size_bytes, navigated, captured_at,
+    confidence:{mean,min}} (+ low_confidence/next_step below threshold). If
     tesseract is not installed, returns state='failed',
     error='tesseract_not_installed' with an install hint — same degradation
     contract as cdp_ocr_runtime, never raises. A malformed region degrades the
     same way (state='failed', error='bad_region') via cdp_screenshot_runtime.
     """
-    import tempfile
-    tesseract = _find_tesseract()
-    if tesseract is None:
-        return {
-            "state": "failed", "text": None, "error": "tesseract_not_installed",
-            "hint": _tesseract_missing_hint(),
-        }
-    with tempfile.TemporaryDirectory() as td:
-        img = Path(td) / "runtime.jpg"
-        shot = cdp_screenshot_runtime(
-            cfg, save_path=str(img), navigate_url=navigate_url,
-            settle_seconds=settle_seconds, region=region,
-        )
-        if shot.get("state") != "succeeded":
-            return {
-                "state": "failed", "text": None,
-                "error": shot.get("error", "screenshot_failed"),
-                "region": shot.get("region"),
-                "navigated": shot.get("navigated", False),
-            }
-        proc = runner.run(
-            [tesseract, str(img), "stdout", "--psm", str(int(psm))],
-            timeout=30, encoding="utf-8", errors="replace")
-        if proc.returncode != 0:
-            return {
-                "state": "failed", "text": None,
-                "error": (proc.stderr or "tesseract failed").strip()[:400],
-                "region": shot.get("region"),
-                "navigated": shot.get("navigated", False),
-            }
-        return {
-            "state": "succeeded", "text": (proc.stdout or "").strip(),
-            "region": shot.get("region"), "size_bytes": shot.get("size_bytes", 0),
-            "navigated": shot.get("navigated", False), "captured_at": _now_iso(),
-        }
+    return _ocr_capture(
+        cfg, navigate_url=navigate_url, settle_seconds=settle_seconds,
+        psm=psm, runner=runner, region=region, include_region=True,
+    )
 
 
 def _parse_tesseract_tsv(tsv: str) -> list[dict]:
@@ -5175,6 +5263,34 @@ def _project_tree_max_mtime(project_dir: Path) -> float:
     return latest
 
 
+def _poll_until(
+    cfg: Config, deploy_started_at: float, method: str,
+    probe: Callable[[], tuple[bool, str | None]],
+) -> dict:
+    """Shared deploy-verify poll skeleton for verify_export_mtime /
+    verify_runtime_probe.
+
+    Polls `probe()` — which returns (ok, confirmed_at) — until the deadline.
+    The envelope (`method`/`confirmed_at`/`timeout_seconds`, with confirmed_at
+    None on timeout) is asserted verbatim by test_core.py / test_deploy_contract
+    and must stay byte-identical."""
+    deadline = deploy_started_at + cfg.verify_timeout_seconds
+    while time.time() < deadline:
+        ok, confirmed_at = probe()
+        if ok:
+            return {
+                "method": method,
+                "confirmed_at": confirmed_at,
+                "timeout_seconds": cfg.verify_timeout_seconds,
+            }
+        time.sleep(cfg.verify_poll_seconds)
+    return {
+        "method": method,
+        "confirmed_at": None,
+        "timeout_seconds": cfg.verify_timeout_seconds,
+    }
+
+
 def verify_export_mtime(cfg: Config, runtime_project_dir: Path, deploy_started_at: float) -> dict:
     """Verify the swapped runtime tree's mtime advanced past deploy-start.
 
@@ -5182,24 +5298,15 @@ def verify_export_mtime(cfg: Config, runtime_project_dir: Path, deploy_started_a
     Polls the runtime tree (NOT the source project tree) — the new tree
     just landed there via os.replace and its mtimes reflect the swap.
     """
-    deadline = deploy_started_at + cfg.verify_timeout_seconds
-    while time.time() < deadline:
+    def _probe() -> tuple[bool, str | None]:
         try:
             latest = _project_tree_max_mtime(runtime_project_dir)
         except OSError:
             latest = 0.0
         if latest > deploy_started_at:
-            return {
-                "method": "export_mtime",
-                "confirmed_at": _now_iso(latest),
-                "timeout_seconds": cfg.verify_timeout_seconds,
-            }
-        time.sleep(cfg.verify_poll_seconds)
-    return {
-        "method": "export_mtime",
-        "confirmed_at": None,
-        "timeout_seconds": cfg.verify_timeout_seconds,
-    }
+            return True, _now_iso(latest)
+        return False, None
+    return _poll_until(cfg, deploy_started_at, "export_mtime", _probe)
 
 
 def verify_runtime_probe(cfg: Config, _runtime_project_dir: Path, deploy_started_at: float) -> dict:
@@ -5208,21 +5315,16 @@ def verify_runtime_probe(cfg: Config, _runtime_project_dir: Path, deploy_started
     Polls cfg.runtime_test_port for tcp_reachable. The runtime was stopped
     before the swap and (re)started after, so a successful connect is the
     end-to-end signal the deploy actually landed and the runtime is happy.
+
+    `_runtime_project_dir` is unused but REQUIRED for signature parity with
+    verify_export_mtime — deploy() selects between the two by function
+    reference and calls positionally (cfg, runtime_project_dir, started_at).
     """
-    deadline = deploy_started_at + cfg.verify_timeout_seconds
-    while time.time() < deadline:
+    def _probe() -> tuple[bool, str | None]:
         if _tcp_probe("127.0.0.1", cfg.runtime_test_port, timeout=0.5):
-            return {
-                "method": "runtime_probe",
-                "confirmed_at": _now_iso(),
-                "timeout_seconds": cfg.verify_timeout_seconds,
-            }
-        time.sleep(cfg.verify_poll_seconds)
-    return {
-        "method": "runtime_probe",
-        "confirmed_at": None,
-        "timeout_seconds": cfg.verify_timeout_seconds,
-    }
+            return True, _now_iso()
+        return False, None
+    return _poll_until(cfg, deploy_started_at, "runtime_probe", _probe)
 
 
 @dataclass
@@ -5470,7 +5572,7 @@ class RuntimeController:
             f"Where-Object {{ $_.CommandLine -match [regex]::Escape('{match_literal}') }} | "
             "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
         )
-        self.runner.run(["powershell", "-NoProfile", "-Command", ps], timeout=30)
+        self.runner.run_powershell(ps, timeout=30)
         time.sleep(cfg.runtime_stop_grace_seconds)
 
     def start(self, cfg: Config, runtime_project_dir: Path) -> None:
@@ -5489,12 +5591,15 @@ class RuntimeController:
         if cfg.runtime_launcher:
             launcher = cfg.runtime_launcher
             if launcher.lower().endswith(".ps1"):
-                cmd = ["powershell", "-NoProfile", "-File", launcher,
-                       "-RuntimeProjectDir", str(runtime_project_dir)]
+                # -File launch: the helper only expresses -Command, so this
+                # argv is built directly (see Runner.run_powershell docstring).
+                self.runner.run(
+                    ["powershell", "-NoProfile", "-File", launcher,
+                     "-RuntimeProjectDir", str(runtime_project_dir)],
+                    timeout=30)
             else:
-                cmd = ["powershell", "-NoProfile", "-Command",
-                       f"Start-ScheduledTask -TaskName '{launcher}'"]
-            self.runner.run(cmd, timeout=30)
+                self.runner.run_powershell(
+                    f"Start-ScheduledTask -TaskName '{launcher}'", timeout=30)
             return
         exe = runtime_project_dir / "FTOptixApplication" / "FTOptixRuntime.exe"
         if not exe.is_file():
