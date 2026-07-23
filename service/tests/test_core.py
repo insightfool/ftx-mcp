@@ -377,6 +377,24 @@ class TestConfigFromEnv:
         monkeypatch.setenv("OPTIX_OCR_CONF_THRESHOLD", "0.8")
         assert core.Config.from_env().ocr_conf_threshold == 0.8
 
+    def test_studio_guard_mode_default_and_validation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OPTIX_STUDIO_GUARD_MODE is a validated string enum: unset or any
+        unrecognized value (typo, junk, empty) collapses to the safe
+        'blanket' default; only 'attributed' opts in, case/space-insensitive."""
+        monkeypatch.delenv("OPTIX_STUDIO_GUARD_MODE", raising=False)
+        assert core.Config.from_env().studio_guard_mode == "blanket"
+        monkeypatch.setenv("OPTIX_STUDIO_GUARD_MODE", "attributed")
+        assert core.Config.from_env().studio_guard_mode == "attributed"
+        monkeypatch.setenv("OPTIX_STUDIO_GUARD_MODE", "  ATTRIBUTED  ")
+        assert core.Config.from_env().studio_guard_mode == "attributed"
+        monkeypatch.setenv("OPTIX_STUDIO_GUARD_MODE", "blanket")
+        assert core.Config.from_env().studio_guard_mode == "blanket"
+        for junk in ("atributed", "", "on", "yes", "off", "garbage"):
+            monkeypatch.setenv("OPTIX_STUDIO_GUARD_MODE", junk)
+            assert core.Config.from_env().studio_guard_mode == "blanket"
+
 
 class TestDefaultStudioExe:
     """v1.0.1 (field report finding 2): the studio_exe default is a live

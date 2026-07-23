@@ -88,8 +88,24 @@ guard is deliberately all-or-nothing).
 
 **Fix:** use the live bridge tools while Studio is open (that's the
 normal authoring path), or close Studio entirely for file-level work.
-There is deliberately no override — a bypass parameter would be reachable
-by the model driving the tools.
+There is deliberately no *in-band* override — a bypass parameter would be
+reachable by the model driving the tools.
+
+**Attributed mode (operator opt-in, `OPTIX_STUDIO_GUARD_MODE=attributed`).**
+An out-of-band env knob relaxes the blanket block for the narrow, safe
+"Studio-open-on-A, file-op-on-B" case: when the design-time bridge proves a
+single Studio instance is serving a *different* project, that project's model
+is not held by Studio, so file ops on the target are safe and proceed. It is
+NOT a tool parameter, so it does not reopen the "escape hatch reachable by the
+model" hole the no-override design closed. The relaxation applies only when
+*every* condition holds — mode is `attributed`, exactly one `FTOptixStudio.exe`
+PID, the bridge is up and names a served project, and that name differs from
+the target. Any ambiguity (bridge down — the common cold-start state —
+multiple Studio instances, or the bridge serving *this* project) falls back to
+the blanket block. Allowed reads carry `studio_guard: "attributed"` /
+`studio_serving: "<other>"`; every downgrade is written to the audit trail.
+`deploy_preflight` still reports `studio_open` under this mode (it runs its own
+blanket check), so a preflight that blocks does not mean the real op will.
 
 <a id="editor-project-open"></a>
 ## Deploy refused with `409` / `editor_project_open`

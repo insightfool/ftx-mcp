@@ -318,7 +318,10 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         running anywhere on this box: Studio holds the open project in
         memory, so disk state is stale and any edit planned from it would be
         wrong. Tell the user to close Studio, then retry. There is no
-        override parameter — do not look for one.
+        override parameter — do not look for one. (Operators may set
+        `OPTIX_STUDIO_GUARD_MODE=attributed` out-of-band; when the bridge
+        proves Studio is serving a DIFFERENT project the read is allowed and
+        the result carries `studio_guard: "attributed"` / `studio_serving`.)
 
         Use this when:
           - you need the current content of a YAML/screen file before editing
