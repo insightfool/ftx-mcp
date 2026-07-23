@@ -45,16 +45,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
-
-function Ok($msg)   { Write-Host "ok: $msg" -ForegroundColor Green }
-function Warn($msg) { Write-Host "WARN: $msg" -ForegroundColor Yellow }
-function Section($t){ Write-Host ""; Write-Host "=== $t ===" -ForegroundColor Cyan }
+. (Join-Path $PSScriptRoot "_common.ps1")
 
 if ($All) { $PurgeState = $true; $PurgeVenv = $true }
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 if ($env:OPTIX_STATE_DIR) { $state = $env:OPTIX_STATE_DIR }
-else { $state = Join-Path $env:LOCALAPPDATA "ftx-mcp" }
+else { $state = Join-Path $env:LOCALAPPDATA $Script:FtxTaskName }
 $venvDir = Join-Path $RepoRoot ".venv"
 $cdpMarker = Join-Path $env:LOCALAPPDATA "ftx-mcp\chrome-cdp-profile"
 
@@ -64,7 +61,7 @@ Section "1. Scheduled tasks"
 # and the CIM error does NOT reliably throw - so verify removal, never
 # assume it). Removal is re-runnable; state/venv purges below still run.
 $taskFailures = 0
-foreach ($name in @("ftx-mcp", "ftx-mcp-chrome-cdp")) {
+foreach ($name in @($Script:FtxTaskName, $Script:FtxCdpTaskName)) {
     $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
     if (-not $task) {
         Ok "task $name not present"
@@ -90,7 +87,7 @@ if ($taskFailures -gt 0) {
 Section "2. CDP chrome reap"
 # Orphan-aware: identify OUR chrome by its dedicated profile dir. A user's
 # own browser on a debug port is out of bounds.
-$conns = Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue
+$conns = Get-NetTCPConnection -LocalPort $Script:FtxCdpPort -State Listen -ErrorAction SilentlyContinue
 $reaped = 0
 if ($conns) {
     foreach ($procId in ($conns | Select-Object -ExpandProperty OwningProcess -Unique)) {

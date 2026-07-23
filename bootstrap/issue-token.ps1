@@ -56,33 +56,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "_common.ps1")
 
-# Refuse to run inside an MSIX-packaged shell (e.g. the Microsoft Store
-# build of Claude Desktop hosting a Cowork/Claude Code shell). Writes to
-# %LOCALAPPDATA% from a packaged process are virtualized into the app's
-# private LocalCache overlay: the DPAPI token blob would look present from
-# this shell while the real service (scheduled task, outside the package)
-# loads zero tokens and 401s every request. Unlike the state dirs, there is
-# no service-side recovery for a mislocated secrets blob.
-$pkgSig = @'
-[DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-public static extern int GetCurrentPackageFullName(ref uint length, System.Text.StringBuilder fullName);
-'@
-$pkgType = Add-Type -MemberDefinition $pkgSig -Name PkgIdentity -Namespace FtxIssueToken -PassThru
-$pkgLen = [uint32]0
-# 15700 = APPMODEL_ERROR_NO_PACKAGE -> unpackaged process, safe to proceed
-if ($pkgType::GetCurrentPackageFullName([ref]$pkgLen, $null) -ne 15700) {
-    Write-Host ("FAIL: this shell is running inside an MSIX-packaged app; its " +
-        "%LOCALAPPDATA% writes are virtualized and the token blob would be " +
-        "invisible to the ftx-mcp service. Re-run from a regular PowerShell window.") -ForegroundColor Red
-    exit 1
-}
+# Refuse to run inside an MSIX-packaged shell before doing any work (see
+# _common.ps1's Assert-NotPackagedShell for the full rationale: packaged-shell
+# writes are virtualized and the DPAPI token blob would be invisible to the
+# real ftx-mcp service).
+Assert-NotPackagedShell
 
 if (-not $RepoRoot) {
     $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 }
 
-$state       = Join-Path $env:LOCALAPPDATA "ftx-mcp"
+$state       = Join-Path $env:LOCALAPPDATA $Script:FtxTaskName
 $secretsDir  = Join-Path $state "secrets"
 $tokensBlob  = Join-Path $secretsDir "tokens.json.dpapi"
 $venvPython  = Join-Path $RepoRoot ".venv\Scripts\python.exe"
@@ -95,22 +81,8 @@ if (-not (Test-Path $secretsDir)) {
     New-Item -ItemType Directory -Path $secretsDir -Force | Out-Null
 }
 
-Add-Type -AssemblyName System.Security
-
 # Step 1: read + decrypt existing tokens (if any). Empty input = first install.
-$plaintext = ""
-if (Test-Path $tokensBlob) {
-    try {
-        $cipher = [System.IO.File]::ReadAllBytes($tokensBlob)
-        $bytes  = [System.Security.Cryptography.ProtectedData]::Unprotect(
-            $cipher, $null, 'CurrentUser')
-        $plaintext = [System.Text.Encoding]::UTF8.GetString($bytes)
-    } catch {
-        Write-Host "FAIL: could not decrypt $tokensBlob - wrong Windows user, different machine, or corrupt file?" -ForegroundColor Red
-        Write-Host $_.Exception.Message -ForegroundColor Red
-        exit 1
-    }
-}
+$plaintext = Read-FtxTokensBlob $tokensBlob
 
 # Step 2: hand off to _token_admin add. Pipe decrypted JSON in, get the new
 # payload + bearer secret out. ExpiresInDays is converted to an absolute
@@ -138,13 +110,7 @@ $newPayload  = ($result.payload | ConvertTo-Json -Depth 10 -Compress)
 $bearer      = $result.bearer
 $tokenId     = $result.id
 
-$newBytes    = [System.Text.Encoding]::UTF8.GetBytes($newPayload)
-$newCipher   = [System.Security.Cryptography.ProtectedData]::Protect(
-    $newBytes, $null, 'CurrentUser')
-
-$tempBlob    = "$tokensBlob.tmp"
-[System.IO.File]::WriteAllBytes($tempBlob, $newCipher)
-Move-Item -Path $tempBlob -Destination $tokensBlob -Force
+Write-FtxTokensBlob $tokensBlob $newPayload
 
 # Step 4a: machine-readable mode - emit the token as one JSON object on stdout
 # and stop. For automation (setup-mcp-client.ps1) that wires the bearer straight

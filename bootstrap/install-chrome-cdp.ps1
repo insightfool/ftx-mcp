@@ -34,15 +34,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "_common.ps1")
 
-function Ok($msg) { Write-Host "ok: $msg" -ForegroundColor Green }
-function Warn($msg) { Write-Host "WARN: $msg" -ForegroundColor Yellow }
-
-$chromePaths = @(
-    "C:\Program Files\Google\Chrome\Application\chrome.exe",
-    "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
-)
-$chrome = $chromePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+$chrome = Find-FtxChrome
 if (-not $chrome) { Warn "Chrome not found; skipping CDP launcher task"; return }
 
 $chromeProfile = Join-Path $env:LOCALAPPDATA "ftx-mcp\chrome-cdp-profile"
@@ -50,10 +44,10 @@ New-Item -ItemType Directory -Path $chromeProfile -Force | Out-Null
 # Headless by default (SwiftShader so the WebGL/canvas still renders with no
 # GPU). --window-size still pins canvas coords in headless. -Headed opts out.
 $headlessArgs = if ($Headed) { "" } else { " --headless=new --use-angle=swiftshader --enable-unsafe-swiftshader" }
-$chromeArgs = "--remote-debugging-port=9222 --user-data-dir=`"$chromeProfile`" --no-first-run --no-default-browser-check --ignore-certificate-errors --window-size=800,600$headlessArgs"
+$chromeArgs = "--remote-debugging-port=$($Script:FtxCdpPort) --user-data-dir=`"$chromeProfile`" --no-first-run --no-default-browser-check --ignore-certificate-errors --window-size=800,600$headlessArgs"
 
-$existing = Get-ScheduledTask -TaskName "ftx-mcp-chrome-cdp" -ErrorAction SilentlyContinue
-if ($existing) { Unregister-ScheduledTask -TaskName "ftx-mcp-chrome-cdp" -Confirm:$false }
+$existing = Get-ScheduledTask -TaskName $Script:FtxCdpTaskName -ErrorAction SilentlyContinue
+if ($existing) { Unregister-ScheduledTask -TaskName $Script:FtxCdpTaskName -Confirm:$false }
 
 $action = New-ScheduledTaskAction -Execute $chrome -Argument $chromeArgs
 # No -Trigger. Start via bootstrap/services.ps1 start.
@@ -62,12 +56,9 @@ $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interac
 # default otherwise kills the headless chrome mid-week, and a crashed
 # chrome silently strands canvas verify (field-validated fix). Restarts
 # only cover mid-session crashes - after logoff, services.ps1 start.
-$settings = New-ScheduledTaskSettingsSet `
-    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-    -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
-    -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
+$settings = New-FtxTaskSettings
 Register-ScheduledTask `
-    -TaskName "ftx-mcp-chrome-cdp" `
+    -TaskName $Script:FtxCdpTaskName `
     -Action $action -Principal $principal -Settings $settings | Out-Null
 $mode = if ($Headed) { "headed" } else { "headless" }
-Ok "Chrome CDP scheduled task registered ($mode; manual start; --remote-debugging-port=9222)"
+Ok "Chrome CDP scheduled task registered ($mode; manual start; --remote-debugging-port=$($Script:FtxCdpPort))"

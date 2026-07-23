@@ -81,6 +81,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "_common.ps1")
 
 if (-not $RepoRoot) {
     $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -94,31 +95,13 @@ if (-not $RepoRoot) {
 if ($env:OPTIX_STATE_DIR) {
     $state = $env:OPTIX_STATE_DIR
 } else {
-    $state = Join-Path $env:LOCALAPPDATA "ftx-mcp"
+    $state = Join-Path $env:LOCALAPPDATA $Script:FtxTaskName
 }
 $secretsDir = Join-Path $state "secrets"
 $logsDir = Join-Path $state "logs"
 $exportStagingDir = Join-Path $state "export-staging"
 $runtimeDir = Join-Path $state "runtime"
 $venvDir = Join-Path $RepoRoot ".venv"
-
-function Section($name) {
-    Write-Host ""
-    Write-Host "=== $name ===" -ForegroundColor Cyan
-}
-
-function Fail($msg) {
-    Write-Host "FAIL: $msg" -ForegroundColor Red
-    exit 1
-}
-
-function Ok($msg) {
-    Write-Host "ok: $msg" -ForegroundColor Green
-}
-
-function Warn($msg) {
-    Write-Host "WARN: $msg" -ForegroundColor Yellow
-}
 
 # Step 0: ExecutionPolicy nudge
 # PowerShell will refuse to dot-source helper scripts (services.ps1,
@@ -164,30 +147,12 @@ if ($persistedAuth -eq "true") {
     Ok "FTX_AUTH_REQUIRED (User) = $persistedAuth (persisted)"
 }
 
-# Step 0.5: refuse to run inside an MSIX-packaged shell.
-# A shell hosted by a packaged app (e.g. the Microsoft Store build of
-# Claude Desktop - exactly what docs/cowork-quick-install.md used to
-# produce) runs with filesystem write virtualization: every write this
-# script makes under %LOCALAPPDATA% lands in the app's private
-# LocalCache overlay. In-shell checks see the merged view and pass, but
-# the scheduled tasks registered below run OUTSIDE the package against
-# the real filesystem - where none of those writes exist. The service
-# self-creates its state dirs at startup (service/main.py), but
-# token/secret writes (issue-token.ps1) have no such recovery, so the
-# only safe behavior is to refuse and point at a regular shell.
-$pkgSig = @'
-[DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-public static extern int GetCurrentPackageFullName(ref uint length, System.Text.StringBuilder fullName);
-'@
-$pkgType = Add-Type -MemberDefinition $pkgSig -Name PkgIdentity -Namespace FtxSetup -PassThru
-$pkgLen = [uint32]0
-# 15700 = APPMODEL_ERROR_NO_PACKAGE -> unpackaged process, safe to proceed
-if ($pkgType::GetCurrentPackageFullName([ref]$pkgLen, $null) -ne 15700) {
-    Fail ("This shell is running inside an MSIX-packaged app (e.g. the Microsoft " +
-          "Store build of Claude Desktop). Its writes to %LOCALAPPDATA% are " +
-          "virtualized into the app's private LocalCache and invisible to the " +
-          "ftx-mcp scheduled tasks. Re-run setup.ps1 from a regular PowerShell window.")
-}
+# Step 0.5: refuse to run inside an MSIX-packaged shell (e.g. the Microsoft
+# Store build of Claude Desktop - exactly what docs/cowork-quick-install.md
+# used to produce). See _common.ps1's Assert-NotPackagedShell for the full
+# rationale: packaged-shell writes are virtualized into the app's private
+# LocalCache overlay and invisible to the scheduled tasks registered below.
+Assert-NotPackagedShell
 
 # Step 1: port-conflict detection
 Section "1. Port-conflict detection"
@@ -195,13 +160,13 @@ Section "1. Port-conflict detection"
 # service ports redirected) don't false-positive on the prod service
 # holding the default ports. Each port mirrors the service-side
 # resolution in core.Config.from_env() / install-chrome-cdp.ps1.
-$httpPort        = $env:OPTIX_HTTP_PORT;         if (-not $httpPort)        { $httpPort = 8765 }
-$mcpPort         = $env:OPTIX_MCP_PORT;          if (-not $mcpPort)         { $mcpPort = 8766 }
+$httpPort        = $env:OPTIX_HTTP_PORT;         if (-not $httpPort)        { $httpPort = $Script:FtxHttpPort }
+$mcpPort         = $env:OPTIX_MCP_PORT;          if (-not $mcpPort)         { $mcpPort = $Script:FtxMcpPort }
 $runtimeTestPort = $env:OPTIX_RUNTIME_TEST_PORT; if (-not $runtimeTestPort) { $runtimeTestPort = 8081 }
 # 9222 is the Chrome CDP port owned by install-chrome-cdp.ps1; check
 # only when the chrome-cdp task is going to install. -NoCdp skips it.
 $ports = @([int]$runtimeTestPort, [int]$httpPort, [int]$mcpPort)
-if (-not $NoCdp) { $ports += 9222 }
+if (-not $NoCdp) { $ports += $Script:FtxCdpPort }
 $conflicts = @()
 foreach ($p in $ports) {
     $listener = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
@@ -224,7 +189,7 @@ if ($conflicts.Count -gt 0) {
     # profile dir, in which case services.ps1 stop reaps it.
     $cdpMarker = Join-Path $env:LOCALAPPDATA "ftx-mcp\chrome-cdp-profile"
     foreach ($c in $conflicts) {
-        if ($c.Port -eq 9222) {
+        if ($c.Port -eq $Script:FtxCdpPort) {
             $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$($c.Pid)" -ErrorAction SilentlyContinue).CommandLine
             if ($cmd -and $cmd -like "*$cdpMarker*") {
                 Write-Host "  :9222 is ftx-mcp's own CDP chrome (pid $($c.Pid), likely a previous install)." -ForegroundColor Yellow
@@ -270,11 +235,7 @@ if ($env:FTOPTIX_STUDIO_EXE) {
 
 # Step 3: verify Chrome
 Section "3. Verify Chrome"
-$chromePaths = @(
-    "C:\Program Files\Google\Chrome\Application\chrome.exe",
-    "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
-)
-$chrome = $chromePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+$chrome = Find-FtxChrome
 if (-not $chrome) {
     if ($NoCdp) {
         Write-Host "WARN: Chrome not found, but -NoCdp is set; continuing." -ForegroundColor Yellow
@@ -427,7 +388,7 @@ if ($NoServiceRegister) {
     Write-Host "    & '$venvPython' -m service" -ForegroundColor DarkGray
     Write-Host "  (respects OPTIX_STATE_DIR / OPTIX_HTTP_PORT / OPTIX_MCP_PORT env)" -ForegroundColor DarkGray
 } else {
-    $taskName = "ftx-mcp"
+    $taskName = $Script:FtxTaskName
     $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     if ($existing) {
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
@@ -442,10 +403,7 @@ if ($NoServiceRegister) {
     # fresh logon quiet for developers who aren't actively touching Optix.
     # ExecutionTimeLimit 0 = unlimited: the Task Scheduler default (72h)
     # silently kills a long-lived service mid-week (field-validated fix).
-    $settings = New-ScheduledTaskSettingsSet `
-        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-        -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
-        -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
+    $settings = New-FtxTaskSettings
     $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 
     Register-ScheduledTask `
@@ -476,7 +434,7 @@ if ($NoCdp) {
     & (Join-Path $PSScriptRoot "install-chrome-cdp.ps1") -RepoRoot $RepoRoot
 }
 
-# Step 10: verify /health
+# Step 9: verify /health
 # Probes the loopback HTTP port for a 200 response. Skipped when
 # -NoServiceRegister is set (no service was registered/started; the
 # probe would always time out).
@@ -485,7 +443,7 @@ if ($NoServiceRegister) {
     Ok "skipped (-NoServiceRegister; no service was registered to probe)"
 } else {
     $healthPort = $env:OPTIX_HTTP_PORT
-    if (-not $healthPort) { $healthPort = 8765 }
+    if (-not $healthPort) { $healthPort = $Script:FtxHttpPort }
     # Setup no longer auto-starts the service (one explicit services.ps1
     # start brings up BOTH tasks). A single quick probe covers the
     # re-install-over-a-running-service case; "not running" is the

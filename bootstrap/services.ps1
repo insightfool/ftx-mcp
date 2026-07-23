@@ -39,12 +39,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "_common.ps1")
 
 # Each entry: TaskName + the port the task is expected to bind (used by
 # status to TCP-probe presence). 0 means "no port to probe".
 $tasks = @(
-    @{ Name = "ftx-mcp";            Port = 8766 },
-    @{ Name = "ftx-mcp-chrome-cdp"; Port = 9222 }
+    @{ Name = $Script:FtxTaskName;    Port = $Script:FtxMcpPort },
+    @{ Name = $Script:FtxCdpTaskName; Port = $Script:FtxCdpPort }
 )
 
 function Get-TaskOrNull($name) {
@@ -81,7 +82,7 @@ function Get-CdpChromePids($port) {
 function Do-Start($name, $port) {
     # Returns $true when the task was actually started (caller prints the
     # start line); $false when it early-returned with its own message.
-    if ($name -eq "ftx-mcp-chrome-cdp") {
+    if ($name -eq $Script:FtxCdpTaskName) {
         $ours = @(Get-CdpChromePids $port)
         if ($ours.Count -gt 0) {
             Write-Host ("  ok    {0,-28} (cdp chrome already on :{1}, pid {2})" -f $name, $port, ($ours -join ",")) -ForegroundColor Green
@@ -102,7 +103,7 @@ function Do-Stop($name, $port) {
     # Best-effort: a Stop on a task that's already Ready is a no-op error
     # in some PS versions. SilentlyContinue keeps the loop moving.
     Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
-    if ($name -eq "ftx-mcp-chrome-cdp") {
+    if ($name -eq $Script:FtxCdpTaskName) {
         # Reap our chrome even when the task no longer owns it (orphan case).
         foreach ($procId in @(Get-CdpChromePids $port)) {
             Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
@@ -170,7 +171,7 @@ if ($Action -eq "status") {
     #   401 -> service up, auth required (bearer opt-in enabled)
     #   conn refused / timeout -> service down
     try {
-        $r = Invoke-WebRequest -Uri "http://127.0.0.1:8765/health" `
+        $r = Invoke-WebRequest -Uri "http://127.0.0.1:$($Script:FtxHttpPort)/health" `
             -TimeoutSec 2 -UseBasicParsing
         $body = $r.Content | ConvertFrom-Json
         Write-Host ("  /health 200 (auth disabled), version={0}" -f $body.version) -ForegroundColor Green
@@ -179,7 +180,7 @@ if ($Action -eq "status") {
         if ($resp -and $resp.StatusCode.value__ -eq 401) {
             Write-Host "  /health 401 (service running, auth required)" -ForegroundColor Green
         } elseif ($_.Exception.Message -match "actively refused|Unable to connect|timed out") {
-            Write-Host "  /health down (no listener on :8765)" -ForegroundColor Red
+            Write-Host ("  /health down (no listener on :{0})" -f $Script:FtxHttpPort) -ForegroundColor Red
         } else {
             $first = ($_.Exception.Message -split "`n")[0]
             Write-Host ("  /health err ({0})" -f $first) -ForegroundColor Red

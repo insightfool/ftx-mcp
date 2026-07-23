@@ -38,12 +38,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "_common.ps1")
 
 if (-not $RepoRoot) {
     $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 }
 
-$state       = Join-Path $env:LOCALAPPDATA "ftx-mcp"
+$state       = Join-Path $env:LOCALAPPDATA $Script:FtxTaskName
 $secretsDir  = Join-Path $state "secrets"
 $tokensBlob  = Join-Path $secretsDir "tokens.json.dpapi"
 $venvPython  = Join-Path $RepoRoot ".venv\Scripts\python.exe"
@@ -57,19 +58,8 @@ if (-not (Test-Path $tokensBlob)) {
     exit 0
 }
 
-Add-Type -AssemblyName System.Security
-
 # Decrypt the existing blob.
-try {
-    $cipher    = [System.IO.File]::ReadAllBytes($tokensBlob)
-    $bytes     = [System.Security.Cryptography.ProtectedData]::Unprotect(
-        $cipher, $null, 'CurrentUser')
-    $plaintext = [System.Text.Encoding]::UTF8.GetString($bytes)
-} catch {
-    Write-Host "FAIL: could not decrypt $tokensBlob - wrong Windows user, different machine, or corrupt file?" -ForegroundColor Red
-    Write-Host $_.Exception.Message -ForegroundColor Red
-    exit 1
-}
+$plaintext = Read-FtxTokensBlob $tokensBlob
 
 if ($List) {
     Push-Location $RepoRoot
@@ -109,13 +99,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $result      = $stdout | ConvertFrom-Json
 $newPayload  = ($result.payload | ConvertTo-Json -Depth 10 -Compress)
-$newBytes    = [System.Text.Encoding]::UTF8.GetBytes($newPayload)
-$newCipher   = [System.Security.Cryptography.ProtectedData]::Protect(
-    $newBytes, $null, 'CurrentUser')
-
-$tempBlob    = "$tokensBlob.tmp"
-[System.IO.File]::WriteAllBytes($tempBlob, $newCipher)
-Move-Item -Path $tempBlob -Destination $tokensBlob -Force
+Write-FtxTokensBlob $tokensBlob $newPayload
 
 Write-Host "Revoked token id $Id." -ForegroundColor Green
 Write-Host "Service hot-reloads on mtime change; the revoked token stops working without a restart." -ForegroundColor Cyan
