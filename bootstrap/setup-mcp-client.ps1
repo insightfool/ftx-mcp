@@ -34,7 +34,9 @@
 .PARAMETER NativeHttp  Emit the type:http form instead of the default cmd/c mcp-remote.
 .PARAMETER WriteConfig   Write/merge into claude_desktop_config.json. Without it,
                          the block is printed for you to paste.
-.PARAMETER ServerName  Key under mcpServers (default 'ftx-mcp').
+.PARAMETER ServerName  Key under mcpServers (default 'ftx-mcp'; literal, not
+                       $Script:FtxTaskName -- param defaults evaluate before
+                       _common.ps1 is dot-sourced, so they can't reference it).
 
 .EXAMPLE
     .\bootstrap\setup-mcp-client.ps1 -WriteConfig
@@ -52,7 +54,7 @@ param(
     [string]$Bearer,
     [switch]$WithToken,
     [string]$BindHost = '127.0.0.1',
-    [int]$Port = 8766,
+    [int]$Port = 8766, # literal: param defaults evaluate before _common.ps1's dot-source runs
     [switch]$NativeHttp,
     [switch]$WriteConfig,
     [string]$ServerName = 'ftx-mcp',
@@ -62,11 +64,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot '_common.ps1')
 if (-not $RepoRoot) { $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path }
 
-function Ok($m)   { Write-Host "ok: $m" -ForegroundColor Green }
+# Info has exactly one caller in this file and isn't part of the shared
+# Ok/Warn/Fail/Section quartet the other bootstrap scripts share -- kept
+# script-local rather than added to _common.ps1 as a 5th function.
 function Info($m) { Write-Host $m -ForegroundColor Cyan }
-function Warn($m) { Write-Host "WARN: $m" -ForegroundColor Yellow }
 
 # 1. Token: only when auth is actually enabled (or explicitly requested).
 # Auth is OFF by default on the loopback install - the service ignores the
