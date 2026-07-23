@@ -75,13 +75,6 @@ def hash_secret(secret: str) -> str:
     return f"sha256:{digest}"
 
 
-def _verify_secret(presented: str, stored_hash: str) -> bool:
-    """Constant-time comparison. Defends against timing oracles on the
-    hash table lookup. The hash itself is not secret, but consistent
-    timing makes the reasoning simpler."""
-    return secrets.compare_digest(hash_secret(presented), stored_hash)
-
-
 # ---- token table -----------------------------------------------------
 
 @dataclass(frozen=True)
@@ -232,6 +225,13 @@ DEFAULT_SCOPE_RULES: tuple[ScopeRule, ...] = (
     ("GET", "/runtime/", "health"),  # /runtime/{slot}/status
     ("GET", "/projects/", "read"),  # /projects, /projects/{p}/files/{path}, /projects/{p}/git/log
     ("GET", "/projects", "read"),
+    # Read-only diagnostics. Prefix match is raw string (not segment-aware),
+    # so "/skills" covers both GET /skills and GET /skills/{name}.
+    ("GET", "/skills", "read"),  # bundled-playbook markdown content off disk
+    ("GET", "/doctor", "read"),  # embeds deploy_username/thumbprint when enabled
+    ("GET", "/ui/stats", "read"),  # project name + deploy_ip + doctor checks
+    ("GET", "/ui", "health"),  # static dashboard shell; no project/config data
+    ("GET", "/emulator/status", "health"),  # pids + port-reachability bool only
     ("POST", "/projects/", "deploy"),  # /projects/{p}/deploy + /projects/{p}/deploy/preflight
     # MCP transport — single endpoint that multiplexes tools. We require
     # `read` at the transport layer because MCP `initialize` and
@@ -456,7 +456,6 @@ def now_iso() -> str:
 __all__ = [
     "AuthMiddleware",
     "DEFAULT_SCOPE_RULES",
-    "SCOPES",
     "TokenRecord",
     "TokenStore",
     "generate_token",

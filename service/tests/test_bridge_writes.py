@@ -264,15 +264,6 @@ def test_delete_node_posts(alpha, monkeypatch):
     assert m == "POST" and "path=UI%2FMainWindow%2FOld" in p
 
 
-def test_node_references_is_get(alpha, monkeypatch):
-    cap: list = []
-    monkeypatch.setattr(core, "_bridge_http",
-                        _fake_bridge({"/bridge/node/references": (200, {"ok": True, "references": []})}, capture=cap))
-    out = core.bridge_node_references(alpha, "Alpha", "Model/Motor1")
-    m, p = next(c for c in cap if "/bridge/node/references" in c[1])
-    assert m == "GET" and out["ok"] is True
-
-
 def test_semantic_not_implemented_raises(alpha, monkeypatch):
     # endpoint not built in the .cs yet -> graceful failure, not a crash
     monkeypatch.setattr(core, "_bridge_http",

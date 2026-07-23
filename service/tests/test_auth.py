@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from service import auth
+from service.http_app import make_app
 
 # ---- scope helpers ---------------------------------------------------
 
@@ -340,9 +341,124 @@ class TestResolveRequiredScope:
     def test_mcp_post(self) -> None:
         assert auth.resolve_required_scope("POST", "/mcp") == "read"
 
+    def test_skills_list_endpoint(self) -> None:
+        assert auth.resolve_required_scope("GET", "/skills") == "read"
+
+    def test_skills_get_endpoint(self) -> None:
+        # Raw prefix match: "/skills/{name}" is covered by the "/skills" rule.
+        assert auth.resolve_required_scope("GET", "/skills/deploy-preflight") == "read"
+
+    def test_doctor_endpoint(self) -> None:
+        assert auth.resolve_required_scope("GET", "/doctor") == "read"
+
+    def test_ui_dashboard_endpoint(self) -> None:
+        assert auth.resolve_required_scope("GET", "/ui") == "health"
+
+    def test_ui_stats_endpoint(self) -> None:
+        # Longest-prefix wins: "/ui/stats" beats "/ui" regardless of order.
+        assert auth.resolve_required_scope("GET", "/ui/stats") == "read"
+
+    def test_emulator_status_endpoint(self) -> None:
+        assert auth.resolve_required_scope("GET", "/emulator/status") == "health"
+
     def test_unmapped_route_falls_back_to_deploy(self) -> None:
         # Unmapped path defaults to most-restrictive — fail closed.
         assert auth.resolve_required_scope("DELETE", "/admin/wipe") == "deploy"
+
+
+# ---- live route-table scope coverage --------------------------------
+
+class TestScopeRouteCoverage:
+    """Enumerate the live FastAPI route table and assert every route
+    resolves to a DELIBERATE scope, never the deploy fallback by omission.
+
+    A per-route unit test only catches drift for routes someone remembered
+    to list. This walks `make_app(cfg).routes` so a FUTURE route with no
+    `DEFAULT_SCOPE_RULES` entry fails CI automatically instead of silently
+    defaulting to `deploy` and surfacing as a confusing 403 in production.
+    """
+
+    # Mutating / destructive routes where `deploy` is the CORRECT intended
+    # scope — whether reached via the explicit ("POST", "/projects/",
+    # "deploy") rule or the fail-closed fallback. Listed by exact
+    # (method, path) so the exemption is visible and auditable: a NEW route
+    # that resolves to deploy and is not enumerated here fails the test,
+    # forcing a conscious scope decision.
+    _EXPECTED_DEPLOY = {
+        ("POST", "/projects/{project}/widgets"),
+        ("POST", "/projects/{project}/model-variables"),
+        ("POST", "/projects/{project}/set-property"),
+        ("POST", "/projects/{project}/deploy"),
+        ("POST", "/projects/{project}/deploy/preflight"),
+        ("POST", "/projects/{project}/runtime/start"),
+        ("POST", "/projects/{project}/runtime/stop"),
+        ("POST", "/projects/{project}/save"),
+        ("POST", "/projects/{project}/run/emulator"),
+        ("POST", "/projects/{project}/bridge/add-bound-widget"),
+        ("POST", "/projects/{project}/bridge/add-navigation-panel-item"),
+        ("POST", "/projects/{project}/bridge/create-folder"),
+        ("POST", "/projects/{project}/bridge/create-object"),
+        ("POST", "/projects/{project}/bridge/create-type"),
+        ("POST", "/projects/{project}/bridge/move-node"),
+        ("POST", "/projects/{project}/bridge/convert-to-type"),
+        ("POST", "/projects/{project}/emulator/restart"),
+        ("POST", "/emulator/stop"),
+        ("POST", "/cdp/ocr"),
+        ("POST", "/projects/{project}/deploy/updatesvc"),
+        ("POST", "/projects/{project}/bridge/widget"),
+        ("POST", "/projects/{project}/bridge/set-property"),
+        ("POST", "/projects/{project}/bridge/bind"),
+        ("POST", "/projects/{project}/bridge/ensure-web-engine"),
+        ("POST", "/runtime/cdp-click"),
+        ("POST", "/runtime/cdp-fill"),
+        ("POST", "/runtime/cdp-type"),
+        ("POST", "/runtime/cdp-key"),
+        ("POST", "/runtime/cdp-screenshot"),
+        ("POST", "/runtime/cdp-restart"),
+    }
+
+    @staticmethod
+    def _app_endpoints(app: Any) -> list[tuple[str, str]]:
+        # Only the app's own APIRoutes carry the scope contract; the
+        # framework's auto docs routes (/openapi.json, /docs, /redoc) are
+        # Starlette Routes and are not part of the authorization surface.
+        from fastapi.routing import APIRoute
+        out: list[tuple[str, str]] = []
+        for route in app.routes:
+            if not isinstance(route, APIRoute):
+                continue
+            for method in route.methods or ():
+                if method in ("HEAD", "OPTIONS"):
+                    continue
+                out.append((method, route.path))
+        return out
+
+    def test_every_route_has_a_deliberate_scope(self, cfg: Any) -> None:
+        app = make_app(cfg)
+        gaps = []
+        for method, path in self._app_endpoints(app):
+            scope = auth.resolve_required_scope(method, path)
+            if scope == "deploy" and (method, path) not in self._EXPECTED_DEPLOY:
+                gaps.append((method, path, scope))
+        assert gaps == [], (
+            f"routes resolving to the deploy fallback with no explicit "
+            f"DEFAULT_SCOPE_RULES entry: {gaps} — either add a rule or add "
+            f"to _EXPECTED_DEPLOY if deploy is the intended scope"
+        )
+
+    def test_read_only_gets_resolve_at_or_below_read(self, cfg: Any) -> None:
+        # Every GET route must resolve to health or read — never deploy.
+        # A read/health diagnostics token must reach every read-only GET.
+        offenders = []
+        for method, path in self._app_endpoints(make_app(cfg)):
+            if method != "GET":
+                continue
+            scope = auth.resolve_required_scope(method, path)
+            if scope not in ("health", "read"):
+                offenders.append((method, path, scope))
+        assert offenders == [], (
+            f"read-only GET routes resolving above `read`: {offenders}"
+        )
 
 
 # ---- AuthMiddleware (ASGI) ------------------------------------------

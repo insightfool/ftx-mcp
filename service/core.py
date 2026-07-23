@@ -1385,14 +1385,6 @@ def bridge_delete_node(cfg: Config, project: str, node_path: str) -> dict:
     )
 
 
-def bridge_node_references(cfg: Config, project: str, node_path: str) -> dict:
-    """Find nodes referencing `node_path` (delete-impact analysis). Read-only."""
-    return _bridge_write(
-        cfg, project, "node_references", "/bridge/node/references",
-        {"path": node_path}, method="GET",
-    )
-
-
 def bridge_reorder_node(
     cfg: Config, project: str, node_path: str,
     position: str | None = None, index: int | None = None,
