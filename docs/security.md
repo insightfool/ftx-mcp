@@ -32,6 +32,28 @@ rotation is performed by the service; handle per site policy.
 
 Refusal matrix: `service/main.py::check_lan_bind_safety`.
 
+## Token scopes
+
+Four tiers, each a superset of the one before (`deploy ⊇ author ⊇ read ⊇ health`):
+
+| scope | grants |
+|---|---|
+| `health` | liveness / status probes only |
+| `read` | read-only introspection (project list, git log, describe, screenshots) |
+| `author` | live authoring — mutate the Studio project, preview in the emulator, drive the canvas. No runtime push. |
+| `deploy` | everything, including pushing to / controlling the runtime |
+
+`author` is the least-privilege token for day-to-day HMI editing; issue it in
+preference to `deploy` for anyone who does not push to the runtime. Per-tool
+mapping: `service/auth.py::TOOL_SCOPES` (MCP surface). The HTTP surface keeps
+the coarser `deploy` on all `POST /projects/...` mutations (prefix matcher
+cannot split author from deploy on a variable `{project}` segment), so HTTP is
+never more permissive than the MCP table.
+
+Back-compat: `deploy` remains a strict superset of `author`, so existing
+`deploy` tokens keep working unchanged. Re-issue routine authoring tokens as
+`-Scope author` to drop the runtime-push privilege they don't need.
+
 ## Default — loopback, no auth
 
 ```

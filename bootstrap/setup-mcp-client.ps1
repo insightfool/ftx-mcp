@@ -26,7 +26,10 @@
     it that way. Nothing is exposed on the network; do not bind 0.0.0.0.
 
 .PARAMETER Label      Token label (default 'claude-desktop').
-.PARAMETER Scope      health | read | deploy (default 'deploy' - full loop).
+.PARAMETER Scope      health | read | author | deploy (default 'deploy' - full loop).
+                      'author' is the least-privilege token for live HMI
+                      editing (mutate project + emulator preview, no runtime
+                      push). Coupled to service.auth._SCOPE_ORDER.
 .PARAMETER Bearer     Reuse an existing bearer instead of issuing a new one.
 .PARAMETER WithToken  Force issuing/embedding a token even when auth is off.
 .PARAMETER BindHost   Host in the emitted URL (default 127.0.0.1).
@@ -50,7 +53,7 @@
 [CmdletBinding()]
 param(
     [string]$Label = 'claude-desktop',
-    [ValidateSet('health','read','deploy')][string]$Scope = 'deploy',
+    [ValidateSet('health','read','author','deploy')][string]$Scope = 'deploy',
     [string]$Bearer,
     [switch]$WithToken,
     [string]$BindHost = '127.0.0.1',

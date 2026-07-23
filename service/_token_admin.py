@@ -117,8 +117,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_add = sub.add_parser("add", help="add a new token")
     p_add.add_argument("--label", required=True, help="human-readable label")
     p_add.add_argument(
-        "--scope", required=True, choices=("health", "read", "deploy"),
-        help="token scope (health ⊆ read ⊆ deploy)",
+        # Choices derive from auth.SCOPES so the CLI can never drift from the
+        # scope model again (the two PS1 ValidateSets can't import Python and
+        # stay manual — see bootstrap/issue-token.ps1 + setup-mcp-client.ps1).
+        "--scope", required=True, choices=tuple(auth._SCOPE_ORDER),
+        help="token scope (health ⊆ read ⊆ author ⊆ deploy)",
     )
     p_add.add_argument(
         "--expires-at", default=None,

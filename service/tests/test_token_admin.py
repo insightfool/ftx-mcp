@@ -62,6 +62,13 @@ class TestAdd:
         result = json.loads(out)
         assert result["payload"]["tokens"][0]["expires_at"] == "2030-01-01T00:00:00Z"
 
+    def test_add_accepts_author_scope(self) -> None:
+        rc, out, _err = _run(["add", "--label", "authbot", "--scope", "author"], stdin="")
+        assert rc == 0
+        result = json.loads(out)
+        assert result["scope"] == "author"
+        assert result["payload"]["tokens"][0]["scope"] == "author"
+
     def test_add_rejects_invalid_scope(self) -> None:
         with pytest.raises(SystemExit):  # argparse choices reject 'admin'
             _run(["add", "--label", "x", "--scope", "admin"], stdin="")

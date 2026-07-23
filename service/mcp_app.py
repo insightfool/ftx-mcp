@@ -65,15 +65,16 @@ def _authenticated_token_scope() -> str | None:
 
 
 def _required_tool_scope(mcp: FastMCP, name: str) -> str:
-    """Minimum token scope to invoke tool `name`: read-only tools need `read`,
-    anything that mutates (write / destructive) needs `deploy`. This mirrors the
-    HTTP route scopes (auth.DEFAULT_SCOPE_RULES) so the two surfaces cannot
-    diverge — the very gap this closes. An unknown/annotation-less tool fails
-    closed to `deploy` (most restrictive), matching resolve_required_scope."""
-    tool = mcp._tool_manager._tools.get(name)
-    ann = getattr(tool, "annotations", None)
-    read_only = bool(getattr(ann, "readOnlyHint", False)) if ann is not None else False
-    return "read" if read_only else "deploy"
+    """Minimum token scope to invoke tool `name`, from the explicit
+    `auth.TOOL_SCOPES` table (health/read/author/deploy). The table — not the
+    binary readOnlyHint/destructiveHint annotations — is authoritative: the
+    author/deploy cut is orthogonal to the hints (e.g. optix_runtime_start is
+    destructiveHint=False yet deploy; optix_bridge_delete_node is
+    destructiveHint=True yet author), so no annotation derivation can produce
+    it. An unknown / unclassified tool fails closed to `deploy` (most
+    restrictive), matching resolve_required_scope's fallback. `mcp` is retained
+    in the signature for the call site + tests; the lookup is name-keyed."""
+    return auth.TOOL_SCOPES.get(name, "deploy")
 
 
 def make_mcp(cfg: core.Config) -> FastMCP:
@@ -2489,7 +2490,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
                     raise ScopeInsufficient(
                         f"token scope {token_scope!r} cannot call {name!r} "
                         f"(requires {required!r}); re-issue with a higher scope "
-                        "(deploy superset of read superset of health)"
+                        "(deploy superset of author superset of read superset of health)"
                     )
             result = await _dispatch(name, arguments, *args, **kwargs)
         except Exception:

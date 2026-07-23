@@ -30,8 +30,15 @@ from . import _dpapi
 
 # ---- scope model ------------------------------------------------------
 
-# Order matters: index encodes the ⊆ relation. health ⊆ read ⊆ deploy.
-_SCOPE_ORDER: tuple[str, ...] = ("health", "read", "deploy")
+# Order matters: index encodes the ⊆ relation.
+# health ⊆ read ⊆ author ⊆ deploy.
+#   health — pure liveness/status probes.
+#   read   — read-only introspection.
+#   author — mutates the Studio PROJECT model / drives the local emulator
+#            preview / interacts with the rendered canvas (does NOT push to
+#            the runtime). The everyday live-authoring token.
+#   deploy — pushes to the runtime or controls runtime lifecycle.
+_SCOPE_ORDER: tuple[str, ...] = ("health", "read", "author", "deploy")
 
 SCOPES: frozenset[str] = frozenset(_SCOPE_ORDER)
 
@@ -242,6 +249,115 @@ DEFAULT_SCOPE_RULES: tuple[ScopeRule, ...] = (
 )
 
 
+# Per-TOOL required scope for the MCP surface — the authoritative source
+# for `mcp_app._required_tool_scope`. It lives HERE (next to
+# DEFAULT_SCOPE_RULES) so the two authz surfaces sit side by side and their
+# contract is legible in one place.
+#
+# Why a static name-keyed table and not a derivation from the tool
+# annotations: the `author`/`deploy` cut is orthogonal to
+# readOnlyHint/destructiveHint. `optix_runtime_start` is destructiveHint=False
+# yet must be `deploy` (it starts the runtime); `optix_bridge_delete_node` is
+# destructiveHint=True yet is `author` (it mutates the Studio project, not the
+# runtime). The binary hints cannot express this four-way split — only an
+# explicit table can. Unknown tools fail closed to `deploy` at the call site.
+#
+# Surface-split note: this per-tool refinement is MCP-only. The HTTP twins
+# keep the coarse DEFAULT_SCOPE_RULES `deploy` on POST /projects/... because
+# resolve_required_scope matches by path PREFIX, and the author/deploy
+# discriminator is the suffix AFTER the variable `{project}` segment, which a
+# static prefix cannot express against concrete runtime paths. The two
+# surfaces intentionally diverge on granularity, not on direction: HTTP is
+# never more permissive than the table (deploy ⊇ author).
+#
+# Tiers: health = pure liveness; read = read-only introspection; author =
+# mutates the Studio project model / drives local emulator preview /
+# interacts with the rendered canvas (no runtime push); deploy = pushes to
+# the runtime or controls its lifecycle. Deploy tier is EXACTLY
+# {optix_deploy, optix_deploy_updatesvc, optix_runtime_start,
+# optix_runtime_stop}. Includes the deploy-family tools that are popped from
+# the registry when enable_deploy=False (harmless: a popped tool never
+# dispatches) so the table describes the enable_deploy=True superset.
+TOOL_SCOPES: dict[str, str] = {
+    # ---- health (3): liveness/status probes ----
+    "optix_health": "health",
+    "optix_runtime_status": "health",
+    "optix_services_status": "health",
+    # ---- read (24): read-only introspection ----
+    "optix_doctor": "read",
+    "optix_list_skills": "read",
+    "optix_get_skill": "read",
+    "optix_list_projects": "read",
+    "optix_find": "read",
+    "optix_read_file": "read",
+    "optix_list_screens": "read",
+    "optix_get_project_map": "read",
+    "optix_bridge_status": "read",
+    "optix_describe_node": "read",
+    "optix_list_ui_types": "read",
+    "optix_describe_type": "read",
+    "optix_bridge_validate_expression": "read",
+    "optix_emulator_status": "read",
+    "optix_runtime_log_tail": "read",
+    "optix_deploy_preflight": "read",
+    "optix_studio_version": "read",
+    "optix_cdp_screenshot": "read",
+    "optix_cdp_ocr": "read",
+    "optix_cdp_read_text": "read",
+    "optix_cdp_find_text": "read",
+    "optix_routes_get": "read",
+    "optix_routes_list": "read",
+    "optix_cdp_diff": "read",
+    # ---- author (34): mutates project / previews / drives canvas ----
+    "optix_bridge_create_widget": "author",
+    "optix_bridge_add_bound_widget": "author",
+    "optix_bridge_add_navigation_panel_item": "author",
+    "optix_bridge_add_label": "author",
+    "optix_bridge_ensure_web_engine": "author",
+    "optix_bridge_set_property": "author",
+    "optix_bridge_create_variable": "author",
+    "optix_bridge_create_folder": "author",
+    "optix_bridge_create_object": "author",
+    "optix_bridge_create_type": "author",
+    "optix_bridge_bind_property": "author",
+    "optix_bridge_create_alias": "author",
+    "optix_bridge_add_translation": "author",
+    "optix_bridge_reorder": "author",
+    "optix_bridge_attach_expression": "author",
+    "optix_bridge_wire_event": "author",
+    "optix_save": "author",
+    "optix_run_emulator": "author",
+    "optix_restart_emulator": "author",
+    "optix_stop_emulator": "author",
+    "optix_add_widget": "author",
+    "optix_add_model_variable": "author",
+    "optix_set_property": "author",
+    "optix_routes_save": "author",
+    "optix_cdp_restart": "author",
+    "optix_bridge_move_node": "author",
+    "optix_bridge_convert_to_type": "author",
+    "optix_bridge_delete_node": "author",
+    "optix_cdp_click": "author",
+    "optix_cdp_fill": "author",
+    "optix_cdp_type": "author",
+    "optix_cdp_key": "author",
+    "optix_cdp_navigate": "author",
+    "optix_cdp_sweep": "author",
+    # ---- deploy (4): pushes to / controls the runtime ----
+    "optix_runtime_start": "deploy",
+    "optix_runtime_stop": "deploy",
+    "optix_deploy": "deploy",
+    "optix_deploy_updatesvc": "deploy",
+}
+
+# Module-load guard: every declared tier must be a real scope, else a typo
+# in the table would silently fail closed to `deploy` for that tool.
+assert set(TOOL_SCOPES.values()) <= SCOPES, (
+    f"TOOL_SCOPES references unknown scope(s): "
+    f"{set(TOOL_SCOPES.values()) - SCOPES}"
+)
+
+
 def resolve_required_scope(
     method: str, path: str, rules: tuple[ScopeRule, ...] = DEFAULT_SCOPE_RULES
 ) -> str:
@@ -411,7 +527,8 @@ class AuthMiddleware:
             await _send_error(
                 send, 403, "auth_scope_insufficient",
                 f"token has scope {record.scope!r} but {required!r} is required",
-                "re-issue with a higher scope (deploy ⊇ read ⊇ health) "
+                "re-issue with a higher scope "
+                "(deploy ⊇ author ⊇ read ⊇ health) "
                 "via bootstrap/issue-token.ps1",
             )
             return
@@ -456,6 +573,7 @@ def now_iso() -> str:
 __all__ = [
     "AuthMiddleware",
     "DEFAULT_SCOPE_RULES",
+    "TOOL_SCOPES",
     "TokenRecord",
     "TokenStore",
     "generate_token",
