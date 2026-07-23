@@ -1,4 +1,4 @@
-# ftx-mcp v1.0.2 — draft release notes
+# ftx-mcp v1.0.2 — release notes
 
 Security and field-report fixes. Thanks to first-time contributor
 **@PlantwideIntegration** for five reviewed, tested fixes.

@@ -72,6 +72,37 @@ The service warns at startup when `OPTIX_BIND_HOST != 127.0.0.1`.
 
 Bearer secrets are shown once at issue time and never persisted — only the SHA-256 hash lands in `tokens.json.dpapi`. Lost a bearer: **re-issue, don't recover.** Revoke it with `bootstrap/revoke-token.ps1 -Id <id>` (or `-List` to find by label), then `bootstrap/issue-token.ps1` for a fresh one.
 
+## Loopback CDP port — residual risk (informational)
+
+The verify Chrome instance (`ftx-mcp-chrome-cdp`, headless, `OPTIX_CDP_URL`
+default `http://127.0.0.1:9222`) binds loopback only and, by design, no
+firewall rule is added for it — stock Windows Firewall doesn't filter
+loopback traffic anyway, so a rule would be inert, and `setup.ps1` is
+deliberately elevation-free (adding firewall rules requires local admin;
+see `bootstrap/setup.ps1`'s warn-if-elevated note). The residual risk this
+leaves open: **any other local process running as the same Windows user**
+can drive that CDP port — navigate the verify browser, read its DOM,
+screenshot it. This is the same trust boundary as everything else in this
+distribution (the service itself runs in the user's logon session and can
+already read/write the project tree), not a new exposure.
+
+Existing mitigations: an origin check on the CDP connection, and a
+dedicated Chrome profile used only for verification (no saved
+credentials, no browsing history, no extensions) — so even a hostile local
+process reaching the port gets a throwaway browsing context, not a
+window into the user's real browser session. There is deliberately no
+firewall rule (see above) and no plan to add one for the loopback case.
+
+If a corp EDR or hardened endpoint policy *does* filter loopback traffic —
+uncommon, but not impossible — the mitigating move would be CDP port
+randomization (`--remote-debugging-port=0` + reading back the assigned
+port via Chrome's `DevToolsActivePort` file) rather than a firewall rule.
+That's a real code change (the self-heal path currently identifies the
+CDP Chrome process by port-in-cmdline, `service/core.py`'s
+`ensure_chrome_cdp` neighborhood, and would need to switch to profile-dir
+matching first) and is not implemented in this distribution; pursue it
+only against a concrete motivating scenario, not speculatively.
+
 ## Update Service exposure (informational)
 
 `FTOptixApplicationUpdateService.exe` ships with FT Optix Studio and listens on `0.0.0.0:49100` by default — controlled by the Update Service, not by `ftx-mcp` (this distribution contains no deploy path that talks to it). Firewall `:49100` at the host level per your site policy.
