@@ -702,3 +702,111 @@ def test_cdp_diff_tool_manifest_not_found_surfaces_as_dict(
     tool = next(t for t in _list_tools(mcp) if t.name == "optix_cdp_diff")
     out = _tool_fn(tool)(dir_a="missing", dir_b="also_missing")
     assert out["state"] == "failed" and out["error"] == "manifest_not_found"
+
+
+# ---- @_with_project decorator: schema/name/doc preservation (U7) -------------
+#
+# The 35 project-scoped tools share a single `@_with_project` decorator that
+# resolves `project` (explicit arg else bridge default), short-circuiting with
+# the `no_project` envelope. The decorator uses functools.wraps so FastMCP's
+# introspection (name via __name__, description via __doc__, input schema via
+# inspect.signature unwrapping __wrapped__) still sees the ORIGINAL tool fn.
+# These tests pin that the schema — including the `project` field and every
+# other param — survives the wrap; a signature-injection variant that fails to
+# unwrap __wrapped__ would drop params here.
+
+
+def test_with_project_preserves_name_doc_and_schema(cfg: core.Config) -> None:
+    """A decorated tool keeps its name, docstring, and `project` schema field.
+
+    Closes the gap left by the registration/description tests: nothing else
+    pins `tool.parameters` — a wrapper that lost __wrapped__ would strip
+    `project` from the JSON schema and FastMCP would reject `{"project": ...}`
+    at call_tool time."""
+    mcp = make_mcp(cfg)
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_list_screens")
+    assert tool.name == "optix_list_screens"
+    assert "Use this when" in (tool.description or "")
+    props = tool.parameters["properties"]
+    assert "project" in props, "decorator dropped the `project` schema field"
+    # optional str | None = None -> nullable with a null default
+    assert props["project"].get("default", "MISSING") is None
+
+
+def test_with_project_preserves_full_schema_for_multiarg_tool(cfg: core.Config) -> None:
+    """Every non-project param of a many-arg decorated tool survives the wrap.
+
+    optix_find takes query/glob/max_results/context_lines/case_sensitive plus
+    project; all must remain in the introspected schema (guards against a wrap
+    that fails to follow __wrapped__ and exposes only (*args, **kwargs))."""
+    mcp = make_mcp(cfg)
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_find")
+    props = tool.parameters["properties"]
+    for name in ("query", "glob", "max_results", "context_lines",
+                 "case_sensitive", "project"):
+        assert name in props, f"optix_find lost `{name}` from its schema"
+
+
+def test_with_project_tool_count_and_annotations_unchanged(cfg: core.Config) -> None:
+    """The mechanical pass is behavior-preserving: still 65 tools, and the
+    shared _RO/_RW/_RW_DESTRUCTIVE constants carry the same hint values the
+    per-site ToolAnnotations did (spot-check one of each class)."""
+    mcp = make_mcp(cfg)
+    by_name = {t.name: t for t in _list_tools(mcp)}
+    assert len(by_name) == 65
+    assert by_name["optix_list_screens"].annotations.readOnlyHint is True
+    write = by_name["optix_bridge_set_property"].annotations
+    assert write.readOnlyHint is False and write.destructiveHint is False
+    destr = by_name["optix_bridge_delete_node"].annotations
+    assert destr.readOnlyHint is False and destr.destructiveHint is True
+
+
+# (tool name, backing core fn, extra required kwargs) — each body calls
+# core.<fn>(cfg, project, ...), so the resolved project is the 2nd positional.
+_UNIFORM_CASES = [
+    ("optix_describe_node", "describe_node", {"path": "UI/Screen1"}),
+    ("optix_list_screens", "list_screens", {}),
+    ("optix_bridge_set_property", "bridge_set_property",
+     {"node_path": "UI/MainWindow/L1", "name": "Text", "value": "hi"}),
+]
+
+
+@pytest.mark.parametrize("tool_name,core_fn,extra", _UNIFORM_CASES,
+                         ids=[c[0] for c in _UNIFORM_CASES])
+def test_with_project_resolution_is_uniform(cfg: core.Config, monkeypatch,
+                                            tool_name, core_fn, extra) -> None:
+    """The decorator behaves identically across decorated tools: an omitted
+    `project` resolves to the bridge default and reaches core; a None default
+    short-circuits with the `no_project` envelope (core never called)."""
+    seen = {}
+    monkeypatch.setattr(core, "default_project", lambda c: "BridgeProj")
+    monkeypatch.setattr(core, core_fn,
+                        lambda c, p, *a, **k: seen.setdefault("project", p) or {"ok": True})
+    mcp = make_mcp(cfg)
+    tool = next(t for t in _list_tools(mcp) if t.name == tool_name)
+    # default resolution reaches core with the bridge project
+    _tool_fn(tool)(**extra)
+    assert seen["project"] == "BridgeProj"
+    # no bridge project -> no_project envelope, core NOT called
+    seen.clear()
+    monkeypatch.setattr(core, "default_project", lambda c: None)
+    out = _tool_fn(tool)(**extra)
+    assert out.get("error") == "no_project"
+    assert "project" not in seen
+
+
+def test_excluded_outliers_keep_bespoke_no_project_envelope(cfg: core.Config, monkeypatch) -> None:
+    """optix_save / optix_run_emulator are intentionally NOT decorated with
+    @_with_project: they own a bespoke no-project envelope keyed to their
+    success shape ({saved: False} / {launched: False}), NOT the generic
+    {error: "no_project"}. Decorating them would silently swap that contract.
+    Lock the exclusion in."""
+    monkeypatch.setattr(core, "default_project", lambda c: None)
+    mcp = make_mcp(cfg)
+    by_name = {t.name: t for t in _list_tools(mcp)}
+    save_out = _tool_fn(by_name["optix_save"])()
+    assert save_out.get("saved") is False
+    assert save_out.get("error") != "no_project"
+    emu_out = _tool_fn(by_name["optix_run_emulator"])()
+    assert emu_out.get("launched") is False
+    assert emu_out.get("error") != "no_project"
