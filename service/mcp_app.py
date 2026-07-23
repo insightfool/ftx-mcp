@@ -17,6 +17,14 @@ from mcp.types import ToolAnnotations
 
 from . import __version__, auth, core
 
+# Shared MCP ToolAnnotations: 3 distinct hint tuples cover all 65 tools.
+# Safe to share single instances across registrations -- FastMCP only
+# reads them (Tool.from_function stores the reference and model_dump()s
+# it for tool listing); nothing mutates a ToolAnnotations post-build.
+_RO = ToolAnnotations(readOnlyHint=True)
+_RW = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
+_RW_DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
+
 # The low-level server sets this contextvar for the duration of each request;
 # for the streamable-HTTP transport its `.request` is the Starlette Request
 # whose `.scope` is the ASGI scope that AuthMiddleware augments with
@@ -121,7 +129,33 @@ def make_mcp(cfg: core.Config) -> FastMCP:
                     "bridge; optix_list_projects can discover names"),
     }
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def _with_project(fn):
+        """Resolve the effective project (explicit arg else bridge default),
+        short-circuiting with _NO_PROJECT when none is available, so tool
+        bodies can assume `project` is a resolved non-empty name.
+
+        functools.wraps is LOAD-BEARING: FastMCP's Tool.from_function reads
+        fn.__name__ (tool name), fn.__doc__ (description) and
+        inspect.signature(fn, eval_str=True) (input schema) off whatever
+        @mcp.tool receives. wraps copies __name__/__doc__/__annotations__ and
+        sets __wrapped__ -> fn, so inspect.signature unwraps to the ORIGINAL
+        tool fn and the JSON schema (incl. the `project` field and every other
+        param) is generated from the real signature. The wrapper MUST stay a
+        plain `def` (never async): the post-registration offload pass skips any
+        tool whose is_async is already True, so an async wrapper would silently
+        defeat the loop-offload for the project-scoped shell-out tools
+        (optix_cdp_navigate/sweep/diff/read_text/find_text).
+        """
+        @functools.wraps(fn)
+        def _wrapper(*args, **kwargs):
+            project = _resolve_project(kwargs.get("project"))
+            if not project:
+                return _NO_PROJECT
+            kwargs["project"] = project
+            return fn(*args, **kwargs)
+        return _wrapper
+
+    @mcp.tool(annotations=_RO)
     def optix_health() -> dict:
         """Aggregate health of the ftx-mcp deploy stack (export-based, v0.2.x).
 
@@ -144,7 +178,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return core.health(cfg)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
     def optix_doctor() -> dict:
         """One-call setup check: every prerequisite + a plain-English fix for each.
 
@@ -165,7 +199,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return core.doctor(cfg)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
     def optix_list_skills() -> dict:
         """Catalog of the bundled authoring playbooks — one line each.
 
@@ -184,7 +218,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return core.list_skills(cfg)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
     def optix_get_skill(name: str) -> dict:
         """Full content of one bundled playbook by name (from optix_list_skills).
 
@@ -200,7 +234,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return core.get_skill(cfg, name)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
     def optix_list_projects() -> dict:
         """List Optix projects under OPTIX_PROJECTS_ROOT.
 
@@ -221,7 +255,8 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return {"projects": core.list_projects(cfg)}
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
+    @_with_project
     def optix_find(
         query: str,
         glob: str = "**/*",
@@ -253,9 +288,6 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - you already know the file AND region (ranged optix_read_file)
           - you need multi-line matching (read the file instead)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return core.find_in_project(
             cfg,
             project,
@@ -266,7 +298,8 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             case_sensitive=case_sensitive,
         )
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
+    @_with_project
     def optix_read_file(
         path: str,
         start_line: int | None = None,
@@ -298,14 +331,12 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - the file is binary (returns a 415-equivalent error)
           - you want to list a directory (NOT supported)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return core.read_file(
             cfg, project, path, start_line=start_line, end_line=end_line
         )
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    @mcp.tool(annotations=_RW_DESTRUCTIVE)
+    @_with_project
     def optix_deploy(
         edits: list[dict],
         commit_message: str = "Automated edit",
@@ -401,9 +432,6 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         visible on screen. For visual confirmation pair with
         optix_cdp_screenshot (server-side JPEG of the canvas).
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         dr = core.DeployRequest(
             edits=edits,
             commit_message=commit_message,
@@ -416,7 +444,8 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     # returned `edits` to optix_deploy. Collect edits from several calls
     # into ONE optix_deploy (e.g. switch + label + model var = one deploy).
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
+    @_with_project
     def optix_list_screens(project: str | None = None) -> dict:
         """List the Screen / Panel / Dialog nodes in a project's UI.
 
@@ -438,12 +467,10 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         Do NOT use this when:
           - you already know the screen name AND file
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return core.list_screens(cfg, project)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
+    @_with_project
     def optix_get_project_map(
         path: str | None = None, depth: int | None = None,
         max_nodes: int = 800, ids: bool = False, match: str | None = None,
@@ -495,9 +522,6 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - you need what a TYPE accepts / settable schema (optix_describe_type)
           - Studio/the bridge is closed (bridge-only; arm the bridge first)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         res = _bridge_guarded(project, lambda: core.get_project_map(
             cfg, project, path=path, depth=depth, max_nodes=max_nodes,
             ids=ids, match=match, fmt=format))
@@ -514,7 +538,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             hdr += " · TRUNCATED (raise max_nodes)"
         return hdr + "\n" + res["map"]
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
     def optix_bridge_status() -> dict:
         """Status of the design-time read-bridge (NetLogic HTTP listener in Studio).
 
@@ -534,7 +558,8 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return core.bridge_state(cfg)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
+    @_with_project
     def optix_describe_node(path: str, project: str | None = None) -> dict:
         """Introspect one node in the LIVE model via the design-time bridge.
 
@@ -560,12 +585,10 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             against the files instead)
           - you need a full-text search (use optix_find)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return core.describe_node(cfg, project, path)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
+    @_with_project
     def optix_list_ui_types(project: str | None = None) -> dict:
         """List the builtin UI type catalog from the LIVE model (design-time bridge).
 
@@ -584,12 +607,10 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - you already know the type name (go straight to optix_describe_type)
           - Studio is closed (the bridge is down)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return core.list_ui_types(cfg, project)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
+    @_with_project
     def optix_describe_type(
         type_name: str | None = None, type_names: list[str] | None = None,
         project: str | None = None,
@@ -614,9 +635,6 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             optix_describe_node with its path)
           - Studio is closed (the bridge is down)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         if type_names:
             # batch form: one round trip for a type survey
             out: dict = {"schemas": [], "errors": []}
@@ -642,7 +660,8 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         except (core.BridgeUnavailable, core.BridgeWriteFailed) as e:
             return core.classify_bridge_failure(cfg, project, e)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_bridge_create_widget(
         screen: str, name: str, widget_type: str = "Label",
         project: str | None = None,
@@ -691,13 +710,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             optix_bridge_create_object (also instantiates custom types),
             optix_bridge_create_type
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_create_widget(
             cfg, project, screen, name, widget_type))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_bridge_add_bound_widget(
         screen: str, name: str, widget_type: str,
         left: float | None = None, top: float | None = None,
@@ -728,15 +745,13 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - attaching computed expressions (optix_bridge_attach_expression)
           - a plain static label (optix_bridge_add_label is one arg shorter)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_add_bound_widget(
             cfg, project, screen, name, widget_type, left=left, top=top,
             width=width, height=height, text=text,
             bind_property=bind_property, source_path=source_path, mode=mode))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_bridge_add_navigation_panel_item(
         panel_path: str, title: str, screen_path: str | None = None,
         name: str | None = None, project: str | None = None,
@@ -756,13 +771,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - reordering tabs (optix_bridge_reorder)
           - retitling an existing tab (optix_bridge_set_property "Title")
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_add_navigation_panel_item(
             cfg, project, panel_path, title, screen_path=screen_path, name=name))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_bridge_add_label(
         screen: str, name: str, text: str,
         left: float | None = None, top: float | None = None, locale: str = "en-US",
@@ -786,13 +799,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - Studio is closed (live authoring needs Studio + the bridge)
           - the widget isn't a Label (use optix_bridge_create_widget)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_add_label(
             cfg, project, screen, name, text, left=left, top=top, locale=locale))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_bridge_ensure_web_engine(
         port: int = 8081, ip: str = "0.0.0.0", project: str | None = None,
     ) -> dict:
@@ -814,13 +825,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         Do NOT use this when:
           - Studio is closed (bridge-only; open Studio + StartBridge first)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_ensure_web_engine(
             cfg, project, port=port, ip=ip))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_bridge_set_property(
         node_path: str, name: str, value: str, locale: str = "en-US",
         project: str | None = None,
@@ -857,13 +866,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             while changing nothing. See the optix-verify-loop skill's
             blank-render checklist.
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_set_property(
             cfg, project, node_path, name, value, locale))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_bridge_create_variable(
         name: str, parent: str = "Model", datatype: str = "Boolean",
         project: str | None = None,
@@ -885,13 +892,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - you want a CONTAINER for variables (optix_bridge_create_object) or
             a grouping folder (optix_bridge_create_folder)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_create_variable(
             cfg, project, name, parent, datatype))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_bridge_create_folder(
         parent: str, name: str, project: str | None = None,
     ) -> dict:
@@ -912,13 +917,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         Do NOT use this when:
           - you want a data-holding container (optix_bridge_create_object)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_create_folder(
             cfg, project, parent, name))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_bridge_create_object(
         parent: str, name: str, object_type: str | None = None,
         project: str | None = None,
@@ -941,13 +944,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - you want a builtin UI control (optix_bridge_create_widget)
           - you want a plain grouping node (optix_bridge_create_folder)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_create_object(
             cfg, project, parent, name, object_type))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_bridge_create_type(
         name: str, parent: str, base_type: str | None = None,
         project: str | None = None,
@@ -973,13 +974,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         Do NOT use this when:
           - a one-off widget is enough (optix_bridge_create_widget)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_create_type(
             cfg, project, name, parent, base_type))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    @mcp.tool(annotations=_RW_DESTRUCTIVE)
+    @_with_project
     def optix_bridge_move_node(
         node_path: str, new_parent: str, new_name: str | None = None,
         project: str | None = None,
@@ -1006,13 +1005,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - you want a reusable template (optix_bridge_convert_to_type)
           - you only want z-order (optix_bridge_reorder)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_move_node(
             cfg, project, node_path, new_parent, new_name))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    @mcp.tool(annotations=_RW_DESTRUCTIVE)
+    @_with_project
     def optix_bridge_convert_to_type(
         node_path: str, type_name: str, types_folder: str = "UI/Templates",
         replace: bool = True, project: str | None = None,
@@ -1044,13 +1041,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - nothing is built yet (optix_bridge_create_type + author into it)
           - the node is already an ObjectType (already_a_type)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_convert_to_type(
             cfg, project, node_path, type_name, types_folder, replace))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_bridge_bind_property(
         node_path: str, name: str, source_path: str | None = None,
         mode: str = "Read", raw_path: str | None = None,
@@ -1085,13 +1080,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             after a separate create_widget, the orphan widget stays on the
             screen; the composite rolls it back automatically
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_bind_property(
             cfg, project, node_path, name, source_path, mode, raw_path))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_bridge_create_alias(
         parent_path: str, name: str, target_path: str | None = None,
         kind: str | None = None, project: str | None = None,
@@ -1119,13 +1112,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             (optix_bridge_bind_property with source_path)
           - Studio is closed
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_create_alias(
             cfg, project, parent_path, name, target_path, kind))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_bridge_add_translation(
         key: str, value: str, locale: str = "en-US",
         project: str | None = None,
@@ -1144,13 +1135,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - you want a literal one-off string (use optix_bridge_set_property)
           - Studio is closed
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_add_translation(
             cfg, project, key, value, locale))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    @mcp.tool(annotations=_RW_DESTRUCTIVE)
+    @_with_project
     def optix_bridge_delete_node(node_path: str, project: str | None = None) -> dict:
         """Delete a node from the live model via the bridge.
 
@@ -1166,13 +1155,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - you're unsure what references the node (you may break bindings)
           - Studio is closed
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_delete_node(
             cfg, project, node_path))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_bridge_reorder(
         node_path: str,
         position: str | None = None, index: int | None = None,
@@ -1200,13 +1187,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             outside a type — reorder silently has no effect)
           - Studio is closed (no live model to reorder)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_reorder_node(
             cfg, project, node_path, position=position, index=index))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_bridge_attach_expression(
         node_path: str, prop_name: str,
         expression: str, sources: str | None = None,
@@ -1238,13 +1223,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - the logic exceeds the 17-function set (needs a custom C# converter)
           - Studio is closed
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_attach_expression(
             cfg, project, node_path, prop_name, expression, sources=sources))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
+    @_with_project
     def optix_bridge_validate_expression(
         expression: str, sources: str | None = None,
         project: str | None = None,
@@ -1266,13 +1249,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - the expression is a plain 1:1 bind (use optix_bridge_bind_property)
           - Studio/the bridge is closed
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_validate_expression(
             cfg, project, expression, sources=sources))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_bridge_wire_event(
         node_path: str, event_type: str,
         method_path: str | None = None, command: str | None = None,
@@ -1297,15 +1278,12 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - the event type isn't a builtin UI event (returns event_not_found)
           - Studio is closed
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return _bridge_guarded(project, lambda: core.bridge_wire_event(
             cfg, project, node_path, event_type, method_path,
             command=command, variable=variable, value=value,
         ))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
     def optix_save(project: str | None = None) -> dict:
         """Persist the open project to disk (sends Ctrl+S to Studio).
 
@@ -1340,7 +1318,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             return {"saved": False, "error": "no project given and no bridge serving one — pass project or start the bridge"}
         return core.save(cfg, project)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
     def optix_run_emulator(project: str | None = None, save_first: bool = False) -> dict:
         """Launch the project in Studio's built-in emulator (sends F5 to Studio).
 
@@ -1391,7 +1369,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             return {"launched": False, "error": "no project given and no bridge serving one — pass project or start the bridge"}
         return core.run_emulator(cfg, project, save_first=save_first)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
     def optix_emulator_status() -> dict:
         """Emulator state: not_running / starting / running.
 
@@ -1413,7 +1391,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return core.emulator_status(cfg)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
     def optix_restart_emulator(project: str | None = None) -> dict:
         """Restart the emulator in one call: stop it if running, start it,
         wait until it's serving — THE way to make a STRUCTURAL edit visible
@@ -1435,7 +1413,8 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             return {"launched": False, "error": "no project given and no bridge serving one — pass project or start the bridge"}
         return core.restart_emulator(cfg, project)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
+    @_with_project
     def optix_runtime_log_tail(
         lines: int = 100, contains: str | None = None,
         project: str | None = None,
@@ -1463,12 +1442,9 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - you want deploy-verb output (this tail is the emulator/runtime log)
           - you're polling for readiness (optix_emulator_status is the probe)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return core.runtime_log_tail(cfg, project, lines=lines, contains=contains)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
     def optix_stop_emulator() -> dict:
         """Stop the local FTOptixRuntime emulator (terminates its process).
 
@@ -1487,7 +1463,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return core.stop_emulator(cfg)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    @mcp.tool(annotations=_RW_DESTRUCTIVE)
     def optix_deploy_updatesvc(
         project: str | None = None, run_after: bool = False,
         disable_source_transfer: bool | None = None,
@@ -1545,7 +1521,8 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             cfg, project, run_after=run_after,
             disable_source_transfer=disable_source_transfer, save_first=save_first)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_add_widget(
         screen: str,
         widgets: list[dict],
@@ -1583,12 +1560,10 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - the screen has no Children: block (rare; returns a structured
             error pointing you to an anchored edit)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return core.add_widget(cfg, project, screen, widgets, screen_file=screen_file)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_add_model_variable(
         name: str,
         datatype: str = "Boolean",
@@ -1614,14 +1589,12 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - the variable already exists (optix_find "Name: <name>" to check)
           - you need a non-Boolean type (tier-2; use an anchored edit)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return core.add_model_variable(
             cfg, project, name, datatype=datatype, value=value, model_file=model_file
         )
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_set_property(
         file: str,
         widget: str,
@@ -1648,12 +1621,10 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             edit (optix_find -> ranged read -> anchored find/replace)
           - you are adding a NEW property the widget doesn't have yet
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return core.set_property(cfg, project, file, widget, property, value)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
+    @_with_project
     def optix_deploy_preflight(project: str | None = None) -> dict:
         """Run every deploy precondition without launching Studio.
 
@@ -1682,12 +1653,9 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - you already ran a successful deploy in this session (stale
             preflight signal value)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return core.deploy_preflight(cfg, project)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
     def optix_studio_version() -> dict:
         """Return FTOptixStudio.exe --version output.
 
@@ -1700,7 +1668,8 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return core.studio_version(cfg)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
+    @_with_project
     def optix_runtime_start(
         port: int | None = None,
         timeout: float | None = None,
@@ -1744,12 +1713,10 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             (use optix_runtime_status)
           - the project has not been deployed yet (raises runtime_binary_not_found)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return core.runtime_start(cfg, project, port=port, timeout=timeout)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    @mcp.tool(annotations=_RW_DESTRUCTIVE)
+    @_with_project
     def optix_runtime_stop(project: str | None = None) -> dict:
         """Stop FTOptixRuntime processes attached to `project`'s runtime tree.
 
@@ -1769,12 +1736,9 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - you want to stop all FTOptixRuntime processes regardless of project
             (this only kills the ones bound to this project's tree)
         """
-        project = _resolve_project(project)
-        if not project:
-            return _NO_PROJECT
         return core.runtime_stop(cfg, project)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
     def optix_runtime_status(slot: str) -> dict:
         """Probe a runtime instance's reachability.
 
@@ -1799,7 +1763,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return core.runtime_status(cfg, slot)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    @mcp.tool(annotations=_RW_DESTRUCTIVE)
     def optix_cdp_click(
         x: float, y: float, navigate_url: str | None = None,
         settle_seconds: float | None = None,
@@ -1827,7 +1791,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         return core.cdp_click_runtime(
             cfg, x=x, y=y, navigate_url=navigate_url, settle_seconds=settle_seconds)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    @mcp.tool(annotations=_RW_DESTRUCTIVE)
     def optix_cdp_fill(
         x: float, y: float, text: str,
         submit: str | None = "Enter", select_all: bool = True,
@@ -1861,7 +1825,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             cfg, x=x, y=y, text=text, submit=submit, select_all=select_all,
             navigate_url=navigate_url, settle_seconds=settle_seconds)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    @mcp.tool(annotations=_RW_DESTRUCTIVE)
     def optix_cdp_type(
         text: str, navigate_url: str | None = None,
         settle_seconds: float | None = None,
@@ -1898,7 +1862,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         return core.cdp_type_runtime(
             cfg, text=text, navigate_url=navigate_url, settle_seconds=settle_seconds)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    @mcp.tool(annotations=_RW_DESTRUCTIVE)
     def optix_cdp_key(
         key: str, navigate_url: str | None = None,
         settle_seconds: float | None = None,
@@ -1929,7 +1893,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         return core.cdp_key_runtime(
             cfg, key=key, navigate_url=navigate_url, settle_seconds=settle_seconds)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
     def optix_cdp_screenshot(
         save_path: str | None = None, quality: int = 65,
         navigate_url: str | None = None, settle_seconds: float | None = None,
@@ -2022,7 +1986,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             return [json.dumps(result), _McpImage(path=result["path"])]
         return result
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
     def optix_cdp_ocr(
         navigate_url: str | None = None, settle_seconds: float | None = None,
         psm: int = 6,
@@ -2049,7 +2013,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         return core.cdp_ocr_runtime(
             cfg, navigate_url=navigate_url, settle_seconds=settle_seconds, psm=psm)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
     def optix_cdp_read_text(
         region: list[float] | None = None, navigate_url: str | None = None,
         settle_seconds: float | None = None, psm: int = 6,
@@ -2081,7 +2045,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             cfg, region=region, navigate_url=navigate_url,
             settle_seconds=settle_seconds, psm=psm)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
     def optix_cdp_find_text(
         text: str, navigate_url: str | None = None,
         settle_seconds: float | None = None,
@@ -2125,7 +2089,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     # needs local file access: optix_cdp_find_text (discover) ->
     # optix_routes_save (bank) -> optix_cdp_navigate/optix_cdp_sweep (replay).
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
     def optix_routes_save(
         project: str, routes: dict, name: str = "ftx_ui_map",
     ) -> dict:
@@ -2173,7 +2137,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return core.routes_save(cfg, project, routes, name=name)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
     def optix_routes_get(project: str, name: str = "ftx_ui_map") -> dict:
         """Read back a routes file saved with optix_routes_save —
         {state, path, routes: <full parsed versioned dict>}.
@@ -2205,7 +2169,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return core.routes_get(cfg, project, name=name)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
     def optix_routes_list(project: str) -> dict:
         """List every routes file saved under a project's `dev/` — what's
         already banked, before you navigate/sweep or save more.
@@ -2236,7 +2200,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return core.routes_list(cfg, project)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    @mcp.tool(annotations=_RW_DESTRUCTIVE)
     def optix_cdp_navigate(
         route: str, routes_path: str, expect: bool = True,
         navigate_url: str | None = None,
@@ -2296,7 +2260,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             cfg, route=route, routes_path=routes_path, expect=expect,
             navigate_url=navigate_url)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    @mcp.tool(annotations=_RW_DESTRUCTIVE)
     def optix_cdp_sweep(
         routes_path: str, out_dir: str, routes: list[str] | None = None,
         warmup: bool = True,
@@ -2355,7 +2319,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             cfg, routes_path=routes_path, out_dir=out_dir, routes=routes,
             warmup=warmup)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
     def optix_cdp_diff(dir_a: str, dir_b: str, threshold: float = 2.0) -> dict:
         """Compare two optix_cdp_sweep capture directories screen-by-screen
         — a visual regression check, no CDP session needed (pure file
@@ -2403,7 +2367,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return core.cdp_diff_runtime(dir_a, dir_b, threshold=threshold)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=_RW)
     def optix_cdp_restart(allow_restart: bool = True) -> dict:
         """Recover the chrome-cdp instance that screenshot/click drive.
 
@@ -2425,7 +2389,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return core.ensure_chrome_cdp(cfg, allow_restart=allow_restart)
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @mcp.tool(annotations=_RO)
     def optix_services_status() -> dict:
         """Aggregate health + studio version + runtime/cdp probes.
 
