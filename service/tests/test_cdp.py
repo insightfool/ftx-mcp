@@ -391,6 +391,53 @@ def test_cdp_type_navigates_first_when_url_given(cfg, fake_cdp):
     assert [p["url"] for (m, p, _) in ws.sent if m == "Page.navigate"] == ["http://localhost:8081/"]
 
 
+def test_cdp_key_navigates_first_when_url_given(cfg, fake_cdp):
+    """cdp_key_runtime shares the _navigate_if_given block — an explicit URL
+    navigates first and reports navigated=True."""
+    ws = fake_cdp()
+    out = core.cdp_key_runtime(cfg, "Enter", navigate_url="http://localhost:8081/")
+    assert out["navigated"] is True
+    assert [p["url"] for (m, p, _) in ws.sent if m == "Page.navigate"] == ["http://localhost:8081/"]
+
+
+def test_cdp_key_no_url_does_not_navigate(cfg, fake_cdp):
+    """No navigate_url -> _navigate_if_given is a no-op (navigated False); the
+    key press acts on whatever the tab already shows. This is the regression
+    guard for NOT routing key/click/type through _point_screenshot_at_runtime
+    (which would auto-navigate to the runtime URL here)."""
+    ws = fake_cdp()
+    out = core.cdp_key_runtime(cfg, "Enter")
+    assert out["navigated"] is False
+    assert [m for (m, _, _) in ws.sent if m == "Page.navigate"] == []
+
+
+class _SpySess:
+    """Minimal sess double for _navigate_if_given: records navigate() calls."""
+
+    def __init__(self):
+        self.navigated_to: list[str] = []
+
+    def navigate(self, url):
+        self.navigated_to.append(url)
+
+
+def test_navigate_if_given_no_url_is_noop(monkeypatch):
+    monkeypatch.setattr(core.time, "sleep", lambda s: None)
+    sess = _SpySess()
+    assert core._navigate_if_given(sess, None, 1.0) is False
+    assert core._navigate_if_given(sess, "", 1.0) is False
+    assert sess.navigated_to == []
+
+
+def test_navigate_if_given_url_navigates_and_settles(monkeypatch):
+    slept: list[float] = []
+    monkeypatch.setattr(core.time, "sleep", lambda s: slept.append(s))
+    sess = _SpySess()
+    assert core._navigate_if_given(sess, "http://x/", 0.25) is True
+    assert sess.navigated_to == ["http://x/"]
+    assert slept == [0.25]
+
+
 def test_cdp_key_enter_sends_down_up_with_commit_char(cfg, fake_cdp):
     ws = fake_cdp()
     out = core.cdp_key_runtime(cfg, "Enter")

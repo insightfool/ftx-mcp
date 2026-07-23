@@ -107,3 +107,48 @@ def test_add_navigation_panel_item(cfg: core.Config, monkeypatch) -> None:
     assert seen[0] == ("create", "UI/MainWindow/NavPanel", "ScreenD", "NavigationPanelItem")
     assert ("set", "UI/MainWindow/NavPanel/Panels/ScreenD", "Title", "Screen D") in seen
     assert ("set", "UI/MainWindow/NavPanel/Panels/ScreenD", "Panel", "UI/Screens/ScreenD") in seen
+
+
+def test_add_navigation_panel_item_rolls_back_on_title_failure(
+    cfg: core.Config, monkeypatch
+) -> None:
+    """Mirror of the bound-widget rollback test, closing the coverage gap that
+    hid the failure-envelope asymmetry: the nav-panel-item failure envelope
+    carries NEITHER a `steps` key NOR a rollback `hint` (unlike the bound-widget
+    composite). Pins that shape so the shared _make_bridge_rollback_fail factory
+    can't silently grow either key here."""
+    deleted = []
+    monkeypatch.setattr(core, "bridge_create_widget",
+                        lambda c, p, s, n, t: {"ok": True, "created_path": f"{s}/Panels/{n}"})
+
+    def failing_set(c, p, np, name, val, locale="en-US"):
+        raise core.BridgeWriteFailed("boom")
+    monkeypatch.setattr(core, "bridge_set_property", failing_set)
+    monkeypatch.setattr(core, "bridge_delete_node",
+                        lambda c, p, np: deleted.append(np) or {"ok": True})
+    out = core.bridge_add_navigation_panel_item(
+        cfg, "P", "UI/MainWindow/NavPanel", "Screen D",
+        screen_path="UI/Screens/ScreenD")
+    assert out["ok"] is False and out["failed_step"] == "set Title"
+    assert out["rolled_back"] is True
+    assert deleted == ["UI/MainWindow/NavPanel/Panels/ScreenD"]
+    # asymmetry vs bound-widget: no steps list, no hint on this envelope
+    assert "steps" not in out and "hint" not in out
+
+
+def test_add_navigation_panel_item_reports_orphan_without_hint(
+    cfg: core.Config, monkeypatch
+) -> None:
+    """When rollback itself fails, the nav-panel-item envelope reports
+    orphaned_path but — unlike bound-widget — still NO `hint`."""
+    monkeypatch.setattr(core, "bridge_create_widget",
+                        lambda c, p, s, n, t: {"ok": True, "created_path": f"{s}/Panels/{n}"})
+    monkeypatch.setattr(core, "bridge_set_property",
+                        lambda *a, **k: (_ for _ in ()).throw(core.BridgeWriteFailed("boom")))
+    monkeypatch.setattr(core, "bridge_delete_node",
+                        lambda c, p, np: (_ for _ in ()).throw(core.BridgeWriteFailed("also boom")))
+    out = core.bridge_add_navigation_panel_item(
+        cfg, "P", "UI/MainWindow/NavPanel", "Screen D")
+    assert out["ok"] is False and out["rolled_back"] is False
+    assert out["orphaned_path"] == "UI/MainWindow/NavPanel/Panels/ScreenD"
+    assert "hint" not in out and "steps" not in out

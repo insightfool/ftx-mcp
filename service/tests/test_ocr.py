@@ -20,17 +20,52 @@ def _stub_shot(monkeypatch, **over) -> None:
                         lambda *a, **k: base)
 
 
+_TSV_HEADER = (
+    "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num"
+    "\tleft\ttop\twidth\theight\tconf\ttext"
+)
+
+
+def _tsv(*words: tuple[str, float], line_step: int = 0) -> str:
+    """Build a minimal level-5 tesseract TSV from (text, conf) pairs.
+
+    Words share one (block, par) group; each gets a distinct line_num when
+    line_step>0 (so _reconstruct_ocr_text puts them on separate lines) or a
+    shared line with incrementing word_num when line_step==0."""
+    rows = [_TSV_HEADER]
+    for i, (text, conf) in enumerate(words):
+        line_num = 1 + (i if line_step else 0)
+        word_num = 1 if line_step else 1 + i
+        rows.append(
+            f"5\t1\t1\t1\t{line_num}\t{word_num}"
+            f"\t{10 + i * 90}\t10\t80\t30\t{conf}\t{text}")
+    return "\n".join(rows) + "\n"
+
+
 def test_ocr_returns_recognized_text(cfg, monkeypatch) -> None:
     _stub_shot(monkeypatch)
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tesseract")
-    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "Hello Optix\nStart"))
+    # TSV mode: "Hello Optix" on line 1 (word_num 1,2), "Start" on line 2 ->
+    # reconstructed text preserves the line break.
+    tsv = (
+        _TSV_HEADER + "\n"
+        "5\t1\t1\t1\t1\t1\t10\t10\t80\t30\t95.0\tHello\n"
+        "5\t1\t1\t1\t1\t2\t95\t10\t100\t30\t93.0\tOptix\n"
+        "5\t1\t1\t1\t2\t1\t10\t50\t60\t30\t90.0\tStart\n"
+    )
+    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, tsv))
     out = core.cdp_ocr_runtime(cfg, runner=runner)
     assert out["state"] == "succeeded"
     assert "Hello Optix" in out["text"]
+    # reconstruction preserves per-line grouping (words space-joined, lines
+    # newline-joined) — not byte-identical to tesseract's text renderer.
+    assert out["text"] == "Hello Optix\nStart"
     assert out["size_bytes"] == 42 and out["navigated"] is True
-    # invoked tesseract with a psm and stdout target
+    assert "low_confidence" not in out  # all words high-conf
+    # invoked tesseract in TSV mode with a psm and stdout target
     cmd = runner.calls[0][0]
-    assert cmd[0] == "/usr/bin/tesseract" and "stdout" in cmd and "--psm" in cmd
+    assert cmd[0] == "/usr/bin/tesseract"
+    assert "stdout" in cmd and "--psm" in cmd and "tsv" in cmd
 
 
 def test_ocr_missing_binary_is_soft_failure(cfg, monkeypatch) -> None:
@@ -65,13 +100,15 @@ def test_ocr_reports_tesseract_nonzero(cfg, monkeypatch) -> None:
 def test_read_text_returns_recognized_text(cfg, monkeypatch) -> None:
     _stub_shot(monkeypatch, region=[10.0, 20.0, 30.0, 40.0])
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tesseract")
-    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "SP-101"))
+    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, _tsv(("SP-101", 92.0))))
     out = core.cdp_read_text_runtime(cfg, region=[0.1, 0.1, 0.2, 0.2], runner=runner)
     assert out["state"] == "succeeded"
     assert out["text"] == "SP-101"
     assert out["region"] == [10.0, 20.0, 30.0, 40.0]
+    assert out["confidence"] == {"mean": 0.92, "min": 0.92}
     cmd = runner.calls[0][0]
-    assert cmd[0] == "/usr/bin/tesseract" and "stdout" in cmd and "--psm" in cmd
+    assert cmd[0] == "/usr/bin/tesseract"
+    assert "stdout" in cmd and "--psm" in cmd and "tsv" in cmd
 
 
 def test_read_text_forwards_region_to_screenshot(cfg, monkeypatch) -> None:
@@ -108,6 +145,88 @@ def test_read_text_propagates_screenshot_failure(cfg, monkeypatch) -> None:
     out = core.cdp_read_text_runtime(cfg, runner=runner)
     assert out["state"] == "failed" and out["error"] == "bad_region"
     assert out["region"] is None
+
+
+# ---- OCR TSV confidence signal (U8 Part B) -------------------------------
+
+def test_ocr_confidence_reported_when_high(cfg, monkeypatch) -> None:
+    """A high-confidence pass surfaces confidence:{mean,min} as [0,1] fractions
+    with NO low_confidence/next_step marker."""
+    _stub_shot(monkeypatch)
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tesseract")
+    tsv = _tsv(("Alarm", 96.0), ("Active", 90.0))
+    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, tsv))
+    out = core.cdp_ocr_runtime(cfg, runner=runner)
+    assert out["state"] == "succeeded"
+    assert out["text"] == "Alarm Active"
+    assert out["confidence"] == {"mean": 0.93, "min": 0.90}
+    assert out["confidence"]["mean"] >= cfg.ocr_conf_threshold
+    assert "low_confidence" not in out and "next_step" not in out
+
+
+def test_ocr_low_confidence_nudge_when_below_threshold(cfg, monkeypatch) -> None:
+    """A below-threshold mean flags low_confidence=True + a next_step nudge that
+    points at ground-truth reads."""
+    _stub_shot(monkeypatch)
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tesseract")
+    tsv = _tsv(("Blur", 15.0), ("Noise", 20.0))
+    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, tsv))
+    out = core.cdp_ocr_runtime(cfg, runner=runner)
+    assert out["state"] == "succeeded"
+    assert out["confidence"]["mean"] < cfg.ocr_conf_threshold
+    assert out["low_confidence"] is True
+    assert "optix_describe_node" in out["next_step"]
+    assert "return_image=true" in out["next_step"]
+
+
+def test_ocr_no_words_has_no_confidence_field(cfg, monkeypatch) -> None:
+    """An empty frame (no word rows) yields empty text and NO confidence key —
+    there is no aggregate to report."""
+    _stub_shot(monkeypatch)
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tesseract")
+    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, _TSV_HEADER + "\n"))
+    out = core.cdp_ocr_runtime(cfg, runner=runner)
+    assert out["state"] == "succeeded"
+    assert out["text"] == "" and "confidence" not in out
+    assert "low_confidence" not in out
+
+
+def test_read_text_confidence_reported_when_high(cfg, monkeypatch) -> None:
+    _stub_shot(monkeypatch, region=[1.0, 2.0, 3.0, 4.0])
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tesseract")
+    tsv = _tsv(("Setpoint", 88.0), ("42", 94.0))
+    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, tsv))
+    out = core.cdp_read_text_runtime(cfg, region=[0.1, 0.1, 0.2, 0.2], runner=runner)
+    assert out["state"] == "succeeded"
+    assert out["text"] == "Setpoint 42"
+    assert out["confidence"] == {"mean": 0.91, "min": 0.88}
+    assert out["region"] == [1.0, 2.0, 3.0, 4.0]
+    assert "low_confidence" not in out
+
+
+def test_read_text_low_confidence_nudge_when_below_threshold(cfg, monkeypatch) -> None:
+    _stub_shot(monkeypatch, region=[1.0, 2.0, 3.0, 4.0])
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tesseract")
+    tsv = _tsv(("smudge", 12.0), ("blur", 18.0))
+    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, tsv))
+    out = core.cdp_read_text_runtime(cfg, region=[0.1, 0.1, 0.2, 0.2], runner=runner)
+    assert out["state"] == "succeeded"
+    assert out["low_confidence"] is True
+    assert "optix_describe_node" in out["next_step"]
+    assert out["region"] == [1.0, 2.0, 3.0, 4.0]
+
+
+def test_ocr_confidence_threshold_honors_config(cfg, monkeypatch) -> None:
+    """The gate reads cfg.ocr_conf_threshold — a raised threshold flips an
+    otherwise-fine pass to low_confidence."""
+    import dataclasses
+    strict = dataclasses.replace(cfg, ocr_conf_threshold=0.95)
+    _stub_shot(monkeypatch)
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tesseract")
+    tsv = _tsv(("Ready", 90.0), ("Go", 88.0))  # mean 0.89, below 0.95
+    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, tsv))
+    out = core.cdp_ocr_runtime(strict, runner=runner)
+    assert out["low_confidence"] is True
 
 
 # ---- find_text tesseract TSV behaviors (S4 feature 3) --------------------
