@@ -1,4 +1,4 @@
-# ftx-mcp v1.0.3 — draft release notes
+# ftx-mcp v1.0.3 — release notes
 
 Theme: token economy + install UX. The efficiency tools implement a
 workflow validated in production field use; the install fixes close out

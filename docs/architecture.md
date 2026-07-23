@@ -70,12 +70,25 @@ path in this distribution.)
 ## Error envelope
 
 Every domain error carries `http_status`, a snake_case `code`, and
-optionally a `hint` and docs anchor; both surfaces render it the same way:
+optionally a `hint` and docs anchor:
 
 ```json
 { "code": "studio_open", "message": "...", "hint": "...",
   "docs_url": "docs/troubleshooting.md#studio-open" }
 ```
+
+The two surfaces do **not** render this the same way today. HTTP
+(`http_app.py`'s `_core_handler`) emits the full envelope above. MCP loses
+`code`/`hint`/`docs_url` for a raised `core.CoreError` on any non-bridge
+tool: FastMCP rewraps the uncaught exception as a bare
+`ToolError(str(e))` string, and those fields are class attributes on
+`CoreError`, not part of its string form. Bridge-write tools are a third
+shape again — they return the **nudge result contract**
+(`{state, reason_code, nudge, ...}`) via `classify_bridge_failure`, not
+this envelope at all. See [`docs/errors.md`](errors.md) for the full
+convention: the canonical envelope, which shapes are grandfathered as
+result contracts, and the distinction between an error envelope (raised)
+and a result contract (returned).
 
 ## Security posture
 

@@ -1,6 +1,6 @@
 # Tool reference
 
-62 tools, grouped by where they sit in the loop. Every tool's docstring
+65 tools, grouped by where they sit in the loop. Every tool's docstring
 carries "Use when / Do NOT use when" guidance for the model, and MCP
 annotations (`readOnlyHint`/`destructiveHint`) so hosts can auto-run reads
 and gate writes. `project` is optional everywhere — it defaults to the
@@ -65,6 +65,7 @@ with the valid-property list rather than crashing Studio.
 | `optix_cdp_ocr` | Text read-back fallback when the client has no vision |
 | `optix_cdp_read_text` | OCR a region (or the full frame) — the zero-vision-token "does it say X" check (needs tesseract) |
 | `optix_cdp_find_text` | Locate rendered text: word boxes + clickable centers, feeds `optix_cdp_click` and route building (needs tesseract) |
+| `optix_routes_save` / `_get` / `_list` | Bank/read/list navigation routes files server-side under `<project>/dev/` — the CREATE/read half of the routes-banking loop consumed by `optix_cdp_navigate` / `optix_cdp_sweep` |
 | `optix_cdp_navigate` | Replay a banked route from a routes file — zero-screenshot navigation; `expect_text` steps OCR-verify arrival |
 | `optix_cdp_sweep` | Walk a route map in one session, capture per screen + OCR text manifest — baseline builder |
 | `optix_cdp_diff` | Compare two sweep dirs: pixel gate + text-level delta per screen, pure text output |
@@ -84,3 +85,10 @@ curl -X POST "http://127.0.0.1:8765/runtime/cdp-screenshot?save_path=C:/Temp/sho
 
 See [`architecture.md`](architecture.md) for the request contract and error
 envelope.
+
+**Deploy & ship** — the deploy family (`optix_deploy`, `optix_deploy_updatesvc`,
+`optix_deploy_preflight`) and the legacy v0.2.x single-shot authoring tools
+(`optix_add_widget`, `optix_add_model_variable`, `optix_set_property`) are
+deliberately not in the tables above — see [`architecture.md`](architecture.md#what-it-talks-to)'s
+note under "What it talks to": this distribution authors, previews, and
+verifies; shipping to hardware happens from Studio's own Deploy dialog.

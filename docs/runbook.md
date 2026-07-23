@@ -67,6 +67,22 @@ Tails the newest `FTOptixRuntime.*.log` under the emulator's per-project log dir
 | Scheduled task status | `.\bootstrap\services.ps1 status` |
 | Deploy preflight (no Studio launch) | `curl -X POST http://127.0.0.1:8765/projects/<name>/deploy/preflight` |
 
+## Advanced env vars
+
+Operator escape hatches not covered by `setup.ps1` prompts — set with
+`setx <name> <value>` (or before `services.ps1 start`) and restart the
+service to pick them up:
+
+| Var | Default | What it does |
+|---|---|---|
+| `OPTIX_BRIDGE_ENABLED` | `true` | Disable the design-time bridge integration entirely (`false`/`0`) — for a pure emulator+CDP workflow with no live-model authoring. |
+| `OPTIX_BRIDGE_URL` | `http://127.0.0.1:8768` | Where the service looks for the armed `StudioMCPBridge` NetLogic listener. Only change if you've rebound the bridge's own listener port. |
+| `OPTIX_BRIDGE_TOKEN` | unset | Shared secret for the bridge listener, if you've configured one on the NetLogic side. |
+| `OPTIX_CDP_URL` | `http://127.0.0.1:9222` | Chrome DevTools Protocol endpoint the CDP verify tools drive. |
+| `OPTIX_CDP_SETTLE_SECONDS` | `1.0` | Post-navigate settle before a CDP screenshot/click. Measured range 0.3s-3.5s produces byte-identical captures; raise it if a site's runtime renders slower than the default headroom covers. |
+| `OPTIX_CDP_AUTOHEAL` | `true` | Silent one-shot self-heal when a CDP tool can't connect or finds no page target — restarts the `ftx-mcp-chrome-cdp` task once, then retries. `0`/`false` disables it and surfaces the raw `cdp_unavailable` error instead, useful when diagnosing a flaky Chrome install. |
+| `FTX_SAVE_GENTLE_FOCUS` | `1` (on) | `optix_save`'s focus-preserving Ctrl+S path. `0`/`false` reverts to the legacy always-refocus behavior — the escape hatch if gentle-focus misbehaves on an unusual window-manager setup. |
+
 ## Common situations
 
 **"The bridge won't respond / `bridge_unreachable`"** — never an auto-restart (the service does not own Studio's process):
