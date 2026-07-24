@@ -283,7 +283,7 @@ TOOL_SCOPES: dict[str, str] = {
     "optix_health": "health",
     "optix_runtime_status": "health",
     "optix_services_status": "health",
-    # ---- read (24): read-only introspection ----
+    # ---- read (27): read-only introspection ----
     "optix_doctor": "read",
     "optix_list_skills": "read",
     "optix_get_skill": "read",
@@ -296,6 +296,9 @@ TOOL_SCOPES: dict[str, str] = {
     "optix_describe_node": "read",
     "optix_list_ui_types": "read",
     "optix_describe_type": "read",
+    "optix_schema_dump": "read",
+    "optix_schema_list": "read",
+    "optix_schema_diff": "read",
     "optix_bridge_validate_expression": "read",
     "optix_emulator_status": "read",
     "optix_runtime_log_tail": "read",

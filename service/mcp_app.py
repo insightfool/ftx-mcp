@@ -15,9 +15,9 @@ import anyio
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from . import __version__, auth, core
+from . import __version__, auth, core, optix_schema
 
-# Shared MCP ToolAnnotations: 3 distinct hint tuples cover all 65 tools.
+# Shared MCP ToolAnnotations: 3 distinct hint tuples cover all tools.
 # Safe to share single instances across registrations -- FastMCP only
 # reads them (Tool.from_function stores the reference and model_dump()s
 # it for tool listing); nothing mutates a ToolAnnotations post-build.
@@ -652,6 +652,94 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             return {"error": "bad_request",
                     "message": "pass type_name or type_names"}
         return core.describe_type(cfg, project, type_name)
+
+    @mcp.tool(annotations=_RO)
+    @_with_project
+    def optix_schema_dump(project: str | None = None) -> dict:
+        """Fetch + cache the FULL type-schema dump for the running Studio version.
+
+        Enumerates the whole builtin type catalog x per-type property schema
+        into an offline cache keyed by Studio version, then returns a compact
+        SUMMARY — {studio_version, generated_at, type_count, property_count,
+        path} — never the full dump (it is large). The cached file powers
+        offline reads and cross-version diffing (optix_schema_diff).
+
+        Requires Studio open with this project, the bridge running, AND the
+        bridge's /bridge/schema/dump endpoint (a bridge build). When any of
+        those is missing it returns a structured `bridge_unavailable` error
+        instead of raising.
+
+        Use this when:
+          - you want to snapshot the current Studio version's schema for
+            offline use or later cross-version comparison
+
+        Do NOT use this when:
+          - you only need one type's shape (use optix_describe_type)
+          - Studio is closed (the bridge is down)
+        """
+        try:
+            dump = optix_schema.ensure_dump(cfg, project)
+        except core.BridgeUnavailable:
+            return {
+                "error": "bridge_unavailable",
+                "hint": ("schema dump needs Studio open + the bridge armed + "
+                         "the /bridge/schema/dump endpoint (bridge build)"),
+            }
+        path = optix_schema.cache_path(cfg, dump.get("studio_version", ""))
+        return optix_schema.dump_summary(dump, path)
+
+    @mcp.tool(annotations=_RO)
+    def optix_schema_list() -> dict:
+        """List the Studio versions whose schema dumps are cached on disk.
+
+        Returns {versions: [<studio_version>, ...]}. Pure offline read — no
+        Studio required. Feed any two of these to optix_schema_diff.
+
+        Use this when:
+          - you want to know which schema snapshots are available to diff
+
+        Do NOT use this when:
+          - you want the shape of a live type (use optix_describe_type)
+        """
+        return {"versions": optix_schema.list_cached(cfg)}
+
+    @mcp.tool(annotations=_RO)
+    def optix_schema_diff(version_a: str, version_b: str) -> dict:
+        """Diff two cached schema dumps (upgrade intelligence, offline).
+
+        `version_a` is the older/from version, `version_b` the newer/to.
+        Returns {added_types, removed_types, changed_types, summary:{...}}
+        where changed_types maps a type to its added/removed/changed
+        properties (a changed prop = same name, different datatype or
+        settable). Both versions must be cached (optix_schema_dump on each
+        box, or optix_schema_list to see what is available); if either is
+        missing it returns {error: "version_not_cached", missing, available}.
+
+        Use this when:
+          - the user asks what changed in the type schema between two Studio
+            versions (new types, dropped properties, datatype changes)
+
+        Do NOT use this when:
+          - a version has not been dumped yet (run optix_schema_dump there)
+        """
+        a = optix_schema.load_dump(cfg, version_a)
+        b = optix_schema.load_dump(cfg, version_b)
+        missing = [v for v, d in ((version_a, a), (version_b, b)) if d is None]
+        if missing:
+            return {
+                "error": "version_not_cached",
+                "missing": missing,
+                "available": optix_schema.list_cached(cfg),
+            }
+        diff = optix_schema.schema_diff(a, b)
+        diff["summary"] = {
+            "version_a": version_a,
+            "version_b": version_b,
+            "added_types": len(diff["added_types"]),
+            "removed_types": len(diff["removed_types"]),
+            "changed_types": len(diff["changed_types"]),
+        }
+        return diff
 
     def _bridge_guarded(project: str, fn):
         """Run a live-model bridge write; on a bridge failure return a

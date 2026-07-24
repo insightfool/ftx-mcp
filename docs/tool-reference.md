@@ -1,6 +1,6 @@
 # Tool reference
 
-65 tools, grouped by where they sit in the loop. Every tool's docstring
+68 tools, grouped by where they sit in the loop. Every tool's docstring
 carries "Use when / Do NOT use when" guidance for the model, and MCP
 annotations (`readOnlyHint`/`destructiveHint`) so hosts can auto-run reads
 and gate writes. `project` is optional everywhere — it defaults to the
@@ -18,6 +18,7 @@ project open in Studio.
 | `optix_find` / `optix_read_file` | Search / read project files |
 | `optix_describe_node` | Live node: children, properties, values |
 | `optix_list_ui_types` / `optix_describe_type` | Widget catalog + per-type property legend (consult before setting); `type_names=[...]` batches a survey into one call |
+| `optix_schema_dump` / `optix_schema_list` / `optix_schema_diff` | Cache the full type-schema dump per Studio version (offline), list cached versions, diff two versions (upgrade intelligence) |
 | `optix_bridge_status` / `optix_studio_version` / `optix_services_status` | Component status |
 | `optix_list_skills` / `optix_get_skill` | Bundled authoring playbooks — catalog + on-demand full content (served by the server itself, version-locked to the tools) |
 
