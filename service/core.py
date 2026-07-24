@@ -342,6 +342,17 @@ class Config:
     runtime_dir: Path | None = None
     runtime_launcher: str | None = None
     runtime_test_port: int = 8081
+    # External-runtime attach (U19). Default "" = OFF/legacy: the service owns
+    # the runtime (F5 emulator / export-deploy) and every liveness probe targets
+    # loopback on runtime_test_port. Set OPTIX_RUNTIME_URL to a full
+    # scheme://host:port (e.g. "https://10.0.0.5:8443/") to ATTACH to an
+    # already-running external WebPresentationEngine instead: CDP navigation +
+    # all probes retarget that host/port (chrome-cdp tolerates the self-signed
+    # runtime cert via --ignore-certificate-errors), and the two runtime-
+    # management actions (run_emulator F5, runtime_start) plus
+    # bridge_ensure_web_engine flip to "external — not managed here". Read
+    # via runtime_base_url / runtime_probe_host / runtime_probe_port / attach_mode.
+    runtime_url: str = ""
     bind_host: str = "127.0.0.1"
     bind_http_port: int = 8765
     bind_mcp_port: int = 8766
@@ -452,6 +463,7 @@ class Config:
             runtime_dir=runtime_dir,
             runtime_launcher=os.environ.get("OPTIX_RUNTIME_LAUNCHER"),
             runtime_test_port=int(os.environ.get("OPTIX_RUNTIME_TEST_PORT", "8081")),
+            runtime_url=os.environ.get("OPTIX_RUNTIME_URL", "").strip(),
             bind_host=os.environ.get("OPTIX_BIND_HOST", "127.0.0.1"),
             bind_http_port=int(os.environ.get("OPTIX_HTTP_PORT", "8765")),
             bind_mcp_port=int(os.environ.get("OPTIX_MCP_PORT", "8766")),
@@ -1174,6 +1186,19 @@ def bridge_ensure_web_engine(
     first window) and returns {existed:false, path, port, start_window}. Requires
     Studio open with this project + the bridge running.
     """
+    # ATTACH MODE (U19): the external runtime owns its own WebPresentationEngine
+    # — the service is not the one hosting the canvas, so provisioning one here
+    # would be pointless (and would require Studio + the bridge that the attach
+    # deployment does not run). Refuse before the bridge write.
+    if attach_mode(cfg):
+        return {
+            "ok": False,
+            "error": "external_runtime",
+            "hint": (
+                "OPTIX_RUNTIME_URL is set — the external runtime owns its "
+                "WebPresentationEngine; not provisioning one."
+            ),
+        }
     return _bridge_write(
         cfg, project, "ensure_web_engine", "/bridge/setup/web-engine",
         {"port": str(int(port)), "ip": ip},
@@ -2778,6 +2803,21 @@ def run_emulator(
     serving=True means the runtime port answered (safe to screenshot).
     """
     audit(cfg, "emulator_run", project=project)
+    # ATTACH MODE (U19): OPTIX_RUNTIME_URL is set, so an EXTERNAL runtime owns
+    # its own lifecycle — the service must not send F5 (that would start a
+    # SECOND, service-owned emulator alongside the attached runtime). Refuse
+    # BEFORE the F5 guard / keystroke; the caller screenshots/verifies against
+    # the external runtime directly.
+    if attach_mode(cfg):
+        return {
+            "launched": False, "focused": False, "saved": None, "serving": False,
+            "state": "external", "reason_code": "external_runtime",
+            "runtime_url": cfg.runtime_url,
+            "nudge": (
+                "OPTIX_RUNTIME_URL is set — the runtime is externally managed; "
+                "the service won't send F5. Screenshot/verify against it directly."
+            ),
+        }
     # Resolve the bridge-owner PID FIRST — the live UIA target read needs it, and
     # the F5 keystroke below aims at the SAME instance (with two Studio windows
     # open, "first window" can F5 the wrong project). Computed once, reused.
@@ -2845,14 +2885,15 @@ def run_emulator(
         # fired immediately hits nothing. Poll the runtime port until it's serving so
         # a caller can screenshot right after.
         import socket
-        port = cfg.runtime_test_port
+        port = runtime_probe_port(cfg)
+        probe_host = runtime_probe_host(cfg)
         started = time.time()
         serving = False
         while time.time() - started < ready_timeout:
             sk = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sk.settimeout(0.5)
             try:
-                serving = sk.connect_ex(("127.0.0.1", int(port))) == 0
+                serving = sk.connect_ex((probe_host, int(port))) == 0
             except OSError:
                 serving = False
             finally:
@@ -3006,8 +3047,8 @@ def emulator_status(cfg: Config, runner: Runner = _DEFAULT_RUNNER) -> dict:
             pids = [int(x) for x in m.group(1).split(",") if x]
     except Exception:
         pass
-    port = cfg.runtime_test_port
-    reachable = _tcp_probe("127.0.0.1", port)
+    port = runtime_probe_port(cfg)
+    reachable = _tcp_probe(runtime_probe_host(cfg), port)
     if pids and reachable:
         state = "running"
     elif pids:
@@ -3396,8 +3437,8 @@ def services_status(cfg: Config, runner: Runner = _DEFAULT_RUNNER) -> dict:
         "health": health(cfg),
         "studio_version": studio_version(cfg, runner),
         "runtime_test": {
-            "port": cfg.runtime_test_port,
-            "tcp_reachable": _tcp_probe("127.0.0.1", cfg.runtime_test_port),
+            "port": runtime_probe_port(cfg),
+            "tcp_reachable": _tcp_probe(runtime_probe_host(cfg), runtime_probe_port(cfg)),
             "checked_at": _now_iso(),
         },
         "cdp": {
@@ -3430,14 +3471,20 @@ def runtime_status(cfg: Config, slot: str) -> dict:
     """
     if slot not in {"test", "mgmt"}:
         raise ProjectNotFound(f"unknown runtime slot: {slot}")
-    port = cfg.runtime_test_port if slot == "test" else int(
-        os.environ.get("OPTIX_HMI_PORT", "8086")
-    )
+    # The 'test' slot is the runtime canvas — retargeted to the external
+    # host/port in attach mode. 'mgmt' is the separate management HMI port and
+    # stays loopback (it is not the attached runtime).
+    if slot == "test":
+        host = runtime_probe_host(cfg)
+        port = runtime_probe_port(cfg)
+    else:
+        host = "127.0.0.1"
+        port = int(os.environ.get("OPTIX_HMI_PORT", "8086"))
     import socket
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(0.5)
     try:
-        connected = s.connect_ex(("127.0.0.1", port)) == 0
+        connected = s.connect_ex((host, port)) == 0
     except OSError:
         connected = False
     finally:
@@ -3639,6 +3686,21 @@ def runtime_start(
       service is in session 0 (not interactive), WebPresentationEngine not
       configured in the project, port collision.
     """
+    # ATTACH MODE (U19): OPTIX_RUNTIME_URL is set, so an external runtime owns
+    # its lifecycle — do NOT spawn a service-owned FTOptixRuntime.exe. Refuse at
+    # entry (before any tree resolution / spawn) with the external shape.
+    if attach_mode(cfg):
+        return {
+            "state": "external",
+            "reason_code": "external_runtime",
+            "project": project,
+            "runtime_url": cfg.runtime_url,
+            "pid": None,
+            "nudge": (
+                "OPTIX_RUNTIME_URL is set — the runtime is externally managed; "
+                "the service won't spawn a runtime. Verify against it directly."
+            ),
+        }
     runtime_project_dir = _runtime_project_dir(cfg, project)
     bundled_exe = runtime_project_dir / "FTOptixApplication" / "FTOptixRuntime.exe"
     optix_path = runtime_project_dir / f"{project}.optix"
@@ -3675,7 +3737,7 @@ def runtime_start(
     # a second spawn would orphan the first runtime (Optix doesn't share
     # the port; the second process either fails silently or fights for it).
     # Return without spawning so repeat calls are safe.
-    if _tcp_probe("127.0.0.1", probe_port, 0.5):
+    if _tcp_probe(runtime_probe_host(cfg), probe_port, 0.5):
         confirmed_at = time.time()
         return {
             "state": "already_running",
@@ -3696,7 +3758,7 @@ def runtime_start(
     deadline = started_at + timeout_seconds
     confirmed_at: float | None = None
     while time.time() < deadline:
-        if _tcp_probe("127.0.0.1", probe_port, 0.5):
+        if _tcp_probe(runtime_probe_host(cfg), probe_port, 0.5):
             confirmed_at = time.time()
             break
         time.sleep(cfg.verify_poll_seconds)
@@ -3881,10 +3943,57 @@ def _cdp_session(cfg: Config, _heal: bool | None = None):
         raise CDPUnavailable(f"CDP endpoint {cfg.cdp_url} unreachable: {e}") from e
 
 
-def _runtime_verify_url(cfg: Config) -> str:
-    """The URL the CDP runtime-verify tools point at by default: the local
-    Optix runtime's web canvas (loopback, on the runtime test port)."""
+def attach_mode(cfg: Config) -> bool:
+    """True when OPTIX_RUNTIME_URL is set: the service ATTACHES to an external,
+    already-running WebPresentationEngine rather than owning the runtime. In
+    attach mode the runtime-management actions (F5 emulator, export-deploy
+    runtime_start, web-engine provisioning) refuse — the external runtime owns
+    its own lifecycle."""
+    return bool(cfg.runtime_url)
+
+
+def runtime_base_url(cfg: Config) -> str:
+    """The base URL of the Optix web runtime canvas CDP navigation points at.
+
+    Attach mode (runtime_url set): that URL, trailing-slash normalized — may be
+    https:// and/or non-loopback (chrome-cdp tolerates the self-signed runtime
+    cert via --ignore-certificate-errors; see bootstrap/install-chrome-cdp.ps1).
+    Legacy: loopback on the runtime test port (byte-identical to the pre-U19
+    default)."""
+    if cfg.runtime_url:
+        base = cfg.runtime_url
+        return base if base.endswith("/") else base + "/"
     return f"http://127.0.0.1:{cfg.runtime_test_port}/"
+
+
+def runtime_probe_host(cfg: Config) -> str:
+    """Host the TCP liveness probes connect to. Attach mode: the runtime_url
+    hostname. Legacy: loopback (unchanged)."""
+    if cfg.runtime_url:
+        from urllib.parse import urlparse
+        return urlparse(cfg.runtime_url).hostname or "127.0.0.1"
+    return "127.0.0.1"
+
+
+def runtime_probe_port(cfg: Config) -> int:
+    """Port the TCP liveness probes connect to. Attach mode: the runtime_url
+    port (or the scheme default 443/80 when the URL omits one). Legacy: the
+    runtime test port (unchanged)."""
+    if cfg.runtime_url:
+        from urllib.parse import urlparse
+        u = urlparse(cfg.runtime_url)
+        if u.port is not None:
+            return u.port
+        return 443 if (u.scheme or "").lower() == "https" else 80
+    return cfg.runtime_test_port
+
+
+def _runtime_verify_url(cfg: Config) -> str:
+    """The URL the CDP runtime-verify tools point at by default: the Optix
+    runtime's web canvas. Loopback on the runtime test port in the legacy
+    (service-owned) case; the external runtime's URL in attach mode
+    (OPTIX_RUNTIME_URL set) — see runtime_base_url."""
+    return runtime_base_url(cfg)
 
 
 def _point_screenshot_at_runtime(
@@ -5580,7 +5689,7 @@ def verify_runtime_probe(cfg: Config, _runtime_project_dir: Path, deploy_started
     reference and calls positionally (cfg, runtime_project_dir, started_at).
     """
     def _probe() -> tuple[bool, str | None]:
-        if _tcp_probe("127.0.0.1", cfg.runtime_test_port, timeout=0.5):
+        if _tcp_probe(runtime_probe_host(cfg), runtime_probe_port(cfg), timeout=0.5):
             return True, _now_iso()
         return False, None
     return _poll_until(cfg, deploy_started_at, "runtime_probe", _probe)
@@ -5724,8 +5833,8 @@ def deploy_preflight(
             checks["git"] = {"is_repo": None}
 
     # 7. Runtime port — TCP probe (informational; absence is normal pre-bounce)
-    runtime_port = cfg.runtime_test_port
-    reachable = _tcp_probe("127.0.0.1", runtime_port, timeout=1.0)
+    runtime_port = runtime_probe_port(cfg)
+    reachable = _tcp_probe(runtime_probe_host(cfg), runtime_port, timeout=1.0)
     checks["runtime"] = {
         "port": runtime_port,
         "tcp_reachable": reachable,
