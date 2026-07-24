@@ -332,6 +332,28 @@ def test_run_emulator_no_spawn_no_dialog_visible(
     assert "No blocking dialog was visible" in out["hint"]
 
 
+def test_active_target_prefers_uia_then_falls_back(
+    cfg, monkeypatch, tmp_path
+) -> None:
+    """core.active_target resolves the bridge PID then prefers the live UIA read;
+    off-Windows the read is None so it falls back to the config file."""
+    from service import studio_uia
+    _config(tmp_path, monkeypatch, "emu-id")
+    monkeypatch.setattr(core, "_bridge_owner_pid", lambda cfg, runner=None: 4242)
+    # UIA live read wins when present
+    monkeypatch.setattr(studio_uia, "read_selected_target_name",
+                        lambda pid, names: "Line3 Panel")
+    live = core.active_target(cfg)
+    assert live["name"] == "Line3 Panel" and live["source"] == "uia_live"
+    assert live["is_emulator"] is False
+    # None from UIA -> config-file fallback (the file still says Emulator)
+    monkeypatch.setattr(studio_uia, "read_selected_target_name",
+                        lambda pid, names: None)
+    fb = core.active_target(cfg)
+    assert fb["name"] == "Emulator" and fb["source"] != "uia_live"
+    assert fb["is_emulator"] is True
+
+
 def test_pending_dialog_returns_empty_off_windows() -> None:
     """Off Windows / uiautomation absent, pending_dialog degrades to [] cleanly
     (no exception) — the signal for 'no visible dialog'."""
