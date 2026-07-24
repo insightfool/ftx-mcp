@@ -36,6 +36,9 @@ EXPECTED_TOOLS = {
     "optix_describe_node",
     "optix_list_ui_types",
     "optix_describe_type",
+    "optix_schema_dump",
+    "optix_schema_list",
+    "optix_schema_diff",
     "optix_bridge_create_widget",
     "optix_bridge_add_label",
     "optix_bridge_add_bound_widget",
@@ -137,7 +140,8 @@ def test_mcp_tools_carry_readonly_destructive_annotations(cfg: core.Config) -> N
             "optix_bridge_validate_expression",
             "optix_emulator_status", "optix_runtime_log_tail",
             "optix_get_project_map", "optix_list_skills", "optix_get_skill",
-            "optix_routes_get", "optix_routes_list"}
+            "optix_routes_get", "optix_routes_list",
+            "optix_schema_dump", "optix_schema_list", "optix_schema_diff"}
     DESTRUCTIVE = {"optix_deploy","optix_deploy_updatesvc","optix_bridge_delete_node",
                    "optix_runtime_stop","optix_cdp_click","optix_cdp_type",
                    "optix_cdp_key","optix_cdp_fill","optix_cdp_navigate",
@@ -748,12 +752,13 @@ def test_with_project_preserves_full_schema_for_multiarg_tool(cfg: core.Config) 
 
 
 def test_with_project_tool_count_and_annotations_unchanged(cfg: core.Config) -> None:
-    """The mechanical pass is behavior-preserving: still 65 tools, and the
-    shared _RO/_RW/_RW_DESTRUCTIVE constants carry the same hint values the
-    per-site ToolAnnotations did (spot-check one of each class)."""
+    """The mechanical pass is behavior-preserving: the shared
+    _RO/_RW/_RW_DESTRUCTIVE constants carry the same hint values the per-site
+    ToolAnnotations did (spot-check one of each class). Tool count grows as
+    new tools land (68 after the U15 schema tools)."""
     mcp = make_mcp(cfg)
     by_name = {t.name: t for t in _list_tools(mcp)}
-    assert len(by_name) == 65
+    assert len(by_name) == 68
     assert by_name["optix_list_screens"].annotations.readOnlyHint is True
     write = by_name["optix_bridge_set_property"].annotations
     assert write.readOnlyHint is False and write.destructiveHint is False
