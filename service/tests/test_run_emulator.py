@@ -299,3 +299,78 @@ def test_run_emulator_still_starting_says_poll_not_toggle(
                             runner=runner)
     assert out["runtime_identity"] == "starting"
     assert "TOGGLES" in out["hint"] and "probable_cause" not in out
+
+
+# --- U20: LIVE per-window UIA target read (Windows-only, mocked on Linux) -----
+
+def _with_bridge(monkeypatch, pid: int = 4242) -> None:
+    """Force the bridge-owner PID resolution so run_emulator passes a real
+    bridge_pid into resolve_active_target (the autouse fixture disables bridges).
+    Later monkeypatch wins over the autouse _no_bridge_by_default."""
+    monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_bridge_owner_pid", lambda cfg, runner=None: pid)
+
+
+def test_uia_live_read_overrides_stale_file_and_refuses(
+    cfg, projects_root, monkeypatch, tmp_path
+) -> None:
+    """The core value: the config file says Emulator (safe) but the LIVE toolbar
+    is on a hardware panel. The UIA read must WIN and refuse — source uia_live,
+    no keystroke — even though the file would have green-lit the run."""
+    _proj(projects_root)
+    _config(tmp_path, monkeypatch, "emu-id")  # file claims the emulator is active
+    _with_bridge(monkeypatch)
+    monkeypatch.setattr(core.studio_uia, "read_selected_target_name",
+                        lambda pid, names: "Line3 Panel")
+    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "FOCUSED=True PID=1"))
+    out = core.run_emulator(cfg, "Alpha", wait_ready=False, runner=runner)
+    assert out["reason_code"] == "active_target_not_emulator"
+    assert out["launched"] is False
+    assert out["source"] == "uia_live"
+    assert out["target"]["name"] == "Line3 Panel"
+    assert "live" in out["nudge"].lower()
+    assert runner.calls == []  # NO keystroke was sent
+
+
+def test_uia_live_read_emulator_proceeds(
+    cfg, projects_root, monkeypatch, tmp_path
+) -> None:
+    """Live toolbar reads Emulator → proceeds via the uia_live path (even if the
+    file's active target were something else)."""
+    _proj(projects_root)
+    _config(tmp_path, monkeypatch, "panel-id")  # file would refuse
+    _with_bridge(monkeypatch)
+    monkeypatch.setattr(core.studio_uia, "read_selected_target_name",
+                        lambda pid, names: "Emulator")
+    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "FOCUSED=True PID=1"))
+    out = core.run_emulator(cfg, "Alpha", wait_ready=False, runner=runner)
+    assert out["launched"] is True
+
+
+def test_uia_none_falls_back_to_config_file(
+    cfg, projects_root, monkeypatch, tmp_path
+) -> None:
+    """UIA returns None (unavailable) → fall back to the config file: refuse when
+    the file's active target is a panel, proceed when it's the emulator."""
+    _proj(projects_root)
+    _with_bridge(monkeypatch)
+    monkeypatch.setattr(core.studio_uia, "read_selected_target_name",
+                        lambda pid, names: None)
+    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "FOCUSED=True PID=1"))
+
+    _config(tmp_path, monkeypatch, "panel-id")
+    out = core.run_emulator(cfg, "Alpha", wait_ready=False, runner=runner)
+    assert out["reason_code"] == "active_target_not_emulator"
+    assert out["source"] != "uia_live"
+    assert "may" in out["nudge"] or "dropdown" in out["nudge"]
+
+    _config(tmp_path, monkeypatch, "emu-id")
+    out = core.run_emulator(cfg, "Alpha", wait_ready=False, runner=runner)
+    assert out["launched"] is True
+
+
+def test_studio_uia_read_returns_none_on_linux() -> None:
+    """The UIA read is Windows-only; on Linux (no uiautomation) it must degrade
+    to None cleanly — no exception — so resolve_active_target falls back."""
+    from service import studio_uia
+    assert studio_uia.read_selected_target_name(1234, {"Emulator"}) is None
