@@ -2912,18 +2912,34 @@ def run_emulator(
                 tgt = studio_active_deployment_target(cfg)
                 file_claims_emu = tgt.get("known") and tgt.get("is_emulator")
                 result["probable_cause"] = "target_or_modal"
-                result["hint"] = (
-                    "F5 was sent and Studio took focus, but NO emulator process "
-                    "spawned. F5 runs Studio's SELECTED deployment target — the "
-                    "most likely causes are (1) the toolbar target dropdown is set "
-                    "to another target (a deploy/credentials dialog may have opened) "
-                    "or (2) a modal dialog (e.g. the NetLogic security warning) ate "
-                    "the keystroke. The service cannot see the dropdown or dialogs"
-                    + (" — Studio's saved config claims Emulator, but that file "
-                       "lags the live toolbar, so don't trust it" if file_claims_emu else "")
-                    + ". Ask the user to: set the target dropdown to Emulator, "
-                    "dismiss any open dialog, then retry. Do NOT retry-loop F5 — "
-                    "each press fires at whatever target is selected.")
+                # UIA can SEE a blocking dialog the keystroke path is blind to
+                # (the deploy/credentials prompt). Name it when present, turning
+                # this from "the service cannot see dialogs" into a concrete cause.
+                dialogs = studio_uia.pending_dialog(target_pid) if target_pid else []
+                if dialogs:
+                    d = dialogs[0]
+                    result["blocking_dialog"] = d
+                    result["hint"] = (
+                        "F5 was sent and Studio took focus, but NO emulator process "
+                        f"spawned — a dialog titled {d.get('title')!r} is open on "
+                        "Studio and is eating the keystroke (most likely a deploy/"
+                        "credentials prompt from a non-emulator target). Ask the user "
+                        "to dismiss it and set the target dropdown to Emulator, then "
+                        "retry. Do NOT retry-loop F5 — each press fires at whatever "
+                        "target is selected.")
+                else:
+                    result["hint"] = (
+                        "F5 was sent and Studio took focus, but NO emulator process "
+                        "spawned. F5 runs Studio's SELECTED deployment target — the "
+                        "most likely causes are (1) the toolbar target dropdown is set "
+                        "to another target (a deploy/credentials dialog may have opened) "
+                        "or (2) a modal dialog (e.g. the NetLogic security warning) ate "
+                        "the keystroke. No blocking dialog was visible via UI Automation"
+                        + (" — Studio's saved config claims Emulator, but that file "
+                           "lags the live toolbar, so don't trust it" if file_claims_emu else "")
+                        + ". Ask the user to: set the target dropdown to Emulator, "
+                        "dismiss any open dialog, then retry. Do NOT retry-loop F5 — "
+                        "each press fires at whatever target is selected.")
             else:
                 result["hint"] = (
                     f"F5 sent + Studio focused, but nothing is serving on :{port} after "

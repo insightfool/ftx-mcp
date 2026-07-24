@@ -77,3 +77,48 @@ def read_selected_target_name(pid: int, target_names: set[str]) -> str | None:
         return found[0] if found else None
     except Exception:
         return None
+
+
+def pending_dialog(pid: int) -> list[dict]:
+    """Blocking top-level dialog(s) owned by Studio window `pid`, if any.
+
+    Read-only, background-safe. Enumerates the process's top-level windows and
+    returns any that read as a distinct dialog (a WindowControl with a title
+    that is not the main project window) plus whatever static text it exposes —
+    e.g. the deploy/credentials prompt that eats an F5 keystroke and leaves the
+    emulator never spawning. This gives the F5-not-serving diagnosis a concrete
+    cause instead of "the service cannot see dialogs".
+
+    Returns a list of {title, text} dicts (usually 0 or 1). Returns [] on ANY
+    failure — off-Windows / uiautomation absent / no interactive desktop / no
+    dialog. [] means "no visible blocking dialog (or I cannot see one)".
+    """
+    try:
+        import uiautomation as auto  # lazy: Windows-only, may be absent
+
+        hits: list[dict] = []
+        for w in auto.GetRootControl().GetChildren():
+            try:
+                if w.ProcessId != pid:
+                    continue
+                if w.ControlTypeName != "WindowControl":
+                    continue
+                title = w.Name or ""
+                # the main project window carries the app title; a dialog is a
+                # distinct top-level window owned by the same PID.
+                if not title or "Optix Studio" in title:
+                    continue
+                text = ""
+                try:
+                    for t in w.GetChildren():
+                        if (t.ControlTypeName in ("TextControl", "EditControl")
+                                and (t.Name or "")):
+                            text += t.Name + " "
+                except Exception:
+                    pass
+                hits.append({"title": title, "text": text.strip()})
+            except Exception:
+                continue
+        return hits
+    except Exception:
+        return []

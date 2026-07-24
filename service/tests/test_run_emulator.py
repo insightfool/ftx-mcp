@@ -286,6 +286,59 @@ def test_run_emulator_no_spawn_hypothesizes_target_or_modal(
     assert "dropdown" in out["hint"] and "retry-loop" in out["hint"]
 
 
+def test_run_emulator_no_spawn_names_blocking_dialog(
+    cfg, projects_root, monkeypatch
+) -> None:
+    """When F5 doesn't spawn the emulator AND UIA sees a blocking dialog owned
+    by the bridge Studio, the diagnosis must NAME it (U22) instead of saying the
+    service can't see dialogs."""
+    from service import studio_uia
+    _proj(projects_root)
+    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "FOCUSED=True PID=1"))
+    monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_bridge_owner_pid", lambda cfg, runner=None: 4242)
+    monkeypatch.setattr(core, "emulator_status",
+                        lambda c, runner=None: {"state": "not_running"})
+    monkeypatch.setattr(studio_uia, "pending_dialog",
+                        lambda pid: [{"title": "Deploy credentials", "text": "Enter password"}])
+    import dataclasses
+    cfg2 = dataclasses.replace(cfg, runtime_test_port=65431)
+    out = core.run_emulator(cfg2, "Alpha", wait_ready=True, ready_timeout=0.1,
+                            runner=runner)
+    assert out["probable_cause"] == "target_or_modal"
+    assert out["blocking_dialog"]["title"] == "Deploy credentials"
+    assert "Deploy credentials" in out["hint"] and "retry-loop" in out["hint"]
+
+
+def test_run_emulator_no_spawn_no_dialog_visible(
+    cfg, projects_root, monkeypatch
+) -> None:
+    """Bridge present but UIA sees no blocking dialog: fall back to the generic
+    hypothesis, and say the UIA check found nothing (not 'cannot see')."""
+    from service import studio_uia
+    _proj(projects_root)
+    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "FOCUSED=True PID=1"))
+    monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_bridge_owner_pid", lambda cfg, runner=None: 4242)
+    monkeypatch.setattr(core, "emulator_status",
+                        lambda c, runner=None: {"state": "not_running"})
+    monkeypatch.setattr(studio_uia, "pending_dialog", lambda pid: [])
+    import dataclasses
+    cfg2 = dataclasses.replace(cfg, runtime_test_port=65431)
+    out = core.run_emulator(cfg2, "Alpha", wait_ready=True, ready_timeout=0.1,
+                            runner=runner)
+    assert out["probable_cause"] == "target_or_modal"
+    assert "blocking_dialog" not in out
+    assert "No blocking dialog was visible" in out["hint"]
+
+
+def test_pending_dialog_returns_empty_off_windows() -> None:
+    """Off Windows / uiautomation absent, pending_dialog degrades to [] cleanly
+    (no exception) — the signal for 'no visible dialog'."""
+    from service import studio_uia
+    assert studio_uia.pending_dialog(4242) == []
+
+
 def test_run_emulator_still_starting_says_poll_not_toggle(
     cfg, projects_root, monkeypatch
 ) -> None:
