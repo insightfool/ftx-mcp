@@ -1483,6 +1483,29 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return core.emulator_status(cfg)
 
+    @mcp.tool(annotations=_RO)
+    def optix_active_target() -> dict:
+        """Which deployment target Studio's dropdown has selected — the thing an
+        F5 (optix_run_emulator) would actually run.
+
+        Reads the LIVE per-window selection off the bridge's Studio toolbar via
+        UI Automation, so it is accurate even when Studio's Configuration.xml is
+        stale (Studio flushes it lazily — it can say Emulator while the toolbar
+        is really on a hardware panel). Returns {known, name, is_emulator, ip,
+        source} where source="uia_live" is the definitive live read and the
+        config-file path is the lazy fallback (used off-Windows, without the
+        bridge, or outside an interactive session).
+
+        Use this when:
+          - checking whether F5 is safe (is_emulator) BEFORE optix_run_emulator
+          - the user asks "what target is selected?" — this is the clean read
+            (optix_run_emulator only reports the target as a refusal side effect)
+
+        Do NOT use this when:
+          - you want emulator PROCESS state (optix_emulator_status)
+        """
+        return core.active_target(cfg)
+
     @mcp.tool(annotations=_RW)
     def optix_restart_emulator(project: str | None = None) -> dict:
         """Restart the emulator in one call: stop it if running, start it,

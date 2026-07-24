@@ -2776,6 +2776,17 @@ def resolve_active_target(cfg: Config, bridge_pid: int | None = None) -> dict:
     return studio_active_deployment_target(cfg)
 
 
+def active_target(cfg: Config, runner: Runner = _DEFAULT_RUNNER) -> dict:
+    """Read the selected deploy target: the live per-window UIA read off the
+    bridge's Studio window, with the Configuration.xml advisory as fallback.
+
+    Convenience wrapper over resolve_active_target that resolves the bridge-owner
+    PID first. `source` is "uia_live" when the live toolbar was read (definitive,
+    Windows + bridge + session-1), else the config-file path (lazy, may be stale)."""
+    bp = _bridge_owner_pid(cfg, runner)
+    return resolve_active_target(cfg, bridge_pid=bp)
+
+
 def run_emulator(
     cfg: Config,
     project: str,

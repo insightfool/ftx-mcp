@@ -301,6 +301,7 @@ TOOL_SCOPES: dict[str, str] = {
     "optix_schema_diff": "read",
     "optix_bridge_validate_expression": "read",
     "optix_emulator_status": "read",
+    "optix_active_target": "read",
     "optix_runtime_log_tail": "read",
     "optix_deploy_preflight": "read",
     "optix_studio_version": "read",
