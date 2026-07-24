@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from . import studio_guard
+from . import studio_uia
 from .deploy_lock import DeployLock
 
 # ---- domain errors ----------------------------------------------------
@@ -2687,6 +2688,69 @@ def studio_active_deployment_target(cfg: Config) -> dict:
             "ip": ip, "type": ttype, "source": str(path)}
 
 
+def _deployment_targets_by_name(cfg: Config) -> dict[str, dict]:
+    """Every deployment target DEFINED in Studio's Configuration.xml, keyed by
+    display name — {name: {"type": <str>, "ip": <str>}}.
+
+    Reads the SAME file studio_active_deployment_target parses (via
+    _studio_configuration_xml, so OPTIX_STUDIO_CONFIG_XML is honored), but
+    returns the whole targets collection rather than only the active one — the
+    live UIA read yields a display name and needs every definition to look up its
+    type/ip. Fail-open: {} on any read/parse error, so an unreadable file just
+    disables the UIA-override branch and leaves the fallback untouched.
+    """
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.parse(_studio_configuration_xml()).getroot()
+    except (OSError, ET.ParseError):
+        return {}
+    by_name: dict[str, dict] = {}
+    try:
+        for item in root.iter("Item"):
+            vals = {v.get("name"): (v.text or "") for v in item.findall("Value")}
+            if vals.get("name") != "deployment" or "activeTargetId" not in vals:
+                continue
+            for coll in item.findall("Collection"):
+                if coll.get("name") != "targets":
+                    continue
+                for t in coll.findall("Item"):
+                    tv = {v.get("name"): (v.text or "")
+                          for v in t.findall("Value")}
+                    nm = tv.get("name")
+                    if nm:
+                        by_name[nm] = {"type": tv.get("type", ""),
+                                       "ip": tv.get("ipAddress", "")}
+    except Exception:
+        return {}
+    return by_name
+
+
+def resolve_active_target(cfg: Config, bridge_pid: int | None = None) -> dict:
+    """Which deploy target Studio has selected — preferring a LIVE per-window UIA
+    read, falling back to the Configuration.xml advisory.
+
+    Studio flushes activeTargetId lazily, so the file can say Emulator while the
+    live toolbar is on a hardware panel. When a bridge PID is known and the file
+    yields target definitions, read the selection straight off that window's
+    toolbar (studio_uia, background-safe, Windows-only). A confirmed live name
+    that matches a defined target is DEFINITIVE (source "uia_live"). If the read
+    is unavailable (off-Windows, uiautomation absent, window/selector not found)
+    it returns None and we fall through to studio_active_deployment_target
+    unchanged (source stays the config-file path).
+    """
+    defs = _deployment_targets_by_name(cfg)
+    if bridge_pid and defs:
+        name = studio_uia.read_selected_target_name(bridge_pid, set(defs))
+        if name and name in defs:
+            d = defs[name]
+            ip = d.get("ip", "")
+            is_emu = d.get("type") == "2" and ip.lower() in (
+                "localhost", "127.0.0.1", "")
+            return {"known": True, "is_emulator": is_emu, "name": name,
+                    "ip": ip, "type": d.get("type", ""), "source": "uia_live"}
+    return studio_active_deployment_target(cfg)
+
+
 def run_emulator(
     cfg: Config,
     project: str,
@@ -2714,37 +2778,52 @@ def run_emulator(
     serving=True means the runtime port answered (safe to screenshot).
     """
     audit(cfg, "emulator_run", project=project)
-    # F5 GUARD: F5 runs Studio's SELECTED deployment target, which is only the
-    # emulator if the operator's dropdown says so. If Studio's persisted state
-    # says a non-emulator target is active, sending F5 could ship to hardware —
-    # refuse instead. The dropdown is operator-owned; the service never
-    # switches it. (Studio may flush this file lazily, so the post-launch
-    # process-identity check below is the second layer.)
-    tgt = studio_active_deployment_target(cfg)
-    if tgt.get("known") and not tgt.get("is_emulator"):
-        audit(cfg, "emulator_run_refused", project=project, target=tgt.get("name"))
-        return {
-            "launched": False, "focused": False, "saved": None, "serving": False,
-            "state": "refused", "reason_code": "active_target_not_emulator",
-            "target": {"name": tgt.get("name"), "ip": tgt.get("ip")},
-            "nudge": (
-                f"Studio's deployment dropdown is set to {tgt.get('name')!r} "
-                f"({tgt.get('ip')}). F5 runs the SELECTED target — pressing it "
-                "now could deploy to that device, not start the emulator. Ask "
-                "the user to switch the target dropdown to Emulator, then retry. "
-                "The service never changes the selection itself."),
-        }
-    saved = None
-    if save_first:
-        s = save(cfg, project, runner=runner)
-        saved = s.get("saved")
-    # Aim F5 at the exact Studio instance hosting the bridge, same as
-    # save — with two Studio windows open, "first window" can F5 the wrong project.
+    # Resolve the bridge-owner PID FIRST — the live UIA target read needs it, and
+    # the F5 keystroke below aims at the SAME instance (with two Studio windows
+    # open, "first window" can F5 the wrong project). Computed once, reused.
     target_pid = 0
     if _use_bridge_for(cfg, project):
         bp = _bridge_owner_pid(cfg, runner)
         if bp:
             target_pid = bp
+    # F5 GUARD: F5 runs Studio's SELECTED deployment target, which is only the
+    # emulator if the operator's dropdown says so. If the active target is a
+    # non-emulator, sending F5 could ship to hardware — refuse instead. The
+    # dropdown is operator-owned; the service never switches it. Prefer the LIVE
+    # per-window UIA read (definitive); fall back to the lazily-flushed config
+    # file when UIA is unavailable (the post-launch process-identity check below
+    # is the second layer in either case).
+    tgt = resolve_active_target(cfg, bridge_pid=target_pid or None)
+    if tgt.get("known") and not tgt.get("is_emulator"):
+        audit(cfg, "emulator_run_refused", project=project, target=tgt.get("name"))
+        live = tgt.get("source") == "uia_live"
+        if live:
+            nudge = (
+                f"Studio's toolbar target is {tgt.get('name')!r} "
+                f"({tgt.get('ip')}) — read LIVE from the window, so this is "
+                "definitive, not a stale config guess. F5 runs the SELECTED "
+                "target — pressing it now would deploy to that device, not start "
+                "the emulator. Ask the user to switch the target dropdown to "
+                "Emulator, then retry. The service never changes the selection "
+                "itself.")
+        else:
+            nudge = (
+                f"Studio's deployment dropdown is set to {tgt.get('name')!r} "
+                f"({tgt.get('ip')}). F5 runs the SELECTED target — pressing it "
+                "now could deploy to that device, not start the emulator. Ask "
+                "the user to switch the target dropdown to Emulator, then retry. "
+                "The service never changes the selection itself.")
+        return {
+            "launched": False, "focused": False, "saved": None, "serving": False,
+            "state": "refused", "reason_code": "active_target_not_emulator",
+            "target": {"name": tgt.get("name"), "ip": tgt.get("ip")},
+            "source": tgt.get("source"),
+            "nudge": nudge,
+        }
+    saved = None
+    if save_first:
+        s = save(cfg, project, runner=runner)
+        saved = s.get("saved")
     proc = runner.run_powershell(
         _build_save_ps(target_pid, gentle=_gentle_focus(), send_key="{F5}"),
         timeout=30,
