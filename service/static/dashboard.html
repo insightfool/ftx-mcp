@@ -97,6 +97,7 @@
       <div class="sub" id="s_sub">coord :8765</div>
       <div class="row"><span class="k">interactive session</span><span class="v" id="s_int">—</span></div>
       <div class="row"><span class="k">doctor</span><span class="v" id="s_doc">—</span></div>
+      <div class="row"><span class="k">mcp client</span><span class="v" id="s_mcp">—</span></div>
       <div class="bar"><i id="s_bar" style="width:0%"></i></div>
     </div>
 
@@ -183,6 +184,11 @@ function render(d){
   $('s_int').innerHTML=s.interactive?'<span class="ok">session 1</span>':'<span class="warn">session 0</span>';
   const dc=d.doctor||[]; const okc=dc.filter(x=>x.ok).length;
   $('s_doc').textContent=okc+'/'+dc.length+' ok';
+  const mc=d.mcp_client;
+  const escv=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+  $('s_mcp').innerHTML = mc && mc.name
+    ? `<span class="ok">${escv(mc.name)}${mc.version?(' '+escv(mc.version)):''}</span>`
+    : '<span class="sub">none connected</span>';
   $('s_bar').style.width=(dc.length? Math.round(100*okc/dc.length):0)+'%';
   // checks
   $('checks').innerHTML=dc.map(x=>`<div class="row"><span class="k">${x.name}</span><span class="v ${x.ok?'ok':'bad'}">${x.ok?'ok':'fail'}</span></div>`).join('')||'<div class="sub">no data</div>';

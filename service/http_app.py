@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from . import __version__, core
+from ._client_registry import current_client
 from .deploy_lock import DeployLockEvicted, LockHeld
 
 
@@ -271,6 +272,9 @@ def make_app(cfg: core.Config) -> FastAPI:
     def ui_stats_endpoint() -> dict:
         out = core.ui_stats(cfg)
         out.setdefault("capabilities", {})["tools"] = _tools_catalog()
+        # Connected MCP client captured on the initialize handshake (main.py
+        # records it into _client_registry); None when nothing has connected.
+        out["mcp_client"] = current_client()
         return out
 
     @app.get("/ui", response_class=HTMLResponse)

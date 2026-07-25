@@ -24,7 +24,7 @@ from typing import Any
 
 import uvicorn
 
-from . import __version__, _cdp, core
+from . import __version__, _cdp, _client_registry, core
 from .auth import AuthMiddleware, TokenStore
 from .http_app import make_app
 from .mcp_app import make_mcp
@@ -41,6 +41,62 @@ def _port_holder(host: str, port: int) -> str | None:
         return f"{e.__class__.__name__}: {e}"
     finally:
         s.close()
+
+
+def _port_is_served(host: str, port: int, *, timeout: float = 0.5) -> bool:
+    """True if something is already ACCEPTING connections on host:port.
+
+    Distinct from `_port_holder` (a bind probe): connect_ex returning 0 means
+    a live listener answered, i.e. another instance is already serving — the
+    signature of the observed venv-vs-system-python double-launch, where two
+    interpreters start near-simultaneously, both clear the early bind probe
+    while the port is momentarily free, and then one wins the bind. connect_ex
+    never raises for the ordinary refused/timeout cases; it returns a non-zero
+    errno, which we read as "free"."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        return s.connect_ex((host, port)) == 0
+    except OSError:
+        # Unresolvable host / socket-layer failure: treat as "not served" so a
+        # probe glitch never blocks a legitimate boot (the bind will surface any
+        # real problem authoritatively).
+        return False
+    finally:
+        s.close()
+
+
+def guard_double_launch(cfg: core.Config) -> int:
+    """Late (pre-serve) guard against a racing second instance.
+
+    The early bind probe in `main()` catches a port that is ALREADY taken when
+    the process starts. This guard closes the TOCTOU window between that probe
+    and the actual uvicorn bind: run it right before serving and, if the MCP or
+    HTTP port has since started answering, exit non-zero cleanly instead of
+    letting uvicorn crash with a raw bind traceback.
+
+    Returns 0 to proceed, or a non-zero exit code when a live listener is
+    detected. Emits one clear line per served port on stderr."""
+    for label, port in (
+        ("MCP", cfg.bind_mcp_port),
+        ("HTTP", cfg.bind_http_port),
+    ):
+        if _port_is_served(cfg.bind_host, port):
+            print(
+                f"FAIL: {label} port {port} already served by another instance "
+                "— exiting to avoid a double-launch.",
+                file=sys.stderr,
+                flush=True,
+            )
+            print(
+                "  A second ftx-mcp (often a venv-vs-system-python race) is "
+                "already listening. This process is exiting; the running one "
+                "keeps serving.",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 4
+    return 0
 
 
 def check_lan_bind_safety(
@@ -106,6 +162,41 @@ def check_lan_bind_safety(
         )
 
     return 0, fails, warns
+
+
+def _install_client_capture(mcp: Any) -> None:
+    """Record the connected MCP client's name+version for the /ui dashboard.
+
+    The MCP `initialize` handshake carries `clientInfo`, but the low-level
+    server handles `initialize` entirely inside `ServerSession` — there is no
+    registerable initialize callback. By the time ANY post-init request reaches
+    the server's `_handle_request`, though, `session.client_params.clientInfo`
+    is populated (every client sends `tools/list` immediately after
+    `initialize`). Wrapping `_handle_request` here is a main.py-level seam that
+    leaves mcp_app.py untouched. It records the identity into the process-global
+    `_client_registry`; the /ui surface reads it.
+
+    Fully guarded: a shape change in the MCP SDK degrades to "no capture", never
+    to a crash of request dispatch. The wrap is a no-op if the private handler
+    is absent (SDK shape guard)."""
+    server = getattr(mcp, "_mcp_server", None)
+    orig = getattr(server, "_handle_request", None)
+    if orig is None:
+        return  # pragma: no cover - SDK shape guard
+
+    async def _handle_request_capturing(message, req, session, lifespan_context, raise_exceptions):  # type: ignore[no-untyped-def]
+        try:
+            params = getattr(session, "client_params", None)
+            info = getattr(params, "clientInfo", None) if params else None
+            if info is not None:
+                _client_registry.record_client(
+                    getattr(info, "name", None), getattr(info, "version", None)
+                )
+        except Exception:  # pragma: no cover - never break dispatch over telemetry
+            pass
+        return await orig(message, req, session, lifespan_context, raise_exceptions)
+
+    server._handle_request = _handle_request_capturing
 
 
 def _wrap_with_auth(
@@ -182,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
 
     http_app: Any = make_app(cfg)
     mcp = make_mcp(cfg)
+    _install_client_capture(mcp)
     mcp_asgi: Any = mcp.streamable_http_app()
 
     http_app_authed = _wrap_with_auth(http_app, store, auth_required=cfg.auth_required)
@@ -231,6 +323,12 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
             flush=True,
         )
+
+    # Late double-launch guard: closes the TOCTOU window between the early bind
+    # probe above and the uvicorn bind below (venv-vs-system-python race).
+    guard_code = guard_double_launch(cfg)
+    if guard_code != 0:
+        return guard_code
 
     async def serve_both() -> None:
         await asyncio.gather(http_server.serve(), mcp_server.serve())
