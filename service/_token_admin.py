@@ -38,7 +38,16 @@ def _empty_payload() -> dict[str, Any]:
 
 
 def _read_payload(raw: str) -> dict[str, Any]:
-    raw = raw.strip()
+    # Tolerate a leading UTF-8 BOM. PowerShell 5.1 piping a string to a native
+    # process emits one when the console code page is 65001, so on a box with
+    # UTF-8 mode enabled (`chcp 65001`, or Windows' "Use Unicode UTF-8 for
+    # worldwide language support") issue-token.ps1 hands us "﻿\r\n" for
+    # what should be an EMPTY first-install payload — and str.strip() does not
+    # remove it, because U+FEFF is not whitespace. That failed the very first
+    # token issuance on a fresh box with "stdin is not valid JSON: Unexpected
+    # UTF-8 BOM". Observed on the VM 2026-07-24 under CP 65001; the default
+    # console (ACP 1252 / OEM 437) does not reproduce it.
+    raw = raw.lstrip("﻿").strip()
     if not raw:
         return _empty_payload()
     payload = json.loads(raw)
