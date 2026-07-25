@@ -2132,7 +2132,14 @@ public class StudioMCPBridge : BaseNetLogic
                                         addErr(idx, "unresolved_parent",
                                                "no parent node at '" + parentPath + "'" + NearestHint(parentPath, willCreate), null);
                                 }
-                                if (ResolveNode(newPath) != null)
+                                // Credit an earlier delete in THIS batch: a
+                                // delete-then-recreate of the same path is the
+                                // documented "hypothetical model accumulates
+                                // creates AND deletes" contract, so it must not
+                                // warn already_exists (which becomes an ERROR
+                                // under strict). Only a create over a node the
+                                // batch has NOT deleted may collide.
+                                if (ResolveNode(newPath) != null && !deleted.Contains(newPath))
                                     addWarn(idx, "already_exists",
                                             "'" + newPath + "' already exists in the live model; the create may collide");
                                 created[newPath] = typeName ?? "";
