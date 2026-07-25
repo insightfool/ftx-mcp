@@ -70,6 +70,10 @@ ops list for one call.
 drive it with `optix_interact(action="click", ...)` (trusted CDP events reach Optix's hit-tester
 where synthetic clicks no-op). Switch on → label appears; off → hides.
 
+Building this alongside other components on the same screen? Don't restart
+just for this toggle — land it with the rest of the batch and do ONE
+restart + verify pass at the end (see `optix-verify-loop`).
+
 ## Why the bridge fixes the old writability caveat
 
 The legacy file-edit path emitted a **bare** model variable (no `AccessLevel`),

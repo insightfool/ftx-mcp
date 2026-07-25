@@ -46,6 +46,9 @@ conditionally-visible label is several related edits — batch those.
 3. **Runtime (only if the user wants it live):**
    `optix_restart_emulator(project)` →
    `optix_observe(mode="screenshot", project=project, save_path="<session dir>/label.jpg")`.
+   Adding several labels/components in one build? Don't restart per label —
+   author them all first and do ONE restart + screenshot at the end (see
+   `optix-verify-loop`).
 
 ## Show/hide on a condition
 

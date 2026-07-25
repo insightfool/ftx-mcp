@@ -103,7 +103,10 @@ clients). The cache holds:
 3. **Verify the MODEL, not pixels:** `optix_describe_node` on what you just
    wrote is cheap text and catches most mistakes.
 4. **Spend at most ONE screenshot** on final visual confirmation of a change.
-   If nothing visual changed by design, spend zero.
+   If nothing visual changed by design, spend zero. "A change" means the
+   whole batch of structural edits for the build, not each component in it —
+   restart the emulator ONCE at the end and spend the one screenshot then,
+   not per widget (see `optix-verify-loop`).
 5. **Bank anything newly discovered** back via `optix_routes_save` before
    moving on — extra top-level keys (structure maps, notes) are preserved
    alongside `routes`, so one file carries the whole cache. The next

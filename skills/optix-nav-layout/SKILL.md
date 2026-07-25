@@ -113,6 +113,10 @@ single edit.
    `optix_observe(mode="screenshot", project=project, save_path="<your session dir>/nav-verify.jpg")`.
    **Always pass `save_path`** and read the file — an inline base64 return makes some
    hosts try to *render* it ("visualize"), which stalls on a headless/sandboxed box.
+   If this nav layout is one part of a bigger screen build, don't restart here
+   in isolation — fold steps 1-4 into the rest of the build's edits and let
+   this be the ONE end-of-build restart, not an extra one (see
+   `optix-verify-loop`).
 
 ## Gotchas (each cost a real debugging cycle)
 

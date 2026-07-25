@@ -59,3 +59,6 @@ To run a NetLogic `[ExportMethod]` on click, pass `method_path` instead of
 - Verify at runtime: `optix_restart_emulator` then
   `optix_interact(action="click", ...)`/`optix_observe(mode="screenshot", ...)` (trusted CDP events reach the Optix
   hit-tester).
+- Wiring several buttons/components in one build? Don't restart per button —
+  batch the wiring with the rest of the screen's edits and do ONE restart +
+  verify pass at the end (see `optix-verify-loop`).

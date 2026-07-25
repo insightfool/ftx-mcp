@@ -60,6 +60,10 @@ Optix trap. So `{ok:true}` from the tool is NOT proof. **Always runtime-verify**
 `optix_restart_emulator` → screenshot, and confirm
 the property actually reacts (e.g. toggle the source and re-shoot).
 
+Mid a multi-component build, don't restart per converter — attach all of
+them (and the rest of the screen's edits) first, then do ONE restart +
+verify pass at the end (see `optix-verify-loop`).
+
 ## Notes
 - `sources` must be resolvable **variable** paths (model vars, other props). Create a
   model variable first with `optix_bridge_create_variable` if needed.
