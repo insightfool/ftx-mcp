@@ -10,6 +10,38 @@ A `Switch` whose `Checked` and a `Label` whose `Visible` both bind to one
 Boolean Model variable. Flip the switch → the label shows/hides. No C#. Studio
 **open**, bridge armed.
 
+## One batch call (preferred)
+
+Everything below — the variable, both widgets, both binds — is one
+`optix_bridge_edit` call. `bind`'s target/source fields are `source_path`
+(not `target`) and `mode`; `create_widget`'s label is decomposed into
+`create_widget` + `set_property`(Text/LeftMargin/TopMargin) because
+`add_label` is a convenience wrapper, not a batch op verb.
+
+```
+optix_bridge_edit(project, ops=[
+  {"op": "create_variable", "name": "PowerOn", "parent": "Model", "datatype": "Boolean"},
+
+  {"op": "create_widget", "screen": "UI/Screens/<Screen>", "name": "PowerSwitch", "widget_type": "Switch"},
+  {"op": "bind", "path": "UI/Screens/<Screen>/PowerSwitch", "name": "Checked",
+   "source_path": "Model/PowerOn", "mode": "ReadWrite"},
+
+  {"op": "create_widget", "screen": "UI/Screens/<Screen>", "name": "OnLabel", "widget_type": "Label"},
+  {"op": "set_property", "path": "UI/Screens/<Screen>/OnLabel", "name": "Text", "value": "it's on!"},
+  {"op": "set_property", "path": "UI/Screens/<Screen>/OnLabel", "name": "LeftMargin", "value": "300"},
+  {"op": "set_property", "path": "UI/Screens/<Screen>/OnLabel", "name": "TopMargin", "value": "250"},
+  {"op": "bind", "path": "UI/Screens/<Screen>/OnLabel", "name": "Visible",
+   "source_path": "Model/PowerOn", "mode": "Read"},
+])
+```
+
+8 ops, one round trip, validated as a whole before any of it lands — instead
+of the equivalent 5 sequential `optix_bridge_*` calls below (each a full
+model turn re-sending the accumulating context). Use `dry_run=True` first if
+you want to pre-flight the batch without touching the live model.
+
+### Longhand (per-noun calls) — same result, one call per step
+
 1. **Create the backing variable:**
    `optix_bridge_create_variable(project, name="PowerOn", parent="Model", datatype="Boolean")`
    → resolvable at `Model/PowerOn`.
@@ -22,7 +54,9 @@ Boolean Model variable. Flip the switch → the label shows/hides. No C#. Studio
    `optix_bridge_add_label(project, screen="UI/Screens/<Screen>", name="OnLabel", text="it's on!", left=300, top=250)`
    `optix_bridge_bind_property(project, "UI/Screens/<Screen>/OnLabel", "Visible", "Model/PowerOn", mode="Read")`
 
-That's it — the model is live in the designer immediately.
+That's it — the model is live in the designer immediately. **Single edit,
+nothing to batch?** The per-noun tools above are simpler than composing an
+ops list for one call.
 
 ## Alternative: a Button that toggles (no switch)
 

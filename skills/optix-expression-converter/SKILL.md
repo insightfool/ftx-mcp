@@ -20,6 +20,24 @@ optix_bridge_attach_expression(project,
   (model/node paths). `{#name}` named placeholders also work.
 - Colors are `0xAARRGGBB` (opaque = `0xFF……`). Booleans lowercase `true`/`false`.
 
+**A widget usually needs a converter on more than one property** (FillColor
+AND Visible AND Enabled, say) — that's N `attach_expression` calls, batch
+them into one `optix_bridge_edit` instead. The op verb is `attach_expression`
+with fields `path`/`prop_name`/`expression`/`sources` (note: `prop_name`, not
+`name`, unlike `set_property`):
+```
+optix_bridge_edit(project, ops=[
+  {"op": "attach_expression", "path": "UI/Screens/<S>/<Widget>", "prop_name": "FillColor",
+   "expression": "if({0} > 40, 0xFFFF0000, 0xFF00FF00)", "sources": "Model/Speed"},
+  {"op": "attach_expression", "path": "UI/Screens/<S>/<Widget>", "prop_name": "Enabled",
+   "expression": "{0} >= 100", "sources": "Model/Level"},
+])
+```
+If the source variable doesn't exist yet, fold a `create_variable` op in
+before the `attach_expression` ops that reference it — same batch, validated
+together. One property, one converter? `optix_bridge_attach_expression` on
+its own is simpler than a one-item batch.
+
 ## Canonical recipes
 - **Conditional color** (fault red / ok green): `FillColor` ←
   `if({0}, 0xFFFF0000, 0xFF00FF00)`, sources `Model/Alarm`.

@@ -14,6 +14,58 @@ a separate content loader is the #1 way to end up with a working tab bar over an
 
 Every value below is verified against the live bridge.
 
+## One batch call (preferred)
+
+A 2-screen nav layout is ~18 related ops (2 screens, 2 title labels each
+decomposed to create_widget+3×set_property, the NavigationPanel, 2 items
+each with create_widget+2×set_property, plus the tab-index set) — the
+textbook case the batched path exists for. Send it as ONE `optix_bridge_edit`
+call instead of the ~14 sequential `optix_bridge_*` calls the longhand below
+works out to:
+
+```
+optix_bridge_edit(project, ops=[
+  {"op": "create_widget", "screen": "UI/Screens", "name": "Overview", "widget_type": "Screen"},
+  {"op": "create_widget", "screen": "UI/Screens", "name": "Details",  "widget_type": "Screen"},
+
+  {"op": "create_widget", "screen": "UI/Screens/Overview", "name": "Title", "widget_type": "Label"},
+  {"op": "set_property", "path": "UI/Screens/Overview/Title", "name": "Text", "value": "Overview"},
+  {"op": "set_property", "path": "UI/Screens/Overview/Title", "name": "LeftMargin", "value": "20"},
+  {"op": "set_property", "path": "UI/Screens/Overview/Title", "name": "TopMargin", "value": "20"},
+
+  {"op": "create_widget", "screen": "UI/Screens/Details", "name": "Title", "widget_type": "Label"},
+  {"op": "set_property", "path": "UI/Screens/Details/Title", "name": "Text", "value": "Details"},
+  {"op": "set_property", "path": "UI/Screens/Details/Title", "name": "LeftMargin", "value": "20"},
+  {"op": "set_property", "path": "UI/Screens/Details/Title", "name": "TopMargin", "value": "20"},
+
+  {"op": "create_widget", "screen": "UI/MainWindow", "name": "MainNav", "widget_type": "NavigationPanel"},
+
+  {"op": "create_widget", "screen": "UI/MainWindow/MainNav/Panels", "name": "OverviewItem", "widget_type": "NavigationPanelItem"},
+  {"op": "set_property", "path": "UI/MainWindow/MainNav/Panels/OverviewItem", "name": "Title", "value": "Overview"},
+  {"op": "set_property", "path": "UI/MainWindow/MainNav/Panels/OverviewItem", "name": "Panel", "value": "UI/Screens/Overview"},
+
+  {"op": "create_widget", "screen": "UI/MainWindow/MainNav/Panels", "name": "DetailsItem", "widget_type": "NavigationPanelItem"},
+  {"op": "set_property", "path": "UI/MainWindow/MainNav/Panels/DetailsItem", "name": "Title", "value": "Details"},
+  {"op": "set_property", "path": "UI/MainWindow/MainNav/Panels/DetailsItem", "name": "Panel", "value": "UI/Screens/Details"},
+
+  {"op": "set_property", "path": "UI/MainWindow/MainNav", "name": "CurrentTabIndex", "value": "0"},
+])
+```
+
+`create_widget`'s screen field takes the PARENT path (screen root for a
+top-level screen, or a container path like `.../MainNav/Panels` for a
+nested item) — that's how the same op verb creates screens, labels, panels,
+and items. Validation catches "set a property on a node that doesn't exist
+yet" up front against the batch's own accumulated creates, so ordering
+create-then-set within the list is safe. `dry_run=True` first if you want to
+confirm the whole 18-op shape before it touches Studio's live model. Extend
+the same pattern (repeat the screen/title/item triple) for N screens instead
+of 2 — the batch scales linearly in ops, not in round trips.
+
+**Just tweaking one existing item?** The per-noun tools
+(`optix_bridge_set_property`, ...) are simpler than composing a batch for a
+single edit.
+
 ## Recipe (bridge tools; Studio open + bridge armed)
 
 1. **A loadable screen must be an Object TYPE, not an instance.** Create them under

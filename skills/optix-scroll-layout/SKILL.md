@@ -26,26 +26,53 @@ then `optix_describe_type` on the candidates (ScrollView and the layout
 containers are builtins; Studio's UI labels "Vertical/Horizontal Layout"
 don't always match the type's BrowseName).
 
-## Setup (the part that's tedious by hand)
+## Setup — one batch call (the part that's tedious by hand)
 
-1. `optix_bridge_create_widget(screen=<parent>, name="Scroll", widget_type="ScrollView")`
-2. Create the layout container INSIDE it (vertical for a top-to-bottom list).
-3. On the ScrollView: `HorizontalAlignment="Stretch"`, `VerticalAlignment="Stretch"`
-   — fill the parent component.
-4. On the layout container: `HorizontalAlignment="Stretch"` (use the full
+The ScrollView, the layout container, and both their alignment/size props
+are 7 related ops on 2 nodes — one `optix_bridge_edit` call instead of 7
+sequential ones:
+```
+optix_bridge_edit(project, ops=[
+  {"op": "create_widget", "screen": "<parent>", "name": "Scroll", "widget_type": "ScrollView"},
+  {"op": "create_widget", "screen": "<parent>/Scroll", "name": "List", "widget_type": "<VerticalLayout type>"},
+
+  {"op": "set_property", "path": "<parent>/Scroll", "name": "HorizontalAlignment", "value": "Stretch"},
+  {"op": "set_property", "path": "<parent>/Scroll", "name": "VerticalAlignment", "value": "Stretch"},
+
+  {"op": "set_property", "path": "<parent>/Scroll/List", "name": "HorizontalAlignment", "value": "Stretch"},
+  {"op": "set_property", "path": "<parent>/Scroll/List", "name": "VerticalAlignment", "value": "Top"},
+  {"op": "set_property", "path": "<parent>/Scroll/List", "name": "Height", "value": "-1"},
+])
+```
+1. **ScrollView** owns the scrollbar; fill the parent
+   (`HorizontalAlignment`/`VerticalAlignment` = `Stretch`).
+2. **Layout container** goes INSIDE it (vertical for a top-to-bottom list) —
+   confirm the exact type name live first (`optix_list_ui_types`, then
+   `optix_describe_type`) since Studio's UI labels don't always match the
+   type's BrowseName; a wrong `widget_type` in the batch fails validation
+   before anything is written.
+3. On the layout container: `HorizontalAlignment="Stretch"` (use the full
    width), `VerticalAlignment="Top"`, and **`Height="-1"`** — -1 means
    size-to-content, so the container grows with its children and the
    ScrollView's scrollbar appears exactly when content overflows.
-5. Add children to the LAYOUT (not the ScrollView) — they stack in order;
-   `optix_bridge_reorder` changes stacking position.
+4. Add children to the LAYOUT (not the ScrollView) — they stack in order;
+   `reorder` (op verb, field `path` + `position`/`index`) changes stacking
+   position. Only the ScrollView/layout skeleton needs its own dry-run — new
+   children can join the same batch as more `create_widget`+`set_property`
+   ops once the skeleton is confirmed.
+
+Building just the skeleton and nothing else? `optix_bridge_create_widget`
+per node is simpler than composing a batch for one or two calls.
 
 ## Migrating existing content
 
-Widgets already sitting on the screen? `optix_bridge_move_node(
-node_path=<existing container or widget>, new_parent=<the layout's path>)`
-per widget. Read the response: outbound bindings are re-created, but the
-moved node's NodeId changes — anything elsewhere that bound INTO it needs
-rebinding (the response's note + broken_links tell you).
+Widgets already sitting on the screen? `move` (op verb; fields `path` +
+`new_parent`) per widget — several widgets moving into the same layout is
+another batch: `{"op": "move", "path": <existing widget>, "new_parent": <the
+layout's path>}` repeated, one call. Read the response: outbound bindings
+are re-created, but the moved node's NodeId changes — anything elsewhere
+that bound INTO it needs rebinding (the response's note + broken_links tell
+you). `optix_bridge_move_node` standalone is simpler for a single widget.
 
 ## Verify
 

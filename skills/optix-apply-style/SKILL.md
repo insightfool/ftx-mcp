@@ -24,6 +24,22 @@ hand-set colors per widget.
 3. **Point it** (NodeId props resolve by path):
    `optix_bridge_set_property(project, "UI/Screens/<S>/<Widget>", "Style", "UI/StyleSheets/DefaultStyleSheet/ButtonStyles/Emergency")`
 
+   **Restyling several widgets at once** (e.g. every button on a screen to
+   `Accent`)? One `set_property` per widget still fans out to N calls —
+   batch them:
+   ```
+   optix_bridge_edit(project, ops=[
+     {"op": "set_property", "path": "UI/Screens/<S>/StartBtn", "name": "Style",
+      "value": "UI/StyleSheets/DefaultStyleSheet/ButtonStyles/Accent"},
+     {"op": "set_property", "path": "UI/Screens/<S>/StopBtn", "name": "Style",
+      "value": "UI/StyleSheets/DefaultStyleSheet/ButtonStyles/Emergency"},
+     {"op": "set_property", "path": "UI/Screens/<S>/ResetBtn", "name": "Style",
+      "value": "UI/StyleSheets/DefaultStyleSheet/ButtonStyles/Accent"},
+   ])
+   ```
+   Still just one widget to restyle? `optix_bridge_set_property` on its own
+   is simpler than composing a one-item batch.
+
 ## Reskin the whole app in one call
 
 Point a PresentationEngine's style-sheet property at a different StyleSheet node

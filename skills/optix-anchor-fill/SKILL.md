@@ -10,18 +10,32 @@ user_invocable: true
 "anchor to edges" is expressed as `HorizontalAlignment` / `VerticalAlignment` =
 `Stretch` plus margins. Don't hunt for a DockPanel — it doesn't exist.
 
-## Fill the whole container
+## Fill the whole container — batch the pair
+Two related `set_property` ops land together in one `optix_bridge_edit` call
+(pre-flight with `dry_run=True` if unsure of the property names):
 ```
-optix_bridge_set_property(project, "<widget>", "HorizontalAlignment", "Stretch")
-optix_bridge_set_property(project, "<widget>", "VerticalAlignment",   "Stretch")
+optix_bridge_edit(project, ops=[
+  {"op": "set_property", "path": "<widget>", "name": "HorizontalAlignment", "value": "Stretch"},
+  {"op": "set_property", "path": "<widget>", "name": "VerticalAlignment",   "value": "Stretch"},
+])
 ```
 (Alignment props are enums — pass the friendly name; the bridge coerces.)
+One edit only? `optix_bridge_set_property` per call is simpler than composing
+a two-item batch.
 
 ## Dock to an edge
-Stretch on the cross axis, align on the main axis, and use margins to inset:
+Stretch on the cross axis, align on the main axis, and use margins to inset —
+3 ops, one batch:
 - **Top bar:** `HorizontalAlignment=Stretch`, `VerticalAlignment=Top`, set `Height`.
 - **Left rail:** `VerticalAlignment=Stretch`, `HorizontalAlignment=Left`, set `Width`.
 - Inset from the edge with `LeftMargin`/`TopMargin`/`RightMargin`/`BottomMargin`.
+```
+optix_bridge_edit(project, ops=[
+  {"op": "set_property", "path": "<widget>", "name": "HorizontalAlignment", "value": "Stretch"},
+  {"op": "set_property", "path": "<widget>", "name": "VerticalAlignment", "value": "Top"},
+  {"op": "set_property", "path": "<widget>", "name": "Height", "value": "<h>"},
+])
+```
 
 ## Auto-arranging containers (instead of manual margins)
 For rows/columns/grids that lay children out automatically, create a layout
@@ -30,7 +44,10 @@ container and drop children into it:
 (also `ColumnLayout`, `GridLayout`). **Verify the type live first** with
 `optix_describe_type("RowLayout")` — these aren't in the create tool's example
 list, so confirm the exact type name and its child-arrangement props before
-scripting a batch.
+scripting a batch. Once confirmed, fold the `create_widget` + its own
+Stretch/margin `set_property` ops into the same `optix_bridge_edit` call —
+container + its own layout props is exactly the "several related edits"
+case the batch path exists for.
 
 ## Notes
 - A background behind a container's children is a **Rectangle child** (Panels have
