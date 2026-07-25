@@ -313,7 +313,11 @@ TOOL_SCOPES: dict[str, str] = {
     "optix_routes_list": "read",
     "optix_cdp_diff": "read",
     "optix_observe": "read",  # U14 consolidated read-side CDP capture
-    # ---- author (34): mutates project / previews / drives canvas ----
+    # ---- author (36): mutates project / previews / drives canvas ----
+    # U16 batched authoring: `author`, same as every per-noun bridge write it
+    # dispatches to. It can only do what those tools can do — batching does not
+    # widen the surface, so it must not need a wider scope.
+    "optix_bridge_edit": "author",
     "optix_bridge_create_widget": "author",
     "optix_bridge_add_bound_widget": "author",
     "optix_bridge_add_navigation_panel_item": "author",

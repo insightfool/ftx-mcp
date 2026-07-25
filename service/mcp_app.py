@@ -2733,6 +2733,96 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             cfg, route=route, routes_path=routes_path, expect=expect,
             navigate_url=navigate_url)
 
+    # ---- U16: batched authoring -----------------------------------------
+    # One tool that validates a whole op batch through the bridge BEFORE
+    # applying any of it. Ops are plain dicts discriminated by an `op` field
+    # rather than a pydantic union: the same reason optix_observe/_interact use
+    # a flat param set with a runtime valid-vocabulary nudge — a nested union
+    # generates a schema some MCP clients mangle, and the flat shape is the
+    # robust-and-shipping one. The per-noun optix_bridge_* tools stay as-is;
+    # this batches them, it does not replace them.
+    _EDIT_OPS = tuple(sorted(core._BRIDGE_EDIT_OPS))
+
+    @mcp.tool(annotations=_RW_DESTRUCTIVE)
+    @_with_project
+    def optix_bridge_edit(
+        ops: list[dict],
+        dry_run: bool = False,
+        strict: bool = False,
+        project: str | None = None,
+    ) -> dict:
+        """Apply a BATCH of live-model authoring ops, validated as a whole first.
+
+        Each op is a dict with an `op` field naming the verb plus that verb's
+        fields, e.g.
+            [{"op": "create_widget", "screen": "UI/MainWindow",
+              "name": "Gauge1", "widget_type": "Rectangle"},
+             {"op": "set_property", "path": "UI/MainWindow/Gauge1",
+              "name": "Width", "value": "120"}]
+
+        Valid ops: set_property, bind, create_widget, create_variable,
+        create_folder, create_object, create_type, create_alias, delete, move,
+        reorder, wire_event, attach_expression, add_translation.
+
+        WHY BATCH: the bridge validates the ENTIRE list before anything is
+        written, against a hypothetical model that accumulates this batch's own
+        creates and deletes. So "create a node then set a property on it"
+        validates clean, while the reverse order is caught up front with the
+        offending `op_index` — instead of half-applying and leaving you to work
+        out what landed. Ordering mistakes, misspelled properties, bad values,
+        deleting a node a later op still touches, and duplicate creates are all
+        refused before the first write.
+
+        `dry_run=True` returns the validation report and applies NOTHING — the
+        cheap way to check a batch an agent just composed. `strict=True`
+        promotes lint warnings (e.g. creating over a node that already exists)
+        into errors.
+
+        NOT ATOMIC, and the result says so. Studio's live model has no
+        transaction to roll back to, so if op N fails at apply time, ops 0..N-1
+        stay applied: you get state="partial", `applied` counting what landed,
+        and `failed_op`. Read `applied` — never assume a failure means nothing
+        happened. Validation up front is what makes that rare, not impossible.
+
+        Returns {state, applied, op_count, report, dry_run} where state is
+        validated | succeeded | partial.
+
+        Use this when:
+          - you have several related edits (a widget plus its properties plus a
+            binding) and want them checked together before any of them lands
+          - you want to pre-flight an op list without touching the model
+            (dry_run)
+
+        Do NOT use this when:
+          - you have ONE edit — the per-noun tool (optix_bridge_set_property,
+            optix_bridge_create_widget, ...) is simpler
+          - Studio is closed or the bridge is down (live authoring needs both)
+          - the bridge predates U16 — validate_ops returns bridge_unavailable
+            rather than silently applying unvalidated
+        """
+        if not isinstance(ops, list) or not ops:
+            return {
+                "state": "failed", "error": "bad_ops",
+                "message": "ops must be a non-empty list of op objects",
+                "valid_ops": list(_EDIT_OPS),
+            }
+        bad = [
+            {"index": i, "op": o.get("op") if isinstance(o, dict) else None}
+            for i, o in enumerate(ops)
+            if not isinstance(o, dict) or o.get("op") not in core._BRIDGE_EDIT_OPS
+        ]
+        if bad:
+            return {
+                "state": "failed", "error": "bad_op_verb",
+                "message": (
+                    "each op needs an `op` field naming a valid verb; "
+                    f"offending: {bad}"
+                ),
+                "valid_ops": list(_EDIT_OPS),
+            }
+        return _bridge_guarded(project, lambda: core.bridge_edit(
+            cfg, project, ops, dry_run=dry_run, strict=strict))
+
     @mcp.tool(annotations=_RO)
     def optix_services_status() -> dict:
         """Aggregate health + studio version + runtime/cdp probes.

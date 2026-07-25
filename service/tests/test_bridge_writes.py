@@ -716,3 +716,163 @@ def test_unknown_property_no_suggestion_raises_cleanly(alpha, monkeypatch):
         core.bridge_set_property(alpha, "Alpha", "UI/MainWindow/P1", "Zzz", "v")
     assert "did you mean" not in str(e.value)
     assert "unknown_property" in str(e.value) and "Zzz" in str(e.value)
+
+
+# ---- U16 batched authoring: the validate-then-apply flow --------------------
+#
+# The C# validator itself is covered live (test_bridge_live.py + the VM probe);
+# these pin the PYTHON half so Linux/CI catches a regression in the flow —
+# specifically that a dirty report or dry_run applies NOTHING, and that the
+# not-atomic contract reports honestly instead of pretending.
+
+_OK_REPORT = {"ok": True, "op_count": 2, "strict": False,
+              "errors": [], "warnings": []}
+_BAD_REPORT = {"ok": False, "op_count": 2, "strict": False, "warnings": [],
+               "errors": [{"op_index": 1, "code": "unresolved_reference",
+                           "message": "no node at 'UI/MainWindow/Later'"}]}
+
+_TWO_OPS = [
+    {"op": "create_widget", "screen": "UI/MainWindow", "name": "B1",
+     "widget_type": "Rectangle"},
+    {"op": "set_property", "path": "UI/MainWindow/B1", "name": "Width",
+     "value": "40"},
+]
+
+
+def _fake_validate(report, *, seen=None):
+    def fake(cfg, path, payload, timeout=20.0):
+        if seen is not None:
+            seen.append((path, payload))
+        return 200, report
+    return fake
+
+
+def test_bridge_edit_applies_after_a_clean_report(alpha, monkeypatch):
+    applied: list = []
+    monkeypatch.setattr(core, "_bridge_post_body", _fake_validate(_OK_REPORT))
+    monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_apply_one_edit",
+                        lambda cfg, project, op: applied.append(op["op"]))
+
+    out = core.bridge_edit(alpha, "Alpha", _TWO_OPS)
+
+    assert out["state"] == "succeeded"
+    assert out["applied"] == 2 and out["op_count"] == 2
+    assert applied == ["create_widget", "set_property"]
+
+
+def test_bridge_edit_applies_nothing_when_validation_fails(alpha, monkeypatch):
+    applied: list = []
+    monkeypatch.setattr(core, "_bridge_post_body", _fake_validate(_BAD_REPORT))
+    monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_apply_one_edit",
+                        lambda cfg, project, op: applied.append(op["op"]))
+
+    out = core.bridge_edit(alpha, "Alpha", _TWO_OPS)
+
+    assert out["state"] == "validated"
+    assert out["applied"] == 0 and applied == []
+    assert out["report"]["errors"][0]["op_index"] == 1
+    assert "op_index" in out["nudge"]
+
+
+def test_bridge_edit_dry_run_short_circuits_a_clean_batch(alpha, monkeypatch):
+    """dry_run must not apply even when the report is clean — that is the whole
+    point of pre-flighting a batch an agent just composed."""
+    applied: list = []
+    monkeypatch.setattr(core, "_bridge_post_body", _fake_validate(_OK_REPORT))
+    monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_apply_one_edit",
+                        lambda cfg, project, op: applied.append(op["op"]))
+
+    out = core.bridge_edit(alpha, "Alpha", _TWO_OPS, dry_run=True)
+
+    assert out["state"] == "validated"
+    assert out["applied"] == 0 and applied == []
+    assert out["dry_run"] is True and out["report"]["ok"] is True
+
+
+def test_bridge_edit_reports_partial_application_honestly(alpha, monkeypatch):
+    """NOT atomic: op 1 fails after op 0 landed, so the result must say
+    applied=1 + failed_op rather than implying the batch was a no-op."""
+    monkeypatch.setattr(core, "_bridge_post_body", _fake_validate(_OK_REPORT))
+    monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+
+    def flaky(cfg, project, op):
+        if op["op"] == "set_property":
+            raise core.BridgeWriteFailed("bridge set_property failed: boom")
+        return {"ok": True}
+
+    monkeypatch.setattr(core, "_apply_one_edit", flaky)
+    out = core.bridge_edit(alpha, "Alpha", _TWO_OPS)
+
+    assert out["state"] == "partial"
+    assert out["applied"] == 1
+    assert out["failed_op"] == {"index": 1, "op": "set_property",
+                                "error": "bridge set_property failed: boom"}
+    assert "not atomic" in out["nudge"]
+
+
+def test_bridge_edit_sends_ops_and_strict_in_the_body(alpha, monkeypatch):
+    seen: list = []
+    monkeypatch.setattr(core, "_bridge_post_body",
+                        _fake_validate(_OK_REPORT, seen=seen))
+    monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_apply_one_edit", lambda cfg, project, op: None)
+
+    core.bridge_edit(alpha, "Alpha", _TWO_OPS, strict=True)
+
+    path, payload = seen[0]
+    assert path == "/bridge/validate_ops"
+    assert payload["strict"] is True
+    assert [o["op"] for o in payload["ops"]] == ["create_widget", "set_property"]
+
+
+def test_bridge_edit_treats_a_missing_endpoint_as_unavailable(alpha, monkeypatch):
+    """An older bridge answers the unknown route with not_found. That must raise
+    BridgeUnavailable — never be mistaken for 'validated clean' and applied."""
+    applied: list = []
+    monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_apply_one_edit",
+                        lambda cfg, project, op: applied.append(op["op"]))
+    monkeypatch.setattr(
+        core, "_bridge_post_body",
+        lambda cfg, path, payload, timeout=20.0: (404, {"error": {"code": "not_found"}}))
+
+    with pytest.raises(core.BridgeUnavailable) as e:
+        core.bridge_edit(alpha, "Alpha", _TWO_OPS)
+    assert "U16" in str(e.value)
+    assert applied == []
+
+
+def test_bridge_edit_rejects_an_empty_batch(alpha, monkeypatch):
+    monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    with pytest.raises(core.BridgeWriteFailed):
+        core.bridge_edit(alpha, "Alpha", [])
+
+
+def test_apply_one_edit_maps_ops_onto_the_per_noun_calls(alpha, monkeypatch):
+    """Each op dispatches to the SAME core.bridge_* call the single-op tool uses,
+    with the op dict's fields mapped onto that function's positionals."""
+    calls: list = []
+    monkeypatch.setattr(core, "bridge_create_widget",
+                        lambda cfg, p, screen, name, widget_type="Label":
+                        calls.append(("widget", screen, name, widget_type)))
+    monkeypatch.setattr(core, "bridge_set_property",
+                        lambda cfg, p, node_path, name, value, locale="en-US":
+                        calls.append(("prop", node_path, name, value, locale)))
+
+    core._apply_one_edit(alpha, "Alpha", _TWO_OPS[0])
+    core._apply_one_edit(alpha, "Alpha", _TWO_OPS[1])
+
+    assert calls == [
+        ("widget", "UI/MainWindow", "B1", "Rectangle"),
+        ("prop", "UI/MainWindow/B1", "Width", "40", "en-US"),
+    ]
+
+
+def test_apply_one_edit_rejects_a_missing_required_field(alpha):
+    with pytest.raises(core.BridgeWriteFailed) as e:
+        core._apply_one_edit(alpha, "Alpha", {"op": "set_property",
+                                              "path": "UI/X", "name": "Width"})
+    assert "missing required field" in str(e.value) and "value" in str(e.value)

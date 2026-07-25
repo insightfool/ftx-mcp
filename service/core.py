@@ -919,6 +919,42 @@ def _bridge_post_json(cfg: Config, path: str, timeout: float = 8.0) -> tuple[int
     return status, data if isinstance(data, dict) else {}
 
 
+def _bridge_post_body(
+    cfg: Config, path: str, payload: dict, timeout: float = 20.0
+) -> tuple[int, dict]:
+    """POST a JSON BODY to the bridge and decode the reply.
+
+    Every other bridge write passes params on the query string (see
+    _bridge_http), which is why that helper sends an empty POST body. An op
+    BATCH does not fit in a query string, so /bridge/validate_ops is the one
+    endpoint that reads a body — hence this separate helper rather than a
+    `data=` parameter on _bridge_http, whose "no body" contract other callers
+    rely on. Timeout is longer than a single write: the bridge reflects over
+    every op in the batch.
+    """
+    import urllib.error
+    import urllib.request
+    url = cfg.bridge_url.rstrip("/") + path
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, method="POST", data=body)
+    req.add_header("Content-Type", "application/json")
+    if cfg.bridge_token:
+        req.add_header("Authorization", f"Bearer {cfg.bridge_token}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            status = resp.status
+    except urllib.error.HTTPError as e:
+        status, raw = e.code, (e.read() or b"")
+    except (urllib.error.URLError, OSError) as e:
+        raise BridgeUnavailable(f"bridge unreachable at {url}: {e}") from e
+    try:
+        data = json.loads(raw.decode("utf-8")) if raw else {}
+    except (ValueError, UnicodeDecodeError):
+        data = {}
+    return status, data if isinstance(data, dict) else {}
+
+
 def _bridge_write_result(op: str, status: int, data: dict) -> dict:
     """Interpret a bridge write response: raise on failure, else return data.
 
@@ -1618,6 +1654,186 @@ def bridge_validate_expression(
     if sources:
         params["sources"] = sources
     return _bridge_write(cfg, project, "validate_expression", "/bridge/expr/validate", params)
+
+
+# ---- U16: batched authoring (validate-then-apply) ---------------------------
+
+# op verb -> (core function, required op keys, optional op keys mapped to kwargs).
+# Every entry dispatches to the SAME per-noun bridge_* call the individual tool
+# uses, so a batched op and a single op cannot diverge in behaviour. Adding an op
+# here is the only change needed to batch it — but the bridge's own
+# _MutationRoutes-style validation list must learn the verb too, or
+# validate_ops reports it as `unknown_op` (a warning, applied unchecked).
+_BRIDGE_EDIT_OPS: dict[str, tuple[str, tuple[str, ...], dict[str, str]]] = {
+    "set_property":      ("bridge_set_property", ("path", "name", "value"),
+                          {"locale": "locale"}),
+    "bind":              ("bridge_bind_property", ("path", "name"),
+                          {"source_path": "source_path", "mode": "mode",
+                           "raw_path": "raw_path"}),
+    "create_widget":     ("bridge_create_widget", ("screen", "name"),
+                          {"widget_type": "widget_type"}),
+    "create_variable":   ("bridge_create_variable", ("name",),
+                          {"parent": "parent", "datatype": "datatype"}),
+    "create_folder":     ("bridge_create_folder", ("parent", "name"), {}),
+    "create_object":     ("bridge_create_object", ("parent", "name"),
+                          {"object_type": "object_type"}),
+    "create_type":       ("bridge_create_type", ("name", "parent"),
+                          {"base_type": "base_type"}),
+    "create_alias":      ("bridge_create_alias", ("parent_path", "name"),
+                          {"target_path": "target_path", "kind": "kind"}),
+    "delete":            ("bridge_delete_node", ("path",), {}),
+    "move":              ("bridge_move_node", ("path", "new_parent"),
+                          {"new_name": "new_name"}),
+    "reorder":           ("bridge_reorder_node", ("path",),
+                          {"position": "position", "index": "index"}),
+    "wire_event":        ("bridge_wire_event", ("path", "event_type"),
+                          {"method_path": "method_path", "command": "command",
+                           "variable": "variable", "value": "value"}),
+    "attach_expression": ("bridge_attach_expression", ("path", "prop_name", "expression"),
+                          {"sources": "sources"}),
+    "add_translation":   ("bridge_add_translation", ("key", "value"), {"locale": "locale"}),
+}
+
+# The op key that carries the node path differs per noun (path / screen /
+# parent_path); the first positional of each core call is whatever that noun
+# names it, so map the op dict onto positionals by name.
+_BRIDGE_EDIT_POSITIONAL = {
+    "set_property": ("path", "name", "value"),
+    "bind": ("path", "name"),
+    "create_widget": ("screen", "name"),
+    "create_variable": ("name",),
+    "create_folder": ("parent", "name"),
+    "create_object": ("parent", "name"),
+    "create_type": ("name", "parent"),
+    "create_alias": ("parent_path", "name"),
+    "delete": ("path",),
+    "move": ("path", "new_parent"),
+    "reorder": ("path",),
+    "wire_event": ("path", "event_type"),
+    "attach_expression": ("path", "prop_name", "expression"),
+    "add_translation": ("key", "value"),
+}
+
+
+def bridge_validate_ops(
+    cfg: Config, project: str, ops: list[dict], strict: bool = False
+) -> dict:
+    """Dry-run an op batch through the bridge's POST /bridge/validate_ops (U16).
+
+    Returns the bridge's report — {ok, op_count, strict, errors, warnings} —
+    without touching the model. Errors carry `op_index` so a caller can point at
+    the offending op; an `unknown_property` error also carries the guard's
+    `valid_properties` + `did_you_mean`.
+
+    Raises BridgeUnavailable when the bridge isn't serving `project` OR when the
+    endpoint is missing (an older bridge build answers the unknown route with
+    `{"error":{"code":"not_found"}}`), so a caller can degrade rather than
+    mistake "cannot validate" for "validated clean".
+    """
+    _bridge_write_guard(cfg, project)
+    status, data = _bridge_post_body(
+        cfg, "/bridge/validate_ops", {"ops": ops, "strict": bool(strict)}
+    )
+    err = data.get("error")
+    if status != 200 or (isinstance(err, dict) and err.get("code") == "not_found"):
+        raise BridgeUnavailable(
+            "bridge /bridge/validate_ops is unavailable "
+            f"(status={status}) — needs a bridge build carrying U16"
+        )
+    if isinstance(err, dict):
+        # bad_body / bad_json / internal — a real answer, but not a report.
+        raise BridgeWriteFailed(
+            f"bridge validate_ops failed: {err.get('code')}: {err.get('message')}"
+        )
+    if "ok" not in data:
+        raise BridgeWriteFailed(f"bridge validate_ops returned no report: {data}")
+    return data
+
+
+def _apply_one_edit(cfg: Config, project: str, op: dict) -> dict:
+    """Dispatch ONE validated op to its per-noun bridge_* call."""
+    verb = op.get("op")
+    spec = _BRIDGE_EDIT_OPS.get(verb)
+    if spec is None:
+        raise BridgeWriteFailed(
+            f"unknown op {verb!r}; valid ops: {', '.join(sorted(_BRIDGE_EDIT_OPS))}"
+        )
+    fname, required, optional = spec
+    missing = [k for k in required if op.get(k) in (None, "")]
+    if missing:
+        raise BridgeWriteFailed(
+            f"op {verb!r} is missing required field(s): {', '.join(missing)}"
+        )
+    fn = globals()[fname]
+    args = [op[k] for k in _BRIDGE_EDIT_POSITIONAL[verb]]
+    kwargs = {kw: op[k] for k, kw in optional.items() if op.get(k) is not None}
+    return fn(cfg, project, *args, **kwargs)
+
+
+def bridge_edit(
+    cfg: Config, project: str, ops: list[dict],
+    dry_run: bool = False, strict: bool = False,
+) -> dict:
+    """Validate an op batch, then apply it (U16) — the batched authoring path.
+
+    Two phases. The bridge validates the WHOLE batch first, against a
+    hypothetical model that accumulates the batch's own creates and deletes, so
+    "create X then set X.Prop" passes and the reverse order is caught BEFORE
+    anything is written. Only if the report is clean (and dry_run is False) are
+    the ops applied, sequentially, each through the same per-noun bridge_* call
+    its individual tool uses.
+
+    Returns {state, applied, op_count, report, ...}:
+      * validation errors, or dry_run  -> state="validated", applied=0
+      * all ops applied                -> state="succeeded", applied=len(ops)
+      * a mid-batch apply failure       -> state="partial", applied=N,
+                                           failed_op={index, op, error}
+
+    ATOMICITY IS NOT PROMISED, and the shape says so. The bridge mutates the
+    live Studio model op by op; there is no transaction to roll back to, so a
+    failure at op N leaves ops 0..N-1 applied. That is why validation is a
+    separate pass — catching the batch up front is the real protection, and
+    `state="partial"` reports honestly when it was not enough. Callers must not
+    read a missing `failed_op` as "nothing was applied"; read `applied`.
+    """
+    if not isinstance(ops, list) or not ops:
+        raise BridgeWriteFailed("bridge_edit requires a non-empty list of ops")
+
+    report = bridge_validate_ops(cfg, project, ops, strict=strict)
+    out: dict = {
+        "op_count": len(ops),
+        "applied": 0,
+        "report": report,
+        "dry_run": bool(dry_run),
+    }
+    if not report.get("ok") or dry_run:
+        out["state"] = "validated"
+        if not report.get("ok"):
+            out["nudge"] = (
+                "validation refused the batch; nothing was applied. Each error "
+                "carries op_index — fix those ops and retry."
+            )
+        return out
+
+    audit(cfg, "bridge_edit", project=project, ops=len(ops))
+    for i, op in enumerate(ops):
+        try:
+            _apply_one_edit(cfg, project, op)
+        except Exception as exc:
+            out["state"] = "partial"
+            out["failed_op"] = {
+                "index": i, "op": op.get("op"), "error": str(exc),
+            }
+            out["nudge"] = (
+                f"op {i} failed AFTER {out['applied']} op(s) had already been "
+                "applied. This path is not atomic — the live model now holds the "
+                "earlier ops. Inspect with optix_describe_node before retrying, "
+                "and retry only the remaining ops."
+            )
+            return out
+        out["applied"] = i + 1
+    out["state"] = "succeeded"
+    return out
 
 
 def ui_stats(cfg: Config) -> dict:
