@@ -25,6 +25,11 @@ dependencies = [
     "mcp>=1.2",
     "psutil>=5.9",
     "websocket-client>=1.7",
+    # Windows-only: the per-window UIA read of Studio's live deploy target
+    # (service/studio_uia.py) used by the F5 guard / optix_active_target.
+    # sys_platform marker keeps Linux dev/CI clean (studio_uia lazy-imports
+    # and degrades to the config-file fallback when absent).
+    "uiautomation>=2.0; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
