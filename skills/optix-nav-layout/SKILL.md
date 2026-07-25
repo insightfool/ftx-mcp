@@ -57,8 +57,8 @@ top-level screen, or a container path like `.../MainNav/Panels` for a
 nested item) — that's how the same op verb creates screens, labels, panels,
 and items. Validation catches "set a property on a node that doesn't exist
 yet" up front against the batch's own accumulated creates, so ordering
-create-then-set within the list is safe. `dry_run=True` first if you want to
-confirm the whole 18-op shape before it touches Studio's live model. Extend
+create-then-set within the list is safe. Call it once — it validates the
+whole batch before applying, so no dry_run pre-flight is needed. Extend
 the same pattern (repeat the screen/title/item triple) for N screens instead
 of 2 — the batch scales linearly in ops, not in round trips.
 

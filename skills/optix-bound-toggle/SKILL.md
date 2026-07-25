@@ -37,8 +37,9 @@ optix_bridge_edit(project, ops=[
 
 8 ops, one round trip, validated as a whole before any of it lands — instead
 of the equivalent 5 sequential `optix_bridge_*` calls below (each a full
-model turn re-sending the accumulating context). Use `dry_run=True` first if
-you want to pre-flight the batch without touching the live model.
+model turn re-sending the accumulating context). Just call it once — it
+validates the whole batch before applying anything, so no dry_run pre-flight
+is needed.
 
 ### Longhand (per-noun calls) — same result, one call per step
 

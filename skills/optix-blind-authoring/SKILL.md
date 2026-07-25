@@ -13,8 +13,12 @@ tool call is a full model turn that re-sends the accumulating conversation,
 so a widget built one property at a time grows roughly QUADRATICALLY in
 call count. An 8-segment tank indicator authored one op per call runs to
 ~60 tool calls (8× create_widget, then per-segment 5× set_property + 1×
-attach_expression). The same widget is ONE `optix_bridge_edit` call with 60
-ops inside it.
+attach_expression). Batched by COMPONENT — one `optix_bridge_edit` per
+segment (~7 ops) — that collapses to ~8 calls, each quick to generate and
+apply. Do NOT swing the other way and cram all 60 ops into one call:
+generating a huge op list is slow (output tokens), it applies as one long
+blocking call, and the whole indicator rides on a single partial-failure
+point. Component-sized batches are the sweet spot (see SIZE below).
 
 ## Batch-first is the default authoring doctrine
 
@@ -40,10 +44,27 @@ report is clean. One round trip, one validation pass, one shot at getting
 the ordering right, instead of discovering an ordering mistake three calls
 deep into a fan-out.
 
-**Pre-flight with `dry_run=True`** before committing an op list you're not
-sure about — it runs the validation pass and returns the report without
-touching the live model. Cheap way to catch a typo'd property name or a
-misordered create/set before it costs a real write.
+## Batch SIZE: by component, not by screen
+
+Batch ONE component's related ops — a widget plus its properties plus its
+binding/expression (typically ~5-20 ops). Do NOT batch a whole screen into
+one giant call. Beyond a component's worth of ops the costs invert: the model
+spends real time *generating* the giant JSON (output tokens are the slow,
+expensive ones), it applies as one multi-minute blocking call with no
+progress, and a single failed op strands the entire screen at `state=partial`.
+A dozen ~10-op component batches beat one 120-op batch on both token cost and
+wall-clock, and each is independently debuggable.
+
+## Call it once — do NOT dry_run first
+
+`optix_bridge_edit` validates the whole batch BEFORE writing anything and
+applies nothing if validation fails (`state="validated"` with the errors). So
+just call it once and let it apply — a separate `dry_run=True` pass buys no
+safety and regenerates the entire op list a second time, which on a large
+batch is the single most wasteful thing you can do. Reserve `dry_run=True`
+for a genuinely risky batch you want to eyeball before committing; property
+names you're unsure of are better checked with `optix_describe_type` than a
+throwaway dry_run.
 
 **Valid op verbs** (the ONLY ones `bridge_edit` accepts): `set_property`,
 `bind`, `create_widget`, `create_variable`, `create_folder`, `create_object`,
@@ -57,7 +78,8 @@ when putting them in a batch. See each per-noun skill (`optix-add-label`,
 **One edit, and only one?** Skip the batch — the per-noun tool
 (`optix_bridge_set_property`, `optix_bridge_create_widget`, ...) is simpler
 and the round-trip cost of a single call is a non-issue. Batching pays off
-starting at 2 related ops and grows more valuable with every op added.
+from 2 related ops up to a component's worth (~5-20); past that, split into
+another component batch rather than growing one call unbounded.
 
 ## The per-project UI cache
 

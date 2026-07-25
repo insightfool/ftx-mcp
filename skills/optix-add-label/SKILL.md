@@ -33,7 +33,8 @@ conditionally-visible label is several related edits — batch those.
    ])
    ```
    One round trip, validated as a whole, instead of add_label + 2 set_property
-   + 1 bind as four separate calls. Use `dry_run=True` to pre-flight. Create
+   + 1 bind as four separate calls. Call it directly — it validates before it
+   applies, so no dry_run pre-flight is needed. Create
    the bound variable first if it doesn't exist yet
    (`{"op": "create_variable", ...}` — fold it into the same batch, ordered
    before the `bind`).

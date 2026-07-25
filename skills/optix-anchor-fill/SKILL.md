@@ -12,7 +12,7 @@ user_invocable: true
 
 ## Fill the whole container — batch the pair
 Two related `set_property` ops land together in one `optix_bridge_edit` call
-(pre-flight with `dry_run=True` if unsure of the property names):
+(unsure of a property name? `optix_describe_type` is cheaper than a dry_run):
 ```
 optix_bridge_edit(project, ops=[
   {"op": "set_property", "path": "<widget>", "name": "HorizontalAlignment", "value": "Stretch"},

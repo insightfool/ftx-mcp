@@ -86,29 +86,28 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         # playbooks load on demand via the skill tools. Keep this SHORT: it
         # lands in every connected session's context.
         instructions=(
-            "ftx-mcp drives FactoryTalk Optix Studio on this machine: author "
-            "HMI changes into the OPEN Studio project via the design-time "
-            "bridge, preview in the built-in emulator, verify on the rendered "
-            "canvas.\n"
-            "START OF SESSION -- do this ONCE, before authoring or answering "
-            "the first Optix request, not only when a task 'seems to need' "
-            "it:\n"
-            "  1. optix_get_project_map() -- you are blind to the project's "
-            "screens, variables and structure until you call it; skipping it "
-            "means guessing at names the map would have handed you.\n"
-            "  2. optix_list_skills() -- the bundled authoring playbooks "
-            "(navigation, bound controls, styles, expressions, alarms); scan "
-            "the catalog so you know what proven recipe exists before you "
-            "improvise.\n"
-            "Then the authoring loop: optix_bridge_* (author) -> "
-            "optix_restart_emulator (structural edits only become visible "
-            "after a restart) -> optix_cdp_screenshot (verify; optix_cdp_fill "
-            "types into fields). Pull one playbook with optix_get_skill(name) "
-            "when the task matches it. Run optix_doctor first if anything "
-            "seems broken.\n"
-            "FILES: the service filesystem is unreachable from sandboxed "
-            "clients - never ask for host folder access. Use "
-            "optix_routes_save, return_image=true, and sweep/diff text."
+            "ftx-mcp drives FactoryTalk Optix Studio: author HMI changes into "
+            "the OPEN Studio project via the design-time bridge, preview in the "
+            "emulator, verify on the canvas.\n"
+            "Required first step: optix_get_project_map() -- you are blind to "
+            "the project's screens/variables/structure until you call it. "
+            "Everything else is on demand.\n"
+            "The tools are self-describing -- author directly, let them correct "
+            "you, don't pre-read: optix_describe_type(<type>) lists settable "
+            "properties; the validator rejects bad ops with did_you_mean. "
+            "optix_list_skills()/optix_get_skill(name) are reactive reference "
+            "for the FEW non-obvious behaviors (no dock-panel, silent-no-op "
+            "expressions) -- pull one only when a task hits that case, not up "
+            "front.\n"
+            "Authoring loop: optix_bridge_* (batch ONE component's related ops "
+            "per optix_bridge_edit call -- it validates then applies; "
+            "component-sized, not whole-screen) -> optix_restart_emulator "
+            "(structural edits render only after a restart) -> "
+            "optix_cdp_screenshot (verify). optix_doctor if something seems "
+            "broken.\n"
+            "FILES: service filesystem is unreachable from sandboxed clients "
+            "-- no host folder access; use optix_routes_save, "
+            "return_image=true, sweep/diff text."
         ),
     )
     # FastMCP doesn't expose a version kwarg; set it on the underlying
@@ -2785,10 +2784,21 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         deleting a node a later op still touches, and duplicate creates are all
         refused before the first write.
 
-        `dry_run=True` returns the validation report and applies NOTHING — the
-        cheap way to check a batch an agent just composed. `strict=True`
+        You normally call this ONCE and let it apply: it validates the whole
+        batch FIRST and applies nothing if validation fails (state="validated"
+        with the errors), so a separate dry_run pass is NOT needed to be safe.
+        Re-sending a large op list twice (dry_run then apply) is the single most
+        wasteful thing you can do here — you regenerate the whole payload for no
+        added safety. Reserve `dry_run=True` (validate, apply NOTHING) for a
+        genuinely risky batch you want to inspect before committing. `strict=True`
         promotes lint warnings (e.g. creating over a node that already exists)
         into errors.
+
+        SIZE: batch ONE component's related ops — a widget plus its properties
+        plus its binding/expression — NOT a whole screen. A 100-op mega-batch
+        takes minutes to generate and apply as one blocking call and gambles the
+        whole screen on a single partial-failure point; component-sized batches
+        keep generation fast, failures local, and progress visible.
 
         NOT ATOMIC, and the result says so. Studio's live model has no
         transaction to roll back to, so if op N fails at apply time, ops 0..N-1
@@ -2800,10 +2810,9 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         validated | succeeded | partial.
 
         Use this when:
-          - you have several related edits (a widget plus its properties plus a
-            binding) and want them checked together before any of them lands
-          - you want to pre-flight an op list without touching the model
-            (dry_run)
+          - you have several related edits for ONE component (a widget plus its
+            properties plus a binding) — batch them so they validate and land
+            together
 
         Do NOT use this when:
           - you have ONE edit — the per-noun tool (optix_bridge_set_property,
