@@ -2232,7 +2232,12 @@ def _bridge_list_screens(cfg: Config, project: str) -> dict:
 def list_ui_types(cfg: Config, project: str) -> dict:
     """The builtin UI type catalog from the LIVE model via the bridge.
 
-    Returns {types:[{name, browse_name}], count, truncated, source:"bridge"}.
+    Returns {types:[{name} | {name, browse_name}], count, truncated,
+    source:"bridge"}. `browse_name` is dropped per-entry when it equals
+    `name` — true for nearly all of the ~102 builtin types, so this is a
+    pure token-size cut with no information loss: a missing `browse_name`
+    means "same as `name`". It is kept only on the rare entry where the
+    two genuinely differ. `count` still reflects the full catalog size.
     Bridge-only (the catalog lives in Studio's type system, not on disk).
     """
     if not _use_bridge_for(cfg, project):
@@ -2244,6 +2249,13 @@ def list_ui_types(cfg: Config, project: str) -> dict:
     if status != 200 or "types" not in data:
         raise BridgeUnavailable(f"bridge /bridge/types/ui returned status={status}")
     data["source"] = "bridge"
+    leaned = []
+    for t in data.get("types") or []:
+        entry = dict(t)
+        if entry.get("browse_name") == entry.get("name"):
+            entry.pop("browse_name", None)
+        leaned.append(entry)
+    data["types"] = leaned
     return data
 
 

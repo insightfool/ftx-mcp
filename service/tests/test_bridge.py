@@ -250,6 +250,24 @@ def test_list_ui_types(cfg: core.Config, projects_root: Path, monkeypatch) -> No
     assert {t["name"] for t in out["types"]} == {"Label", "Button"}
 
 
+def test_list_ui_types_drops_redundant_browse_name(cfg: core.Config, projects_root: Path, monkeypatch) -> None:
+    """browse_name is stripped per-entry when it equals name (the ~102-type
+    catalog's common case) but kept when the two genuinely differ. `count`
+    still reflects the full catalog, unaffected by the leaner per-entry shape."""
+    make_project(projects_root, "Alpha")
+    types = [
+        {"name": "Label", "browse_name": "Label"},
+        {"name": "Rectangle", "browse_name": "Rect"},
+    ]
+    routes = {**_HEALTHY, "/bridge/types/ui": (200, {"types": types, "count": 2})}
+    monkeypatch.setattr(core, "_bridge_http", _bridge(routes))
+    out = core.list_ui_types(cfg, "Alpha")
+    assert out["count"] == 2
+    by_name = {t["name"]: t for t in out["types"]}
+    assert "browse_name" not in by_name["Label"]
+    assert by_name["Rectangle"]["browse_name"] == "Rect"
+
+
 def test_describe_type_schema(cfg: core.Config, projects_root: Path, monkeypatch) -> None:
     make_project(projects_root, "Alpha")
     schema = {"type": "Label", "browse_name": "Label",

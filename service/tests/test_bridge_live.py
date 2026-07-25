@@ -117,7 +117,9 @@ def test_bridge_reachable(live):
 
 def test_list_ui_types_nonempty(live):
     """core.list_ui_types returns the builtin UI type catalog from the live
-    model. Shape: {types:[{name, browse_name}], count, truncated, source}.
+    model. Shape: {types:[{name} | {name, browse_name}], count, truncated,
+    source} — browse_name is omitted per-entry when it equals name (the
+    common case), so a missing browse_name means "same as name".
     Assert the catalog is non-empty and includes a common builtin (Rectangle/
     Label/Button/...) so we know the type system is actually reflected, not an
     empty stub."""

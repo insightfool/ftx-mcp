@@ -158,24 +158,16 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
     @mcp.tool(annotations=_RO)
     def optix_health() -> dict:
-        """Aggregate health of the ftx-mcp deploy stack (export-based, v0.2.x).
-
-        Returns: projects_root, studio_exe, runtime_dir, runtime_test_port,
-        interactive_session, bind config. The deploy mechanism is
-        Studio-export -> atomic tree swap -> runtime bounce; UpdateSvc /
-        OPC UA is NOT in the path until v0.3.
+        """Aggregate health of the ftx-mcp deploy stack (export-based, v0.2.x):
+        projects_root, studio_exe, runtime_dir, interactive_session, bind config.
 
         Use this when:
           - the user asks "is everything wired up?", "is studio installed?"
-          - before a deploy attempt, to fail fast on missing studio_exe /
-            unconfigured runtime_dir / non-interactive session
-          - confirming the runtime tree the deploy will swap into is on the
-            expected path
+          - before a deploy attempt, to fail fast on missing config
 
         Do NOT use this when:
-          - the user wants live runtime liveness of a specific slot
-            (use optix_runtime_status)
-          - you only need the Studio binary version (use optix_studio_version)
+          - you want a specific runtime slot's liveness (optix_runtime_status)
+          - you only need the Studio binary version (optix_studio_version)
         """
         return core.health(cfg)
 
@@ -183,36 +175,28 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     def optix_doctor() -> dict:
         """One-call setup check: every prerequisite + a plain-English fix for each.
 
-        Returns {ready, checks:[{name, ok, required, detail, fix}]}. `ready` is True
-        when the REQUIRED deps (Studio, projects folder) are present; feature checks
-        (bridge, cdp, deploy account/cert/password, interactive session) are
-        reported with a fix and gate only their own feature. Run this first on a new
-        box, or whenever something "doesn't work" — it tells you exactly what's
-        missing and how to fix it, in plain language.
+        `ready` is True when the REQUIRED deps (Studio, projects folder) are
+        present; feature checks (bridge, cdp, deploy creds, interactive session)
+        report their own fix and gate only their own feature.
 
         Use this when:
           - first-time setup, or after a reboot / config change
           - any tool failed and you want to know which dependency is missing
 
         Do NOT use this when:
-          - you need live service metrics (use optix_health / optix_services_status)
-          - you already know the specific failure (go straight to the relevant tool)
+          - you need live service metrics (optix_health / optix_services_status)
+          - you already know the specific failure (go straight to that tool)
         """
         return core.doctor(cfg)
 
     @mcp.tool(annotations=_RO)
     def optix_list_skills() -> dict:
-        """Catalog of the bundled authoring playbooks — one line each.
-
-        The playbooks encode the proven recipes (multi-screen navigation,
-        bound controls, styles, computed expressions, anchoring, alarms) with
-        the exact property names and gotchas. Scan the catalog when a task
-        matches a common pattern, then optix_get_skill(name) for the one you
-        need — don't load all of them.
+        """Catalog of the bundled authoring playbooks — one line each (proven
+        recipes for navigation, bound controls, styles, expressions, alarms).
+        Scan for a matching pattern, then optix_get_skill(name) for just that one.
 
         Use this when:
           - starting a task that smells like a common HMI pattern
-          - unsure whether a playbook exists for what you're building
 
         Do NOT use this when:
           - you already know the skill name (optix_get_skill directly)
@@ -222,10 +206,6 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     @mcp.tool(annotations=_RO)
     def optix_get_skill(name: str) -> dict:
         """Full content of one bundled playbook by name (from optix_list_skills).
-
-        Returns {name, content} — follow the playbook's steps with the bridge
-        tools. Ships with the server, so it can never drift from the tool
-        surface it describes.
 
         Use this when:
           - the task matches a playbook from the catalog
@@ -237,22 +217,18 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
     @mcp.tool(annotations=_RO)
     def optix_list_projects() -> dict:
-        """List Optix projects under OPTIX_PROJECTS_ROOT.
-
-        Returns {projects: [{name, optix_file}, ...]}. You RARELY need this:
-        every project-scoped tool defaults to the project the bridge is
-        serving (the one open in Studio) when `project` is omitted.
+        """List Optix projects under OPTIX_PROJECTS_ROOT. You RARELY need this:
+        every project-scoped tool defaults to the project open in Studio when
+        `project` is omitted.
 
         Use this when:
           - the user asks "what projects are on the box?"
-          - you're targeting a DIFFERENT project than the one open in Studio
-            and need its exact name
+          - targeting a DIFFERENT project than the one open in Studio
           - no bridge is running and a tool returned no_project
 
         Do NOT use this when:
           - you're working with the project open in Studio — just omit
             `project` on the other tools; do not enumerate first
-          - you already know the project name (skip ahead)
         """
         return {"projects": core.list_projects(cfg)}
 
@@ -268,22 +244,17 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     ) -> dict:
         """Search a project's text files for a literal string — server-side.
 
-        THE discovery primitive: use it to locate which file and line hold a
-        screen, widget, node name, or property before reading or editing.
-        Returns {matches: [{path, line, text, context_before, context_after}],
-        files_scanned, match_count, truncated}. Skips .git/bin/obj and
-        binary files. Case-insensitive by default. Literal only — no regex,
-        single-line queries only.
-
-        Refuses with `studio_open` (409) while FactoryTalk Optix Studio is
-        running (disk state is stale while Studio holds a project in memory;
-        close Studio, no override exists).
+        THE discovery primitive: locate which file and line hold a screen,
+        widget, node name, or property before reading or editing. Case-
+        insensitive by default. Literal only — no regex, single-line queries.
+        Refuses with `studio_open` (409) while Studio is running (disk state
+        is stale while Studio holds the project in memory; close Studio, no
+        override exists).
 
         Use this when:
           - you need to find which Nodes/*.yaml defines a screen or widget
             (e.g. query="Name: Screen1" or query="Type: Label")
           - you want the line number to anchor a ranged optix_read_file
-          - you would otherwise read whole files hunting for one node
 
         Do NOT use this when:
           - you already know the file AND region (ranged optix_read_file)
@@ -309,31 +280,25 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     ) -> dict:
         """Read a UTF-8 file under an Optix project, optionally a line range.
 
-        Path-traversal is rejected. Returns {path, size, sha256, total_lines,
-        content} plus {start_line, end_line} when ranged. start_line/end_line
-        are 1-based inclusive (end clamps to EOF). `size`, `sha256`, and
-        `total_lines` ALWAYS describe the whole file — sha256 is the version
-        fingerprint to cite when composing anchored edits.
+        Path-traversal is rejected. start_line/end_line are 1-based inclusive
+        (end clamps to EOF). The result's `sha256` is the version fingerprint
+        to cite when composing anchored edits.
 
-        Refuses with `studio_open` (409) while FactoryTalk Optix Studio is
-        running anywhere on this box: Studio holds the open project in
-        memory, so disk state is stale and any edit planned from it would be
-        wrong. Tell the user to close Studio, then retry. There is no
-        override parameter — do not look for one. (Operators may set
-        `OPTIX_STUDIO_GUARD_MODE=attributed` out-of-band; when the bridge
-        proves Studio is serving a DIFFERENT project the read is allowed and
-        the result carries `studio_guard: "attributed"` / `studio_serving`.)
+        Refuses with `studio_open` (409) while Studio is running anywhere on
+        this box: disk state is stale while Studio holds the project in
+        memory, and an edit planned from it would be wrong. Close Studio and
+        retry; no override parameter. (Operators may set
+        `OPTIX_STUDIO_GUARD_MODE=attributed` out-of-band to allow reads when
+        the bridge proves Studio is serving a DIFFERENT project.)
 
         Use this when:
           - you need the current content of a YAML/screen file before editing
           - optix_find located the region and you want just that slice
-            (start_line/end_line) instead of a 2,000-line file
-          - the user asks "what's in <file>?"
+            instead of a 2,000-line file
 
         Do NOT use this when:
           - you don't know which file holds the node (optix_find first)
-          - the file is binary (returns a 415-equivalent error)
-          - you want to list a directory (NOT supported)
+          - the file is binary, or you want to list a directory (NOT supported)
         """
         return core.read_file(
             cfg, project, path, start_line=start_line, end_line=end_line
@@ -349,92 +314,51 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     ) -> dict:
         """Apply edits and deploy via FTOptixStudio export -> tree swap -> runtime bounce (v0.2.x).
 
-        *** REQUIRES FACTORYTALK OPTIX STUDIO CLOSED. *** This export path refuses
-        with 409 studio_open while FTOptixStudio.exe is running, because exporting
-        conflicts with Studio's open project (corruption guard). If Studio is OPEN
-        with the design-time bridge armed (the live author->save->deploy->verify
-        loop), do NOT use this — use optix_deploy_updatesvc, which deploys via the
-        UpdateSvc without closing Studio. There is no close-Studio tool; either close
-        it yourself or switch to optix_deploy_updatesvc.
+        *** REQUIRES FACTORYTALK OPTIX STUDIO CLOSED. *** Refuses with 409
+        studio_open while Studio is running anywhere on this box (in-memory
+        model stomps file-level edits — this corrupted a live demo once; no
+        override exists) — use optix_deploy_updatesvc instead if Studio is
+        open with the bridge armed. `editor_project_open` (409) means
+        VS/VS Code has THIS project open.
 
         Mechanism: applies `edits` to the project tree, git-commits with
-        `commit_message`, runs `FTOptixStudio.exe export --platform=Win32_x64`
-        to produce a runtime-ready bundle, atomically swaps the bundle into
-        OPTIX_RUNTIME_DIR/<project>/, stops the runtime, restarts it via
-        OPTIX_RUNTIME_LAUNCHER, and probes the runtime port until it
-        answers. UpdateSvc / OPC UA is NOT in the path; see docs/architecture.md
-        contract for the v0.3 future.
+        `commit_message`, runs `FTOptixStudio.exe export`, atomically swaps
+        the bundle into OPTIX_RUNTIME_DIR/<project>/, bounces the runtime,
+        and probes the runtime port until it answers. UpdateSvc / OPC UA is
+        NOT in this path.
 
-        Args:
-          project: project directory name. Omit it — defaults to the bridge's
-            served project; only pass it (or discover via optix_list_projects)
-            when targeting a project OTHER than the one open in Studio.
-          edits: list of edit dicts, UTF-8 plaintext only. THREE MODES —
-            prefer the anchored modes; only fall back to full-content for
-            new files or full rewrites:
+        `project`: omit — defaults to the bridge's served project.
 
-            1. {"path", "find", "replace", "expect_count"?} — ANCHORED
-               REPLACE (preferred for changing existing lines/values).
-               `find` is a literal string that must occur exactly
-               expect_count times (default 1) or the whole batch refuses
-               (422 edit_anchor_mismatch) with nothing written. Newlines in
-               find/replace auto-match the file's EOL (write "\\n"; CRLF
-               files just work).
-            2. {"path", "insert_after_anchor", "block"} — ANCHORED INSERT
-               (preferred for adding nodes/widgets). `block` is inserted on
-               a new line after the line containing the unique anchor.
-               Indent the block yourself to match its destination.
-            3. {"path", "content"} — FULL REPLACE. Only mode that can
-               create a new file. For existing files, prefer modes 1-2:
-               re-emitting a whole file risks drifting unrelated lines.
+        `edits`: list of edit dicts, UTF-8 plaintext only. THREE MODES —
+        prefer the anchored modes, fall back to full-content only for new
+        files: (1) {"path", "find", "replace", "expect_count"?} — ANCHORED
+        REPLACE, preferred for changing existing lines/values; `find` must
+        occur exactly expect_count times (default 1) or the whole batch
+        refuses (422 edit_anchor_mismatch) with nothing written. (2) {"path",
+        "insert_after_anchor", "block"} — ANCHORED INSERT, preferred for
+        adding nodes/widgets; `block` is inserted after the line containing
+        the unique anchor, indent it yourself. (3) {"path", "content"} — FULL
+        REPLACE, the only mode that can create a new file; for existing
+        files prefer modes 1-2 to avoid drifting unrelated lines. The batch
+        is atomic: ALL edits resolve against current disk state before ANY
+        file is written; one mismatch refuses all. One edit per path per batch.
 
-            The batch is atomic: ALL edits resolve against current disk
-            state before ANY file is written; one mismatch refuses all.
-            One edit per path per batch (later anchored edits would not see
-            earlier ones).
-          commit_message: git commit message for the audit trail
-          run_after_deploy: when True, the runtime is bounced and verified
-            via runtime_probe (TCP probe of the test port). When False,
-            the swap completes but the runtime is not bounced; verification
-            falls back to export_mtime (the swapped tree's mtime advanced
-            past deploy start). False is for staged deploys where another
-            agent flips the runtime separately.
-
-        Returns the deploy-contract result (docs/architecture.md):
-          state ∈ {succeeded, failed},
-          studio_exit, verification.{method, confirmed_at, timeout_seconds},
-          started_at, completed_at, git_sha, files_written,
-          edit_summary: [{path, mode, occurrences?, bytes_before, bytes_after}].
-
-          method ∈ {runtime_probe, export_mtime, null}; null only on a
-          pre-verify failure (export non-zero or swap aborted).
-
-        Refuses with `studio_open` (409) while FactoryTalk Optix Studio is
-        running anywhere on this box — Studio's in-memory model stomps
-        file-level edits on save/close (this corrupted a live demo; the
-        guard is deliberate). `editor_project_open` (409) means VS / VS Code
-        has THIS project open. Remediation in both cases is closing the
-        app; there is no override parameter — do not look for one.
+        `run_after_deploy`: True bounces + verifies the runtime (runtime_probe).
+        False leaves it un-bounced (verification falls back to export_mtime)
+        — for staged deploys where another agent flips the runtime separately.
 
         Use this when:
-          - the user wants to apply specific edits to an Optix project and
-            push the change to the local runtime
-          - you have located the target via optix_find / optix_read_file and
-            can anchor the change (modes 1-2)
+          - the user wants to apply specific edits and push to the local runtime
+          - you've located the target via optix_find / optix_read_file and can
+            anchor the change (modes 1-2)
 
         Do NOT use this when:
-          - FactoryTalk Optix Studio is open (close it first — see above)
-          - you have not read the target region (optix_find -> ranged
-            optix_read_file -> anchored edit is the canonical loop; blind
-            full-content writes risk clobbering unrelated changes)
-          - the edit is large or speculative; review first, then anchor
-          - you only want to stage a build (use optix_studio_export — it
-            produces the same staging tree without touching the live runtime)
+          - you have not read the target region first (blind full-content
+            writes risk clobbering unrelated changes)
 
-        Verify-half tip: the returned verification.method is runtime_probe
-        (TCP open) — that proves the runtime is up, NOT that your edit is
-        visible on screen. For visual confirmation pair with
-        optix_cdp_screenshot (server-side JPEG of the canvas).
+        Verify-half tip: the returned verification.method (runtime_probe)
+        proves the runtime is up, NOT that your edit is visible — pair with
+        optix_cdp_screenshot for visual confirmation.
         """
         dr = core.DeployRequest(
             edits=edits,
@@ -451,18 +375,15 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     @mcp.tool(annotations=_RO)
     @_with_project
     def optix_list_screens(project: str | None = None) -> dict:
-        """List the Screen / Panel / Dialog nodes in a project's UI.
+        """List the Screen / Panel / Dialog nodes in a project's UI — the
+        starting point for any UI edit.
 
-        Returns {screens: [...], count, source}. `source` is "bridge" when the
-        answer came from the live model (Studio open with this project + the
-        design-time bridge running) or "file" when it came from the on-disk YAML.
-        The starting point for any UI edit — you need the screen name (and, in
-        file mode, the file it lives in) before adding a widget.
-
-        Mode: when Studio is open with this project AND the design-time bridge is
-        up, this reads the LIVE model (no refusal). Otherwise the file path runs,
-        which still refuses with `studio_open` (409) if Studio is open with no
-        bridge serving this project. There is no override either way.
+        Returns {screens: [...], count, source}. `source` is "bridge" (live
+        model, Studio + bridge running) or "file" (on-disk YAML). When Studio
+        is open with this project and the bridge is up, reads live (no
+        refusal); otherwise falls back to file mode, which still refuses with
+        `studio_open` (409) if Studio is open with no bridge serving this
+        project — no override either way.
 
         Use this when:
           - the user says "add X to the main screen" — find which screen that is
@@ -481,49 +402,38 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         format: str = "outline", project: str | None = None,
     ) -> str | dict:
         """Component map of the project (names + nesting) in ONE call — the
-        cheap way to learn a project's structure instead of walking it with
-        repeated optix_describe_node.
+        cheap way to learn structure instead of walking it with repeated
+        optix_describe_node.
 
-        Depth is AUTOMATIC by what you point it at: a FOLDER (or no path) gives
-        orientation ("overview") — folders expand, each component is one line
-        with a "(+N inside)" count, variables fold into "(N vars)". A COMPONENT
-        path (e.g. "UI/MainWindow") gives the full subtree ("detail" — every
-        node kind, at the default depth 6; NOT necessarily fully expanded).
-        Pass depth= to force a detail walk at that depth. Pointers and
-        bindings are DEREFERENCED inline ("Panel (NodePointer -> UI/Screens/
-        ScreenA)") — a detail map of a screen doubles as its wiring audit.
-        Placeholder collections render as "Name {ElementType}"; truncation is
-        always marked "... +N more".
+        Depth is AUTOMATIC: a FOLDER (or no path) gives an "overview" (one
+        line per component, "(+N inside)"/"(N vars)"); a COMPONENT path (e.g.
+        "UI/MainWindow") gives the full "detail" subtree at depth 6 (pass
+        depth= to override). Pointers/bindings are DEREFERENCED inline
+        ("Panel (NodePointer -> UI/Screens/ScreenA)") — a detail map doubles
+        as a wiring audit.
 
-        match="Pump*" turns the call into a LIVE-MODEL SEARCH (name or type,
-        case-insensitive) returning matching full paths, ready to pass to any
-        tool. MATCHING IS EXACT unless you use * wildcards: match="Grid" only
-        finds nodes NAMED/TYPED exactly "Grid" — a node named GridLayout1 needs
-        match="Grid*" or match="*Grid*". When hunting for something, default to
-        "*substring*"; a bare word silently returns 0 hits for partial names
-        (two independent field agents have mis-assumed substring semantics).
-        Use this instead of optix_find for live-model lookups (optix_find greps
-        FILES and is refused while Studio is open).
+        match="Pump*" turns the call into a LIVE-MODEL SEARCH (name or type).
+        MATCHING IS EXACT unless you use * wildcards: match="Grid" only finds
+        nodes named/typed exactly "Grid" — GridLayout1 needs "Grid*"/"*Grid*".
+        Default to "*substring*" when hunting; a bare word silently returns 0
+        hits for partial names. Use this instead of optix_find for live-model
+        lookups (optix_find greps FILES, refused while Studio is open).
 
-        IMPORTANT: the map shows MATERIALIZED nodes only. A property a type
-        offers but that was never set does NOT appear — its absence here never
-        means you can't set it (optix_bridge_set_property materializes on
-        write). Consult optix_describe_type for what a type accepts.
+        IMPORTANT: shows MATERIALIZED nodes only — a property never set does
+        NOT appear, and its absence never means you can't set it
+        (optix_bridge_set_property materializes on write).
 
-        format="outline" (default) returns readable indented text with a
-        header line — for HUMAN/model eyes. Programmatic callers should use
-        format="json" (structured tree + mode/truncated fields; never parse
-        the outline header). ids=true adds NodeIds (rarely needed — tools
-        address nodes by PATH).
+        format="outline" (default, human-readable) or format="json"
+        (structured, for programmatic callers). ids=true adds NodeIds
+        (rarely needed — tools address nodes by PATH).
 
         Use this when:
           - starting work on an unfamiliar project (no-path overview first)
-          - you need the exact path/nesting of components in one subtree
           - you'd otherwise call optix_describe_node more than twice
 
         Do NOT use this when:
           - you need one node's property VALUES (optix_describe_node)
-          - you need what a TYPE accepts / settable schema (optix_describe_type)
+          - you need what a TYPE accepts (optix_describe_type)
           - Studio/the bridge is closed (bridge-only; arm the bridge first)
         """
         res = _bridge_guarded(project, lambda: core.get_project_map(
@@ -546,19 +456,17 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     def optix_bridge_status() -> dict:
         """Status of the design-time read-bridge (NetLogic HTTP listener in Studio).
 
-        Returns {available, project, bridge_version, reason}. `available` is True
-        only when the bridge answers /bridge/health and a project model is loaded;
-        `project` is the project it is serving (its self-attribution — the OS-level
-        Studio-open guard cannot name the open project, the bridge can).
+        `available` is True only when the bridge answers /bridge/health and a
+        project model is loaded; `project` is the one it's serving (self-
+        attribution — the OS-level Studio-open guard can't name it, the bridge can).
 
         Use this when:
-          - deciding whether live-model reads (optix_describe_node) will work, or
-            whether you are in file-only mode
+          - deciding whether live-model reads will work, or you're file-only
           - the user asks "is the bridge up / what project is open in Studio?"
 
         Do NOT use this when:
-          - you just want to read a node — call optix_describe_node and handle the
-            bridge_unavailable error instead of pre-checking
+          - you just want to read a node — call optix_describe_node and handle
+            the bridge_unavailable error instead of pre-checking
         """
         return core.bridge_state(cfg)
 
@@ -567,26 +475,18 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     def optix_describe_node(path: str, project: str | None = None) -> dict:
         """Introspect one node in the LIVE model via the design-time bridge.
 
-        Returns {path, browse_name, node_class, dotnet_type, children:[{browse_name,
-        node_class, dotnet_type}], properties:[{name, datatype, value}], truncated,
-        source:"bridge"}. `path` is an Optix model path (NO leading slash), e.g.
-        "UI/MainWindow", "UI/Screens/Overview", "Model/Motor1".
-
-        This is typed, live-model introspection — it returns a node's real type and
-        its property schema (Width/Height/Text/...) directly from Studio's in-memory
-        model, with no YAML guessing. It REQUIRES Studio open with this project AND
-        the bridge running; otherwise it raises `bridge_unavailable` (503) — there is
-        no file-path equivalent for typed introspection. Check optix_bridge_status if
-        unsure.
+        `path` is an Optix model path (NO leading slash), e.g. "UI/MainWindow",
+        "Model/Motor1". Returns the node's real type, children, and property
+        values directly from Studio's in-memory model, with no YAML guessing.
+        REQUIRES Studio open with this project AND the bridge running, else
+        raises `bridge_unavailable` (503) — no file-path equivalent exists.
 
         Use this when:
           - you need a node's exact type or property schema before editing
           - you want to discover what a screen/panel contains (its children)
-          - you would otherwise read raw YAML and guess the node shape
 
         Do NOT use this when:
-          - Studio is closed (the bridge is down — use optix_find / optix_read_file
-            against the files instead)
+          - Studio is closed (use optix_find / optix_read_file against files)
           - you need a full-text search (use optix_find)
         """
         return core.describe_node(cfg, project, path)
@@ -594,18 +494,13 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     @mcp.tool(annotations=_RO)
     @_with_project
     def optix_list_ui_types(project: str | None = None) -> dict:
-        """List the builtin UI type catalog from the LIVE model (design-time bridge).
-
-        Returns {types:[{name, browse_name}], count, truncated, source:"bridge"}.
-        This is "what controls exist?" — Label, Button, Rectangle, Panel, DataGrid,
-        Trend, … — read from Studio's type system, not guessed. Bridge-only;
-        requires Studio open with this project and the bridge running (else
-        `bridge_unavailable`). Pair with optix_describe_type to get a type's
-        property schema before composing an edit.
+        """List the builtin UI type catalog from the LIVE model — "what controls
+        exist?" (Label, Button, Rectangle, Panel, DataGrid, Trend, …), read from
+        Studio's type system, not guessed. Bridge-only (else `bridge_unavailable`).
+        Pair with optix_describe_type for a type's property schema.
 
         Use this when:
           - you need to know which control types are available before adding one
-          - the user asks "what widgets/controls can I use?"
 
         Do NOT use this when:
           - you already know the type name (go straight to optix_describe_type)
@@ -619,24 +514,17 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         type_name: str | None = None, type_names: list[str] | None = None,
         project: str | None = None,
     ) -> dict:
-        """Property schema of a builtin UI type from the LIVE model (design-time bridge).
-
-        Returns {type, browse_name, properties:[{name, datatype}], truncated,
-        source:"bridge"}. `type_name` is a catalog name from optix_list_ui_types
-        (e.g. "Label", "Button", "Rectangle"). This is the "shape" of a control —
-        which properties it has and their datatypes — so an edit can be composed
-        against the real schema instead of guessed YAML. Bridge-only; requires
-        Studio open with this project and the bridge running (else
-        `bridge_unavailable`); `node_not_found` for an unknown type.
+        """Property schema of a builtin UI type from the LIVE model — the "shape"
+        of a control (which properties it has, their datatypes), so an edit can
+        be composed against the real schema instead of guessed YAML. `type_name`
+        is a catalog name from optix_list_ui_types (e.g. "Label", "Button").
+        Bridge-only (else `bridge_unavailable`); `node_not_found` for an unknown type.
 
         Use this when:
-          - before adding/setting a property on a control, to confirm the property
-            exists and its datatype
-          - the user asks "what properties does a <type> have?"
+          - before adding/setting a property, to confirm it exists and its datatype
 
         Do NOT use this when:
-          - you want the properties of a specific existing NODE (use
-            optix_describe_node with its path)
+          - you want the properties of a specific existing NODE (optix_describe_node)
           - Studio is closed (the bridge is down)
         """
         if type_names:
@@ -658,23 +546,18 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     def optix_schema_dump(project: str | None = None) -> dict:
         """Fetch + cache the FULL type-schema dump for the running Studio version.
 
-        Enumerates the whole builtin type catalog x per-type property schema
-        into an offline cache keyed by Studio version, then returns a compact
-        SUMMARY — {studio_version, generated_at, type_count, property_count,
-        path} — never the full dump (it is large). The cached file powers
-        offline reads and cross-version diffing (optix_schema_diff).
-
-        Requires Studio open with this project, the bridge running, AND the
-        bridge's /bridge/schema/dump endpoint (a bridge build). When any of
-        those is missing it returns a structured `bridge_unavailable` error
-        instead of raising.
+        Enumerates the whole builtin type catalog into an offline cache keyed by
+        Studio version, then returns a compact SUMMARY (never the full dump —
+        it's large). Powers offline reads and cross-version diffing
+        (optix_schema_diff). Requires Studio open + bridge + the bridge's
+        /bridge/schema/dump endpoint; missing any returns `bridge_unavailable`.
 
         Use this when:
           - you want to snapshot the current Studio version's schema for
             offline use or later cross-version comparison
 
         Do NOT use this when:
-          - you only need one type's shape (use optix_describe_type)
+          - you only need one type's shape (optix_describe_type)
           - Studio is closed (the bridge is down)
         """
         try:
@@ -692,8 +575,8 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     def optix_schema_list() -> dict:
         """List the Studio versions whose schema dumps are cached on disk.
 
-        Returns {versions: [<studio_version>, ...]}. Pure offline read — no
-        Studio required. Feed any two of these to optix_schema_diff.
+        Pure offline read — no Studio required. Feed any two of these to
+        optix_schema_diff.
 
         Use this when:
           - you want to know which schema snapshots are available to diff
@@ -708,12 +591,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """Diff two cached schema dumps (upgrade intelligence, offline).
 
         `version_a` is the older/from version, `version_b` the newer/to.
-        Returns {added_types, removed_types, changed_types, summary:{...}}
-        where changed_types maps a type to its added/removed/changed
-        properties (a changed prop = same name, different datatype or
-        settable). Both versions must be cached (optix_schema_dump on each
-        box, or optix_schema_list to see what is available); if either is
-        missing it returns {error: "version_not_cached", missing, available}.
+        `changed_types` maps a type to its added/removed/changed properties (a
+        changed prop = same name, different datatype or settable). Both
+        versions must be cached (optix_schema_dump on each box, or
+        optix_schema_list to see what's available); if either is missing,
+        returns error='version_not_cached' with `missing`/`available`.
 
         Use this when:
           - the user asks what changed in the type schema between two Studio
@@ -758,49 +640,36 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         screen: str, name: str, widget_type: str = "Label",
         project: str | None = None,
     ) -> dict:
-        """Create a UI widget on a screen in the LIVE model via the design-time bridge.
+        """Create a UI widget on a screen in the LIVE model via the bridge.
 
-        Adds a builtin control (Label/Button/Rectangle/Panel/...) as a child of
-        `screen` (an Optix path, NO leading slash, e.g. "UI/MainWindow"). Returns
-        {ok, created_path, type, ...}.
+        Adds a builtin control (Label/Button/Rectangle/Panel/...) as a child
+        of `screen` (an Optix path, NO leading slash, e.g. "UI/MainWindow").
 
-        PLACEHOLDER-COLLECTION AUTO-ROUTING: some parents
-        declare a named child collection (NavigationPanel.Panels,
-        DataGrid.Columns, ListView.TypeSelectors, XYChart.Pens, gauges'
-        WarningZones) — children belong INSIDE it, like Studio's drag-and-drop.
-        Target the PARENT's path and the bridge routes automatically when the
-        widget_type fits the collection: created_path/routed_into report the
-        real placement (e.g. screen=".../NavPanel" + NavigationPanelItem lands
-        at ".../NavPanel/Panels/<name>"). optix_describe_type marks these
-        properties with children_go_in/element_type. Errors are loud:
-        ambiguous_container (type fits several collections — pass the explicit
-        sub-path) and read_only_collection (runtime-managed, e.g.
-        Trend.TimeRanges — never authorable). A NavigationPanelItem renders a
-        ZERO-WIDTH tab until its Title is set — set Title right after creating.
+        PLACEHOLDER-COLLECTION AUTO-ROUTING: some parents declare a named
+        child collection (NavigationPanel.Panels, DataGrid.Columns,
+        XYChart.Pens, gauges' WarningZones) — children belong INSIDE it, like
+        Studio's drag-and-drop. Target the PARENT's path; the bridge
+        auto-routes when widget_type fits (created_path/routed_into report
+        the real placement). Errors are loud: ambiguous_container (pass the
+        explicit sub-path) and read_only_collection (runtime-managed, never
+        authorable). A NavigationPanelItem renders a ZERO-WIDTH tab until its
+        Title is set — set Title right after creating.
 
-        This is a LIVE-MODEL write: Studio authors
-        the node, so it is export-safe by construction (no file-injection export
-        hang). Requires Studio open with this project AND the bridge running (else
-        bridge_unavailable). To SEE it: a new widget is a STRUCTURAL change — a
-        running emulator won't show it until a restart cycle
-        (optix_stop_emulator -> optix_run_emulator; F5 saves, no explicit save
-        needed). Ship from Studio's Deploy dialog when ready.
+        Live-model write, export-safe by construction. Requires Studio open
+        with this project AND the bridge running (else bridge_unavailable).
+        A new widget is STRUCTURAL — a running emulator won't show it until a
+        restart cycle (optix_stop_emulator -> optix_run_emulator).
 
         Use this when:
           - adding a control while Studio is open (the live, export-safe path)
-          - you've confirmed the type via optix_list_ui_types
 
         Do NOT use this when:
           - Studio is closed (live authoring needs Studio + the bridge)
-          - you only want to author an edit without applying it
           - the plan is create-then-bind: use optix_bridge_add_bound_widget
-            instead — it is TRANSACTIONAL (a failed bind rolls back the create,
-            so no orphan widget is left on the screen; hand-rolling
-            create_widget + bind_property has no such guarantee)
-          - you want a Folder / plain Object / custom-type instance — those are
-            structural nodes, not catalog widgets: optix_bridge_create_folder,
-            optix_bridge_create_object (also instantiates custom types),
-            optix_bridge_create_type
+            instead — TRANSACTIONAL (a failed bind rolls back the create;
+            hand-rolling create_widget + bind_property has no such guarantee)
+          - you want a Folder / plain Object / custom-type instance (those are
+            structural nodes — optix_bridge_create_folder/_object/_type)
         """
         return _bridge_guarded(project, lambda: core.bridge_create_widget(
             cfg, project, screen, name, widget_type))
@@ -820,14 +689,10 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
         The composite for the create -> set Left/Top/Width -> bind dance that
         every bound control (Switch, SpinBox, TextBox, ...) otherwise takes
-        3-5 calls to build. Only the args you pass are applied; steps run in
-        order and the composite is TRANSACTIONAL — a failure after creation
-        rolls the created node back automatically ({ok: false, failed_step,
-        rolled_back: true}), so a retry with the same name is always safe.
-        Example: a Switch bound to a model flag:
-        add_bound_widget(screen="UI/Screens/ScreenA", name="PumpSwitch",
-        widget_type="Switch", left=40, top=60, bind_property="Checked",
-        source_path="Model/PumpRun", mode="ReadWrite").
+        3-5 calls to build. Only the args you pass are applied. TRANSACTIONAL
+        — a failure after creation rolls the created node back automatically
+        ({ok: false, failed_step, rolled_back: true}), so a retry with the
+        same name is always safe.
 
         Use this when:
           - adding any positioned and/or bound control (the common case)
@@ -851,10 +716,10 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """Add a tab to a NavigationPanel in ONE call: create the item (auto-
         routed into Panels), set its Title, and point it at a screen.
 
-        Title is REQUIRED because an empty-Title item renders a zero-width
-        invisible tab. screen_path (e.g. "UI/Screens/ScreenD") wires what the
-        tab shows; omit it to wire later via set_property "Panel". Restart the
-        emulator to see the new tab (structural edit).
+        Title is REQUIRED — an empty-Title item renders a zero-width invisible
+        tab. screen_path (e.g. "UI/Screens/ScreenD") wires what the tab shows;
+        omit it to wire later via set_property "Panel". Restart the emulator to
+        see the new tab (structural edit).
 
         Use this when:
           - adding a navigation tab (the create/Title/Panel trio in one call)
@@ -875,13 +740,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     ) -> dict:
         """Add a Label with text (+ optional position) in ONE call via the live bridge.
 
-        The common "put a label on the screen" case in a single round-trip: creates a
-        Label named `name` on `screen` (Optix path, no leading slash, e.g.
-        "UI/MainWindow"), sets its Text, and — if given — LeftMargin/TopMargin.
-        Equivalent to optix_bridge_create_widget + optix_bridge_set_property x1-3, but
-        one tool call instead of four. Returns {ok, created_path, text, left, top}.
-        Requires Studio open with this project AND the bridge running. After this,
-        optix_save persists it; ship from Studio's Deploy dialog when ready.
+        The common "put a label on the screen" case in a single round-trip:
+        creates a Label named `name` on `screen` (Optix path, no leading slash),
+        sets its Text, and — if given — LeftMargin/TopMargin. Equivalent to
+        optix_bridge_create_widget + optix_bridge_set_property x1-3 in one call.
+        Requires Studio open with this project AND the bridge running.
 
         Use this when:
           - the user wants a label on a screen with some text (the everyday case)
@@ -902,13 +765,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """Ensure a Web presentation engine exists so the runtime serves a canvas.
 
         Without a WebUIPresentationEngine under UI, a deployed runtime renders no
-        web canvas (and CDP verify has nothing to screenshot) — the manual "add UI →
-        Web presentation engine" setup step. Idempotent: returns {existed:true} if
-        one is already present, else creates + configures one (Port, Protocol=HTTP,
-        StartWindow → the first window) and returns {existed:false, path, port,
-        start_window}. Requires Studio open with this project AND the bridge running.
-        Run once during project setup, then author→save→deploy→verify has something
-        to serve.
+        web canvas (CDP verify has nothing to screenshot). Idempotent: returns
+        {existed:true} if one is already present, else creates + configures one
+        (Port, Protocol=HTTP, StartWindow → the first window). Requires Studio
+        open with this project AND the bridge running. Run once during project
+        setup, then author->save->deploy->verify has something to serve.
 
         Use this when:
           - setting up a new/scratch project for the deploy-verify loop
@@ -928,35 +789,28 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     ) -> dict:
         """Set a property on a LIVE-model node via the design-time bridge.
 
-        `node_path` is an Optix path (NO leading slash), `name` the property (Text,
-        Width, FontSize, ...), `value` a string coerced to the property's type.
-        Returns {ok, datatype, via, value}. Materializes a freshly-created
-        instance's inherited property (e.g. a new Label's Text) so it persists AND
-        renders — the fix for the GetVariable-null trap. Requires Studio open with
-        this project AND the bridge running (else bridge_unavailable). `locale`
-        applies to LocalizedText props. To SEE it in a running emulator: property
-        edits on existing widgets, like all Studio-side edits, need an emulator
-        restart cycle (optix_stop_emulator -> optix_run_emulator) — the emulator
-        renders its own loaded snapshot, not the live Studio model. Ship from
-        Studio's Deploy dialog when ready.
+        `node_path` is an Optix path (NO leading slash), `name` the property
+        (Text, Width, FontSize, ...), `value` a string coerced to the
+        property's type. Materializes a freshly-created instance's inherited
+        property (e.g. a new Label's Text) so it persists AND renders — the
+        fix for the GetVariable-null trap. Requires Studio open with this
+        project AND the bridge running (else bridge_unavailable). To SEE it
+        in a running emulator: needs a restart cycle (optix_stop_emulator ->
+        optix_run_emulator) — the emulator renders its own loaded snapshot,
+        not the live Studio model.
 
         Use this when:
           - setting a property on a node while Studio is open
-          - you just created a widget and need to set its Text/etc.
 
         Do NOT use this when:
           - Studio is closed (live authoring needs Studio + the bridge)
-          - you need a keyed translation (a future i18n endpoint)
-          - the property is ARRAY-typed (String[] like GridLayout.Columns/Rows,
-            NodeId[] like NavigationPanelItem.AliasNodeArray — describe shows
-            these with a "[]" suffix): array writes return
-            unsupported_array_write; author array values in Studio directly.
-          - you're DIAGNOSING why something doesn't render: read the current
+          - the property is ARRAY-typed (String[]/NodeId[], "[]" suffix in
+            describe): returns unsupported_array_write; author in Studio directly
+          - you're DIAGNOSING why something doesn't render: read current
             values with optix_describe_node instead of writing presumed
-            defaults (Visible=true/Opacity=1) "to rule things out" — each such
-            write MATERIALIZES the property into the project file permanently
-            while changing nothing. See the optix-verify-loop skill's
-            blank-render checklist.
+            defaults "to rule things out" — each such write MATERIALIZES the
+            property permanently while changing nothing (optix-verify-loop
+            skill has the blank-render checklist)
         """
         return _bridge_guarded(project, lambda: core.bridge_set_property(
             cfg, project, node_path, name, value, locale))
@@ -970,10 +824,9 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """Create a model variable in the LIVE model via the design-time bridge.
 
         Adds a variable `name` of `datatype` (Boolean/Int32/Double/String) under
-        `parent` (an Optix path, default "Model"). Returns {ok, created_path,
-        datatype}. Live-model write (export-safe by construction, unlike the
-        file-path bare-shape workaround). Requires Studio open with this project
-        AND the bridge running. Persist with optix_save.
+        `parent` (an Optix path, default "Model"). Live-model write, export-safe
+        by construction. Requires Studio open with this project AND the bridge
+        running. Persist with optix_save.
 
         Use this when:
           - adding a model variable while Studio is open
@@ -981,8 +834,8 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
         Do NOT use this when:
           - Studio is closed (live authoring needs Studio + the bridge)
-          - you want a CONTAINER for variables (optix_bridge_create_object) or
-            a grouping folder (optix_bridge_create_folder)
+          - you want a CONTAINER (optix_bridge_create_object) or a grouping
+            folder (optix_bridge_create_folder)
         """
         return _bridge_guarded(project, lambda: core.bridge_create_variable(
             cfg, project, name, parent, datatype))
@@ -997,12 +850,12 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         Folders (OpcUa FolderType) are organizational nodes — Model subtrees,
         UI/Templates, grouping — NOT UI controls, which is why they aren't in
         optix_bridge_create_widget's catalog. `parent` is an Optix path
-        ("Model", "UI"). Returns {ok, created_path}. Duplicate sibling names
-        are refused loud (name_exists). Persist with optix_save.
+        ("Model", "UI"). Duplicate sibling names refuse loud (name_exists).
+        Persist with optix_save.
 
-        NOTE: Studio auto-promotes a widget dropped at the Templates ROOT into
-        an ObjectType; the bridge does no promote-by-location magic — create
-        types explicitly with optix_bridge_create_type.
+        NOTE: the bridge does NOT auto-promote a widget dropped at the
+        Templates root into an ObjectType (Studio does) — create types
+        explicitly with optix_bridge_create_type.
 
         Use this when:
           - organizing Model/UI subtrees, creating a Templates folder
@@ -1021,13 +874,12 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """Create a plain OBJECT container — or an INSTANCE of a custom type —
         in the LIVE model via the design-time bridge.
 
-        With no `object_type`: a BaseObjectType container (structured model
-        data — group variables under it with optix_bridge_create_variable).
-        With `object_type` = a path to a project ObjectType (e.g.
-        "UI/Templates/PumpCard"): creates an INSTANCE of that type — this is
-        how you reuse a template made with optix_bridge_create_type or
-        optix_bridge_convert_to_type. Passing an instance path errors
-        not_a_type. Returns {ok, created_path, type, node_class}.
+        With no `object_type`: a BaseObjectType container (group variables
+        under it with optix_bridge_create_variable). With `object_type` = a
+        path to a project ObjectType (e.g. "UI/Templates/PumpCard"): creates an
+        INSTANCE of that type — how you reuse a template made with
+        optix_bridge_create_type / optix_bridge_convert_to_type. Passing an
+        instance path errors not_a_type.
 
         Use this when:
           - structuring model data (Motor1 with Speed/Power/Running under it)
@@ -1050,11 +902,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         `base_type` is a builtin UI type name (RowLayout, Button — see
         optix_list_ui_types) so the type renders like its base, OR a path to
         another project ObjectType (subtyping), OR omitted for a bare
-        model-side structured type. Author the template's CONTENT by targeting
-        the new type's path with the normal tools (create_widget/set_property/
-        bind_property write into types exactly like into MainWindow — which IS
-        a WindowType). Instantiate with optix_bridge_create_object
-        (object_type=<this type's path>). Returns {ok, created_path, base}.
+        model-side structured type. Author the template's CONTENT by
+        targeting the new type's path with the normal tools (create_widget/
+        set_property/bind_property write into types exactly like into
+        MainWindow, which IS a WindowType). Instantiate with
+        optix_bridge_create_object (object_type=<this type's path>).
 
         PLAN-AHEAD workflow: create the type FIRST, author inside it, then
         instantiate everywhere. To promote an already-built instance instead,
@@ -1078,15 +930,12 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """MOVE (reparent) a live instance to a new parent — e.g. an existing
         column of widgets into a freshly-created ScrollView.
 
-        Implemented as re-authoring (copy under the new parent with link
-        fixups, then delete the original) — a raw node-model reparent corrupts
-        the live model. Consequences to read in the response: the node gets a
-        NEW NodeId, so INBOUND references from elsewhere to the moved subtree
-        are NOT rewritten (outbound bindings ARE re-created — relative/alias
-        raws verbatim, absolute links re-resolved, intra-subtree links remapped
-        to the copy). `skipped` lists anything not copied (converters).
-        optix_save first; render-verify after (structural change — restart the
-        emulator).
+        Implemented as re-authoring (copy under the new parent, delete the
+        original) — a raw node-model reparent corrupts the live model.
+        Consequence: the node gets a NEW NodeId, so INBOUND references from
+        elsewhere to the moved subtree are NOT rewritten (outbound bindings
+        ARE re-created). `skipped` lists anything not copied. optix_save
+        first; render-verify after (structural change — restart emulator).
 
         Use this when:
           - restructuring a screen (wrapping content in a new container)
@@ -1109,23 +958,19 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """Convert a LIVE instance into a reusable ObjectType — Studio's
         right-click "Convert to Type" refactor, which has no public API.
 
-        Creates `type_name` (subtyping the instance's own type, so it keeps
-        rendering/behavior) in `types_folder` (must exist —
-        optix_bridge_create_folder first), RE-AUTHORS a copy of the subtree
-        into it (fresh nodes born in the type, raw values copied, DynamicLinks
-        re-created against their resolved targets — live children are never
-        re-parented; that corrupted the model), and with replace=true (default)
-        swaps the original for an instance of the new type. Returns {ok,
-        type_path, copied_nodes, skipped, replaced, instance_path,
-        links_verified, relative_links_unverified, broken_links, steps}.
+        Creates `type_name` (subtyping the instance's own type) in
+        `types_folder` (must exist — optix_bridge_create_folder first),
+        RE-AUTHORS a copy of the subtree into it (fresh nodes, DynamicLinks
+        re-created against resolved targets — live children are never
+        re-parented, which corrupted the model before this fix), and with
+        replace=true (default) swaps the original for an instance of the new
+        type.
 
         READ `skipped` — constructs the copy can't reproduce (expression
         converters, exotic attachments, unresolvable link targets) are listed
-        there, not silently half-copied; re-attach those on the type by hand
-        (optix_bridge_attach_expression etc.). Verify links via
+        there, not silently half-copied; re-attach those by hand. Verify via
         links_verified/broken_links. optix_save first is cheap insurance;
-        render-verify the replacement instance after (structural change —
-        restart the emulator).
+        render-verify after (structural change — restart the emulator).
 
         Use this when:
           - an already-built widget assembly should become a template
@@ -1145,28 +990,25 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     ) -> dict:
         """Bind a node's property to a model variable (DynamicLink) via the bridge.
 
-        Creates a live dynamic link so `node_path`.`name` tracks the model variable
-        at `source_path`. `mode` in {Read, Write, ReadWrite}. This is the semantic
-        "bind the label's Text to the status variable" operation (vs a static set).
-        Requires Studio open with this project + the bridge running. Persist with
+        Creates a live dynamic link so `node_path`.`name` tracks the model
+        variable at `source_path`. `mode` in {Read, Write, ReadWrite}. The
+        semantic "bind the label's Text to the status variable" op (vs a
+        static set). Requires Studio open + the bridge running. Persist with
         optix_save.
 
-        ALIAS/TEMPLATE binding uses `raw_path` INSTEAD of source_path: a literal
-        NodePath like "{Alias1}/MyInt" (brace form, from the widget's owner) or
-        "../../Alias1/MyInt" (owner-relative) that resolves PER INSTANCE at
-        runtime — deliberately NOT resolvable at bind time; that late binding is
-        what makes a template reusable. A source_path THROUGH an alias will
-        always fail source_not_variable — that's the signal to switch to
-        raw_path. No validation is possible on raw paths: render-verify after.
+        ALIAS/TEMPLATE binding uses `raw_path` INSTEAD of source_path: a
+        literal NodePath like "{Alias1}/MyInt" or "../../Alias1/MyInt" that
+        resolves PER INSTANCE at runtime — deliberately NOT resolvable at
+        bind time; that late binding is what makes a template reusable. A
+        source_path THROUGH an alias always fails source_not_variable — the
+        signal to switch to raw_path. No validation on raw paths: render-verify.
 
         Use this when:
-          - wiring a UI property to live data (the engineering-grade authoring op)
-          - the user says "bind/link this to that variable"
+          - wiring a UI property to live data
           - binding template widgets through an alias slot (raw_path)
 
         Do NOT use this when:
-          - you just want a static value (use optix_bridge_set_property)
-          - Studio is closed
+          - you just want a static value (optix_bridge_set_property)
           - the widget doesn't exist yet: use optix_bridge_add_bound_widget
             for create+bind in one TRANSACTIONAL call — if this bind fails
             after a separate create_widget, the orphan widget stays on the
@@ -1184,25 +1026,22 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """Create an alias under a node — the parameter slot of a reusable
         component/template.
 
-        `kind` sets the TYPE CONSTRAINT Studio's "+ Alias" carries (a builtin
-        type name like "BaseObject"/"Motor", or a path to a project type node) —
-        without it the alias is a bare NodeId pointer with no shape for
-        validation. `target_path` is OPTIONAL and usually ABSENT on a template:
-        each INSTANCE points the alias somewhere via
+        `kind` sets the TYPE CONSTRAINT ("BaseObject"/"Motor", or a project
+        type path) — without it the alias is a bare NodeId pointer with no
+        shape for validation. `target_path` is OPTIONAL and usually ABSENT on
+        a template: each INSTANCE points the alias via
         optix_bridge_set_property(<instance>/<alias>, name="Value",
         value=<target path>). Bind the template's widgets THROUGH the alias
-        with optix_bridge_bind_property(raw_path="{<name>}/<child>").
-        Requires Studio open + the bridge. Persist with optix_save.
+        with optix_bridge_bind_property(raw_path="{<name>}/<child>"). Requires
+        Studio open + the bridge. Persist with optix_save.
 
         Use this when:
-          - adding a parameter/data slot to a template type (create_type /
-            convert_to_type output)
+          - adding a parameter/data slot to a template type
           - making a widget reusable by aliasing its data target
 
         Do NOT use this when:
           - a plain dynamic link to a fixed variable suffices
             (optix_bridge_bind_property with source_path)
-          - Studio is closed
         """
         return _bridge_guarded(project, lambda: core.bridge_create_alias(
             cfg, project, parent_path, name, target_path, kind))
@@ -1260,14 +1099,10 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """Change a node's z-order among its siblings via the bridge.
 
         Render order = child order: the LAST child renders in FRONT, the first
-        renders BEHIND. Pass `position="front"` (bring to front / on top) or
-        `position="back"` (send behind everything), or an explicit `index`. This is
-        the enabler for a Panel background: create a Rectangle, then send it to back
-        so it sits behind the panel's other children. Live-model op; requires Studio
-        open + the bridge. Persist with optix_save.
-
-        Caveat: MoveUp/MoveDown only take effect on graphic objects inside a TYPE
-        (ScreenType/PanelType) — the standard case for screen content. Reload the
+        BEHIND. Pass `position="front"`, `position="back"`, or an explicit
+        `index`. Enables a Panel background: create a Rectangle, send it to
+        back so it sits behind the panel's other children. Live-model op;
+        requires Studio open + the bridge. Persist with optix_save. Reload the
         runtime page to see the visual change.
 
         Use this when:
@@ -1291,24 +1126,20 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     ) -> dict:
         """Attach an ExpressionEvaluator converter to a property via the bridge.
 
-        The ExpressionEvaluator is FT Optix's formula language — "a dumb Excel with
-        fewer functions" — and it subsumes ConditionalConverter, LinearConverter,
-        etc. `expression` uses `{0}`,`{1}`,... placeholders bound in order to
-        `sources` (comma-separated model/node paths). Functions: max/min/avg/abs/
-        trunc/ceil/floor/round/sqrt/sign/like/isempty/`if`/left_of/right_of. Colors
-        are `0xAARRGGBB`. Examples:
-          - conditional color: expression="if({0} > 40, 0xFFFF0000, 0xFF00FF00)",
-            sources="Model/Speed", on a widget's FillColor prop
-          - computed visibility: expression="{0} && {1}", sources="Model/A,Model/B",
-            on Visible
-        Live-model op; requires Studio open + the bridge. Persist with optix_save.
-        IMPORTANT: a converter no-ops SILENTLY if mis-wired — verify at runtime
-        (deploy + screenshot), not just the {ok:true} return.
+        The ExpressionEvaluator is FT Optix's formula language — "a dumb Excel
+        with fewer functions" — subsuming ConditionalConverter,
+        LinearConverter, etc. `expression` uses `{0}`,`{1}`,... placeholders
+        bound in order to `sources` (comma-separated paths). Functions:
+        max/min/avg/abs/trunc/ceil/floor/round/sqrt/sign/like/isempty/`if`/
+        left_of/right_of. Colors are `0xAARRGGBB`. Example: conditional color
+        expression="if({0} > 40, 0xFFFF0000, 0xFF00FF00)", sources="Model/Speed"
+        on FillColor. Requires Studio open + the bridge. Persist with
+        optix_save. IMPORTANT: a converter no-ops SILENTLY if mis-wired —
+        verify at runtime (deploy + screenshot), not just {ok:true}.
 
         Use this when:
-          - a property must be COMPUTED from one or more sources (conditional
-            color, computed visibility, scaling) — not a straight 1:1 bind
-          - you'd otherwise reach for a ConditionalConverter/LinearConverter
+          - a property must be COMPUTED from one or more sources — not a
+            straight 1:1 bind
 
         Do NOT use this when:
           - the property just mirrors ONE source 1:1 (use optix_bridge_bind_property)
@@ -1326,12 +1157,12 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     ) -> dict:
         """Syntax-check an ExpressionEvaluator formula WITHOUT attaching it.
 
-        Optix validates a formula only at RUNTIME, where a bad one silently no-ops
-        (the classic converter trap). This catches the common author-time mistakes up
-        front: unbalanced ()/{}, a placeholder {N} beyond the number of sources, an
-        unknown function name, an unterminated string. Returns {valid, sources,
-        error?}. The SAME check gates optix_bridge_attach_expression, so a malformed
-        formula is rejected there too — this tool is for checking BEFORE you commit.
+        Optix validates a formula only at RUNTIME, where a bad one silently
+        no-ops (the classic converter trap). This catches common author-time
+        mistakes up front: unbalanced ()/{}, a placeholder {N} beyond the
+        number of sources, an unknown function name, an unterminated string.
+        The SAME check gates optix_bridge_attach_expression — this tool is for
+        checking BEFORE you commit.
 
         Use this when:
           - drafting a non-trivial formula and you want it verified before wiring
@@ -1354,13 +1185,13 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     ) -> dict:
         """Wire a UI event on a node — to a NATIVE command or a NetLogic method.
 
-        Builds an EventHandler so `event_type` (e.g. MouseClickEvent) on `node_path`
-        fires an action. Prefer a NATIVE command (no custom NetLogic): set
-        command="SetVariable" with variable=<path> + value=<v>, or
-        command="ToggleVariable" with variable=<path> — these wire to FT Optix's
+        Builds an EventHandler so `event_type` (e.g. MouseClickEvent) on
+        `node_path` fires an action. Prefer a NATIVE command (no custom
+        NetLogic): command="SetVariable" with variable=<path> + value=<v>, or
+        command="ToggleVariable" with variable=<path> — wired to FT Optix's
         builtin VariableCommands. For custom logic, pass method_path
-        ("ObjectPath/MethodName") to a NetLogic [ExportMethod]. Requires Studio open +
-        the bridge; persist with optix_save; verify the runtime fires it after deploy.
+        ("ObjectPath/MethodName") to a NetLogic [ExportMethod]. Requires Studio
+        open + the bridge; persist with optix_save; verify it fires post-deploy.
 
         Use this when:
           - a button should set/toggle a variable (native command — no NetLogic)
@@ -1379,31 +1210,23 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     def optix_save(project: str | None = None) -> dict:
         """Persist the open project to disk (sends Ctrl+S to Studio).
 
-        Studio has no programmatic save API (it is native C++/Qt), so this is the
-        autonomous save: it focuses the project's Studio window and sends ^s, then
-        verifies by watching the project's node-YAML mtime advance. Returns
-        {saved, mtime_before, mtime_after, focused, elapsed_seconds}. Call this
-        AFTER bridge authoring (optix_bridge_* writes the live model in RAM) when
-        you need the edit ON DISK without running anything (e.g. to read the
-        YAML back). Requires the service to run in an interactive session and
+        Studio has no programmatic save API, so this focuses the project's
+        window and sends ^s, then verifies by watching the node-YAML mtime
+        advance. Call this AFTER bridge authoring when you need the edit ON
+        DISK without running anything. Requires an interactive session and
         the project open in Studio.
 
         You usually DON'T need this: optix_run_emulator's F5 saves as part of
-        staging. And saving does
-        NOT push edits into an already-RUNNING emulator — that's a separate
-        process with its own loaded snapshot; structural changes need
-        optix_stop_emulator -> optix_run_emulator to become visible.
+        staging. Saving does NOT push edits into an already-RUNNING emulator
+        — structural changes need optix_stop_emulator -> optix_run_emulator.
 
         Use this when:
           - you need bridge edits on disk to read/verify the YAML (no run needed)
-          - closing the live-model -> disk gap without starting the emulator
 
         Do NOT use this when:
-          - you're about to optix_run_emulator anyway
-            (F5 handles saving; an extra ^s is a redundant focus steal)
+          - you're about to optix_run_emulator anyway (F5 handles saving)
           - you expect it to refresh a running emulator (it can't — restart it)
-          - Studio is closed (there's nothing to save; edit files directly)
-          - you authored via file-path tools (those already write disk)
+          - Studio is closed, or you authored via file-path tools (already on disk)
         """
         project = project or core.default_project(cfg)
         if not project:
@@ -1414,47 +1237,36 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     def optix_run_emulator(project: str | None = None, save_first: bool = False) -> dict:
         """Launch the project in Studio's built-in emulator (sends F5 to Studio).
 
-        THE default verify step: use this FIRST for any preview/verify iteration —
-        it's much cheaper and faster than a deploy. F5 is Studio's "start" button;
-        it stages the in-Studio model (F5 saves as part of staging — no explicit
-        save needed, save_first defaults to False) and spins up a LOCAL
-        FTOptixRuntime. Shipping to hardware is a deliberate, human step from
-        Studio's Deploy dialog after the emulator + optix_cdp_screenshot
-        confirm the change.
+        THE default verify step — much cheaper and faster than a deploy. F5
+        stages the in-Studio model (saves as part of staging) and spins up a
+        LOCAL FTOptixRuntime; shipping to hardware stays a deliberate step
+        from Studio's Deploy dialog after the emulator + screenshot confirm
+        the change.
 
-        IMPORTANT — a RUNNING emulator does not pick up Studio edits. It is a
-        separate process with its own loaded snapshot. Structural changes (new
-        widgets, new bindings, size/layout) need a restart cycle:
-        optix_stop_emulator -> optix_run_emulator (no save in between — F5 saves).
-        Only already-on-screen interactive state (switches, spinboxes, text
-        fields — things a user could click/type) can be exercised live without a
-        restart. If a screenshot doesn't show your edit, restart the emulator
-        before concluding the edit failed.
+        IMPORTANT — a RUNNING emulator does not pick up Studio edits (separate
+        process, its own loaded snapshot). Structural changes (new widgets,
+        bindings, layout) need a restart cycle: optix_stop_emulator ->
+        optix_run_emulator. Only already-on-screen interactive state (switches,
+        text fields) can be exercised live without a restart. If a screenshot
+        doesn't show your edit, restart before concluding it failed.
 
         F5 TOGGLES: check optix_emulator_status first so a blind "run" doesn't
-        stop a running emulator. Returns {launched, focused, saved, serving} —
-        serving=True means the runtime port answered (safe to screenshot).
+        stop a running emulator.
 
-        TARGET GUARD: F5 runs Studio's SELECTED deployment target. If Studio's
-        dropdown has a non-emulator target active, this refuses
-        (active_target_not_emulator) instead of pressing F5 — ask the user to
-        switch the dropdown; the service never changes it. After launch the
-        process identity is re-checked (runtime_identity), and a port that
-        answers without an emulator process raises a warning. If the result is
-        launched:true but runtime_identity:"not_running" with
-        probable_cause:"target_or_modal", the dropdown was pointed elsewhere or
-        a modal dialog ate the keystroke — surface that to the user and do NOT
-        retry-loop this tool.
+        TARGET GUARD: F5 runs Studio's SELECTED deployment target. A
+        non-emulator target refuses (active_target_not_emulator) — the
+        service never changes the dropdown. `launched:true` +
+        runtime_identity:"not_running" + probable_cause:"target_or_modal"
+        means the dropdown was pointed elsewhere or a modal ate the keystroke
+        — surface that, don't retry-loop.
 
         Use this when:
           - verifying ANY bridge edit (the default fast loop)
-          - iterating design-time (emulator restarts are cheap)
 
         Do NOT use this when:
-          - the emulator is already running and you changed structure (stop it
-            first — F5 on a running emulator STOPS it)
+          - the emulator is already running and you changed structure (stop
+            it first — F5 on a running emulator STOPS it)
           - you're ready to ship to the real target (Studio's Deploy dialog)
-          - Studio is closed (F5 has no target)
         """
         project = project or core.default_project(cfg)
         if not project:
@@ -1465,18 +1277,16 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     def optix_emulator_status() -> dict:
         """Emulator state: not_running / starting / running.
 
-        F5 (optix_run_emulator) TOGGLES the Studio emulator, so a blind "run" can
-        actually STOP a running one. Check this first. Counts ONLY real emulator
-        processes (Studio launches them with --application-name=Emulator) — an
-        UpdateSvc-deployed runtime is the same exe on the same port and does NOT
-        count. Returns {state, running, pids, port, port_reachable} (+ hint);
-        state=starting means the process is up but the port isn't serving yet —
-        wait/re-check before screenshotting; running means safe to screenshot.
+        F5 (optix_run_emulator) TOGGLES the emulator, so a blind "run" can
+        actually STOP a running one — check this first. Counts ONLY real
+        emulator processes (--application-name=Emulator); an UpdateSvc-
+        deployed runtime is the same exe/port and does NOT count.
+        state=starting means the port isn't serving yet — wait before
+        screenshotting; running means safe to screenshot.
 
         Use this when:
           - deciding whether to run vs stop the emulator (avoid the F5 toggle trap)
-          - confirming a preview actually came up before an optix_cdp_screenshot
-          - polling after optix_stop_emulator -> optix_run_emulator restart cycles
+          - confirming a preview actually came up before a screenshot
 
         Do NOT use this when:
           - you want the UpdateSvc-deployed runtime's port state (optix_runtime_status)
@@ -1489,12 +1299,10 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         F5 (optix_run_emulator) would actually run.
 
         Reads the LIVE per-window selection off the bridge's Studio toolbar via
-        UI Automation, so it is accurate even when Studio's Configuration.xml is
-        stale (Studio flushes it lazily — it can say Emulator while the toolbar
-        is really on a hardware panel). Returns {known, name, is_emulator, ip,
-        source} where source="uia_live" is the definitive live read and the
-        config-file path is the lazy fallback (used off-Windows, without the
-        bridge, or outside an interactive session).
+        UI Automation, accurate even when Studio's Configuration.xml is stale
+        (it can say Emulator while the toolbar is really on a hardware panel).
+        `source`="uia_live" is the definitive live read; the config-file path
+        is the lazy fallback (off-Windows, no bridge, or non-interactive session).
 
         Use this when:
           - checking whether F5 is safe (is_emulator) BEFORE optix_run_emulator
@@ -1508,11 +1316,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
     @mcp.tool(annotations=_RW)
     def optix_restart_emulator(project: str | None = None) -> dict:
-        """Restart the emulator in one call: stop it if running, start it,
-        wait until it's serving — THE way to make a STRUCTURAL edit visible
-        (new widget, new binding, layout). Replaces the status/stop/run dance
-        and removes the F5-toggle footgun (F5 on a running emulator stops it).
-        No save needed — starting stages and saves the current Studio model.
+        """Restart the emulator in one call: stop if running, start, wait until
+        it's serving — THE way to make a STRUCTURAL edit visible (new widget,
+        binding, layout). Replaces the status/stop/run dance and removes the
+        F5-toggle footgun (F5 on a running emulator stops it). No save needed —
+        starting stages and saves the current Studio model.
 
         Use this when:
           - you made a bridge edit and want to SEE it (then optix_cdp_screenshot)
@@ -1537,21 +1345,17 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """Tail the emulator's runtime log (NetLogic output, exceptions) — the
         debug signal when a preview misbehaves.
 
-        Non-blocking by design: one brief shared read of the newest
-        FTOptixRuntime.*.log, released immediately (a held handle would block
-        the runtime's own writes — never poll this in a tight loop). `lines`
-        caps the tail; `contains` filters case-insensitively (e.g.
-        contains="error" or a NetLogic class name). NOTE: the log is NOT
-        rotated per emulator restart — a contains="error" hit may be HOURS
-        old and already fixed; always read the timestamps before treating a
-        match as current. Returns {file, lines, returned_lines, truncated}
-        or {error: no_log_dir|no_log_file, hint}.
+        Non-blocking: one brief shared read of the newest FTOptixRuntime.*.log
+        (never poll this in a tight loop — a held handle blocks the runtime's
+        own writes). `lines` caps the tail; `contains` filters case-
+        insensitively. NOTE: the log is NOT rotated per emulator restart — a
+        contains="error" hit may be HOURS old and already fixed; check
+        timestamps before treating a match as current.
 
         Use this when:
           - the emulator is up but the canvas is blank/wrong — read the log
             before guessing
           - a NetLogic script should have produced output/thrown
-          - optix_emulator_status says starting for suspiciously long
 
         Do NOT use this when:
           - you want deploy-verb output (this tail is the emulator/runtime log)
@@ -1565,9 +1369,8 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
         An explicit, unambiguous stop — vs F5, which toggles and is easy to
         double-fire. Terminates ONLY emulator instances (--application-name=
-        Emulator on the command line); an UpdateSvc-deployed runtime is the same
-        exe and is left alone. Returns {stopped, killed_pids, still_running};
-        stopped=False with reason=not_running if none was up.
+        Emulator); an UpdateSvc-deployed runtime is the same exe and is left
+        alone. stopped=False with reason=not_running if none was up.
 
         Use this when:
           - a preview is running and you want it down (not a blind F5 re-press)
@@ -1586,38 +1389,30 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     ) -> dict:
         """Deploy a saved project via the FT Optix Application Update Service.
 
-        THE SHIP STEP — deliberate, not the everyday verify. For iteration, use
-        optix_run_emulator + optix_cdp_screenshot (much faster, no transfer);
-        deploy AFTER the emulator preview confirms the change. It WORKS WITH
-        FACTORYTALK OPTIX STUDIO OPEN: the `deploy` verb spawns its
-        OWN short-lived Studio to build+transfer the project; your interactive Studio
-        AND the design-time bridge stay up the whole time, so you never close
-        anything between iterations. (Verified: deploys succeed with Studio open and
-        the bridge armed; the bridge survives every deploy.)
+        THE SHIP STEP — deliberate, not the everyday verify. For iteration,
+        use optix_run_emulator + optix_cdp_screenshot instead (much faster,
+        no transfer); deploy AFTER the emulator preview confirms the change.
+        WORKS WITH STUDIO OPEN (contrast optix_deploy, which REFUSES while
+        Studio is open): the `deploy` verb spawns its OWN short-lived Studio
+        to build+transfer, so your interactive Studio + bridge stay up the
+        whole time.
 
-        Contrast with optix_deploy, the export path, which REFUSES while Studio is
-        open (409 studio_open). So: Studio open + bridge armed -> optix_deploy_updatesvc.
+        Mechanism: runs the Studio `deploy` verb, which opens the SAVED
+        project from disk, builds it, and transfers it to the UpdateSvc at
+        the configured deploy IP (OPTIX_DEPLOY_IP / _USERNAME / _THUMBPRINT,
+        OPTIX_STUDIO_DEPLOYMENT_PASSWORD). With run_after=True and a
+        logged-in deploy user, the verb starts the runtime itself. Saves the
+        project first by default (save_first) — the deploy reads disk, so
+        unsaved edits would otherwise not ship.
 
-        Mechanism: runs the Studio `deploy` verb, which opens the SAVED project from
-        disk, builds it, and transfers it to the UpdateSvc at the configured deploy
-        IP (set OPTIX_DEPLOY_IP / OPTIX_DEPLOY_USERNAME / OPTIX_DEPLOY_THUMBPRINT, and
-        OPTIX_STUDIO_DEPLOYMENT_PASSWORD in the env). With run_after=True and a
-        logged-in deploy user, the verb starts the runtime itself. It SAVES the
-        project first by default (save_first) — the deploy reads disk, so unsaved
-        bridge/Studio edits would otherwise not ship. Returns {deployed, saved, ip_address, username,
-        run_after_deploy, source_transfer_disabled, build_race_warning, returncode,
-        stdout_tail}.
+        NOTE: when Studio is open the result carries a `build_race_warning` —
+        ADVISORY ONLY (`deployed` is still true, the change is live); it just
+        flags that the open Studio's build could race the verb's build (the
+        verb retries and wins). Not a reason to close Studio.
 
-        NOTE: when Studio is open the result carries a `build_race_warning`. It is
-        ADVISORY ONLY — `deployed` is still true and the change is live. It does NOT
-        mean you must close Studio; it just flags that the open Studio's NetSolution
-        build could race the verb's build (the verb retries and wins). Do not treat
-        it as a refusal or a reason to close Studio.
-
-        disable_source_transfer: skip sending the source .optix tree to the target
-        (built runtime only — faster; the default, configurable via
-        OPTIX_DEPLOY_KEEP_SOURCE). Pass False to force the source onto the target
-        when you'll open/edit the project there.
+        disable_source_transfer: skip sending the source .optix tree to the
+        target (built runtime only — faster; the default). Pass False to
+        force the source onto the target when you'll open/edit it there.
 
         Use this when:
           - the emulator preview looks right and you're shipping the change
@@ -1647,10 +1442,9 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """Author an edit that adds widget(s) to a screen — does NOT deploy.
 
         Generates correct Optix YAML (fresh GUIDs, right indentation, the
-        proven binding shape) and returns {edits, file, screen, widgets,
-        preview}. Forward `edits` to optix_deploy (combine with other authored
-        edits into one deploy). Replaces hand-composing widget YAML — the
-        thing that made "add a label" slow and error-prone.
+        proven binding shape). Forward `edits` to optix_deploy (combine with
+        other authored edits into one deploy). Replaces hand-composing widget
+        YAML — the thing that made "add a label" slow and error-prone.
 
         widgets: list of dicts, one per widget. Supported kinds:
           - label:  {kind:'label', name, text, left?, top?, width?, height?,
@@ -1665,13 +1459,10 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
         Use this when:
           - the user wants a label / switch on a screen (the canonical case)
-          - building the demo's switch+label: one call, two widgets, both
-            bound to the same {Model}/<var> (create the var with
-            optix_add_model_variable first)
 
         Do NOT use this when:
-          - the widget kind isn't label/switch yet (compose YAML and use an
-            anchored optix_deploy edit; tier-2 adds more kinds)
+          - the widget kind isn't label/switch yet (use an anchored
+            optix_deploy edit; tier-2 adds more kinds)
           - the screen has no Children: block (rare; returns a structured
             error pointing you to an anchored edit)
         """
@@ -1743,26 +1534,19 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     def optix_deploy_preflight(project: str | None = None) -> dict:
         """Run every deploy precondition without launching Studio.
 
-        Returns {ready, blockers, warnings, checks}. Each blocker has
-        {code, message, hint?}. ready=True iff blockers is empty.
-
-        Checks: project resolves + has .optix manifest, studio_exe present,
-        runtime_dir configured, interactive_session=True (Windows DPAPI
-        constraint), deploy lock free, git status, runtime port probe
-        (informational — a stopped runtime pre-deploy is the normal case),
-        and the corruption guard (blocker `studio_open` when FactoryTalk
-        Optix Studio is running; blocker `editor_project_open` when VS /
-        VS Code has this project open; remediation is closing the app, no
-        override exists).
+        Returns {ready, blockers, warnings, checks}; ready=True iff blockers is
+        empty. Checks: project resolves + has .optix manifest, studio_exe
+        present, runtime_dir configured, interactive_session=True (Windows
+        DPAPI constraint), deploy lock free, git status, runtime port probe
+        (informational), and the corruption guard (blocker `studio_open` when
+        Studio is running; `editor_project_open` when VS/VS Code has this
+        project open — remediation is closing the app, no override exists).
 
         Use this when:
-          - you are about to run optix_deploy on a fresh box and want to
-            catch missing config (studio_exe, runtime_dir, interactive
-            session) before consuming a Studio launch
+          - about to run optix_deploy on a fresh box and want to catch
+            missing config before consuming a Studio launch
           - a prior optix_deploy returned `failed` with no clear cause and
             you want a structured precondition report
-          - a read or deploy was refused with `studio_open` and you want
-            the structured view of what is blocking
 
         Do NOT use this when:
           - you already ran a successful deploy in this session (stale
@@ -1794,34 +1578,21 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
         Spawns the FTOptixRuntime.exe that Studio's export bundled into
         OPTIX_RUNTIME_DIR/<project>/FTOptixApplication/, detached from the
-        service process. Polls the project's runtime port for tcp_reachable
-        until `timeout` seconds elapse. The service must run in a Windows
-        interactive session (session 1) — same DPAPI constraint as Studio;
-        see docs/troubleshooting.md §Studio crashes.
-
-        Args:
-          project: project name; runtime tree must already exist under
-            cfg.runtime_dir (deploy the project first).
-          port: TCP port to probe for liveness (default cfg.runtime_test_port,
-            typically 8081). The project's WebPresentationEngine must be
-            configured to bind this port.
-          timeout: seconds to wait for the port to bind (default 30).
-
-        Returns: {state, project, port, pid, tcp_reachable, started_at,
-        confirmed_at, elapsed_seconds, timeout_seconds, runtime_exe}.
-        state ∈ {running, not_reachable}.
+        service process. Polls the runtime port for tcp_reachable until
+        `timeout` seconds elapse (default 30). Same Windows interactive-
+        session DPAPI constraint as Studio. `port` defaults to
+        cfg.runtime_test_port (typically 8081). Runtime tree must already
+        exist (deploy first).
 
         Use this when:
-          - the user wants to bring up a freshly-deployed project's runtime
-            so they (or CDP) can see the rendered HMI
+          - bringing up a freshly-deployed project's runtime for CDP/user
           - after optix_deploy with run_after_deploy=False
           - restarting a runtime to pick up a change (pair with
             optix_runtime_stop first)
 
-        Verify handoff: Optix Web renders the entire HMI into a single
-        <canvas> (no DOM targets). For state verification use
-        optix_cdp_screenshot / optix_cdp_click — a trusted CDP mouse event
-        reaches Optix's hit-tester where synthetic DOM clicks no-op.
+        Verify handoff: Optix Web renders into a single <canvas> (no DOM
+        targets) — use optix_cdp_screenshot / optix_cdp_click for state
+        verification, not synthetic DOM events (they no-op).
 
         Do NOT use this when:
           - you only want to check if a runtime is already up
@@ -1840,8 +1611,6 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         stopping when nothing is running is a successful no-op. Other
         projects' runtimes are not touched.
 
-        Returns: {state, project, runtime_project_dir, stopped_at}.
-
         Use this when:
           - bouncing a runtime to pick up a code/asset change (call before
             re-deploying or before optix_runtime_start)
@@ -1857,24 +1626,18 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     def optix_runtime_status(slot: str) -> dict:
         """Probe a runtime instance's reachability.
 
-        slot: 'test' (default port 8081, OPTIX_RUNTIME_TEST_PORT override)
-              | 'mgmt' (default port 8086, OPTIX_HMI_PORT override) for a
-                second operator-dashboard runtime, if you run one
-
-        Returns {slot, port, tcp_reachable, checked_at}.
+        slot: 'test' (default port 8081) | 'mgmt' (default port 8086, a
+        second operator-dashboard runtime, if you run one).
 
         Use this when:
           - confirming a deploy actually landed (after optix_deploy with
-            run_after_deploy=False, the runtime is NOT bounced and the
-            caller is responsible for cycling it; this probe confirms)
-          - confirming the management runtime is up before pointing the
-            user at the HMI URL
+            run_after_deploy=False, the caller is responsible for cycling
+            the runtime; this probe confirms)
           - cold-start drift check after a Windows reboot
 
         Do NOT use this when:
-          - you want to know whether Studio is installed (use optix_health)
-          - you want the deploy outcome details (use optix_services_status
-            or read /services/last-deploy-tail)
+          - you want to know whether Studio is installed (optix_health)
+          - you want deploy outcome details (optix_services_status)
         """
         return core.runtime_status(cfg, slot)
 
@@ -1888,10 +1651,9 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         Optix Web renders to a single <canvas> (no DOM targets) and synthetic
         DOM clicks no-op on buttons/switches. This injects a trusted CDP
         Input.dispatchMouseEvent that actually reaches Optix's hit-tester.
-        Pass navigate_url to point Chrome at the runtime first (e.g.
-        http://localhost:8081/); omit it to click whatever Chrome shows. Pair
-        with optix_cdp_screenshot to read coordinates, then click. Returns
-        {state, x, y, navigated, clicked_at}.
+        Pass navigate_url to point Chrome at the runtime first; omit it to
+        click whatever Chrome shows. Pair with optix_cdp_screenshot to read
+        coordinates first.
 
         Use this when:
           - you need to actually trigger a button/switch on the running HMI
@@ -1917,13 +1679,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         without it).
 
         THE default way to set a TextBox/SpinBox value — replaces the
-        click → type → key trio. select_all (default true) makes the typed
-        text REPLACE the current value (a bare click on a TextBox only
-        places a caret, so typing would append). submit=None types without
-        committing; submit="Tab" for tab-commit fields. Fails loud with
-        no_focused_input + a per-step report when the click didn't land on
-        an editable field. Returns {state, steps: {clicked, focused_element,
-        typed_chars, committed}}.
+        click -> type -> key trio. select_all (default true) makes the typed
+        text REPLACE the current value (a bare click only places a caret, so
+        typing would append). submit=None types without committing;
+        submit="Tab" for tab-commit fields. Fails loud with no_focused_input
+        when the click didn't land on an editable field.
 
         Use this when:
           - setting a TextBox / SpinBox / editable field to a value (the
@@ -1948,20 +1708,13 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """Type a string into the focused field on the running Optix HMI (CDP
         Input.insertText).
 
-        The keyboard half of the click-type-Enter pattern for TextBox/SpinBox
-        controls: optix_cdp_click the field FIRST (the screenshot shows a
-        cursor, or the value select-all-highlighted — that's keyboard-ready),
-        then this inserts the whole string at the caret/selection in one CDP
-        call. It does NOT click and does NOT commit: **values don't stick
-        until Enter** — follow with optix_cdp_key("Enter"). For the common
-        set-a-field-value case, prefer optix_cdp_fill (click+type+commit in
-        one call); these primitives are for mid-entry screenshots and
-        non-standard flows.
-
-        Fails loud with no_focused_input when nothing editable has focus
-        (instead of silently no-op'ing). Same trust boundary as
-        optix_cdp_click: the one loopback CDP tab this service already owns.
-        Returns {state, typed_chars, active_element, navigated, typed_at}.
+        The keyboard half of the click-type-Enter pattern: optix_cdp_click the
+        field FIRST, then this inserts the string at the caret/selection. Does
+        NOT click and does NOT commit: **values don't stick until Enter** —
+        follow with optix_cdp_key("Enter"). For the common set-a-field-value
+        case, prefer optix_cdp_fill (click+type+commit in one call); this
+        primitive is for mid-entry screenshots and non-standard flows. Fails
+        loud with no_focused_input when nothing editable has focus.
 
         Use this when:
           - filling a TextBox / SpinBox / editable field on the live canvas
@@ -1987,13 +1740,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
         THE commit step for field edits: after optix_cdp_click + optix_cdp_type,
         optix_cdp_key("Enter") is what makes the value stick — without it the
-        edit is discarded on blur. Keys: Enter, Escape (cancel edit — reverts
-        an uncommitted value), Tab (move focus), Backspace, Delete,
+        edit is discarded on blur. Keys: Enter, Escape, Tab, Backspace, Delete,
         ArrowUp/Down/Left/Right. KNOWN LIMIT: arrow keys do NOT step an Optix
-        SpinBox — click its < / > stepper buttons with optix_cdp_click
-        instead. Unknown keys return invalid_key + the valid list. Pressing
-        with no pending edit is a safe no-op. Returns {state, key, navigated,
-        pressed_at}.
+        SpinBox — click its < / > stepper buttons instead. Unknown keys return
+        invalid_key + the valid list. Pressing with no pending edit is a safe
+        no-op.
 
         Use this when:
           - committing a typed TextBox/SpinBox value (Enter) — then screenshot
@@ -2019,53 +1770,35 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         CDP — THE way to visually verify a change.
 
         IMPORTANT — if your edit is NOT in the screenshot, do NOT conclude it
-        failed: a running emulator renders its own loaded snapshot and does not
-        pick up Studio edits. optix_restart_emulator, then screenshot again
-        before diagnosing. fresh=true forces a page reload before capture —
-        use it when a stale frame is suspected (the auto-target otherwise
-        skips re-navigation when the tab is already on the runtime).
+        failed: a running emulator renders its own loaded snapshot and does
+        not pick up Studio edits. optix_restart_emulator, then screenshot
+        again before diagnosing. fresh=true forces a page reload before
+        capture (stale-frame suspected).
 
-        *** This is the runtime-verify tool. To confirm a deploy rendered (e.g. "did
-        my label show up?"), use THIS — do NOT open the runtime in a general web
-        browser (Cowork's native visualize, a Mac/host browser, etc.). *** It drives
-        the local chrome-cdp on the SAME box as the runtime (loopback), so it works
-        without any external browser and without exposing the runtime on the network.
+        *** Runtime-verify tool: use THIS to confirm a deploy rendered — do
+        NOT open the runtime in a general web browser (Cowork's visualize, a
+        Mac/host browser). *** Drives the local chrome-cdp on the SAME box as
+        the runtime (loopback) — no external browser, no network exposure.
 
-        You do NOT need to know or pass the runtime URL: called with no navigate_url
-        it AUTO-navigates to the local runtime and captures it (skipping the reload if
-        the tab is already there, so a click→re-screenshot keeps its state). Pass an
-        explicit navigate_url only to point somewhere else; pass navigate_url="" to
-        screenshot the current tab as-is.
+        Omit navigate_url to auto-navigate to the local runtime (skips reload
+        if already there, so click->re-screenshot keeps state); pass
+        navigate_url="" to screenshot the current tab as-is.
 
-        CDP Page.captureScreenshot — no tab plumbing. This tool ALWAYS writes the JPEG
-        to a file and returns its `path`; by default **read the file back with your
-        file tool.** It does NOT put base64 in the JSON: a large b64 string makes some
-        hosts try to *render* it inline (Cowork's "visualize"), which can hang for a
-        long time on a sandboxed or headless host (verified: file-path runs are fast,
-        b64-in-JSON runs stall). **Prefer passing your own `save_path`** in your
-        session/output directory so your file tool can definitely read it; omit it and
-        the tool picks a temp path.
+        This tool ALWAYS writes the JPEG to a file and returns its `path` —
+        read it back with your file tool. It does NOT put base64 in the JSON:
+        a large b64 string makes some hosts try to *render* it inline
+        (Cowork's "visualize"), which can hang on a sandboxed/headless host.
+        **Prefer passing your own `save_path`**; omit it for a temp path.
+        `return_image=true` ALSO returns the capture as TYPED MCP image
+        content (not b64-in-JSON) so the model sees it inline — prefer this
+        when your file tool cannot reach the service's filesystem; combine
+        with region= to keep the payload small.
 
-        `return_image=true` additionally returns the capture as TYPED MCP image
-        content (not b64-in-JSON) so the model sees it in the same turn with no file
-        round-trip. Field-verified on Cowork (2026-07-22): typed image content
-        renders cleanly — the stall was specific to b64-in-JSON. PREFER
-        return_image=true when your host's file tool cannot reach the service's
-        filesystem (Cowork's sandboxed bash); combine with region= to keep the
-        payload small.
-        Returns {state, path, size_bytes, navigated, captured_at, hint, region}. The
-        coordinate system matches optix_cdp_click.
-
-        region: optional [x, y, w, h] to capture just a sub-rectangle instead of the
-        full frame (e.g. zooming a vision model in on one widget, or shrinking the
-        image before OCR). Coordinate convention: if ALL FOUR values are <= 1.0 they
-        are normalized fractions of the viewport (0.5 = mid-screen); if ANY value is
-        > 1 the whole list is absolute pixels. A malformed region (wrong length,
-        negative, zero width/height, or x/y outside the frame) returns
-        state='failed', error='bad_region' rather than raising. The result's
-        `region` field echoes back the resolved absolute-pixel [x, y, w, h] (or null
-        when region wasn't passed) — use it to sanity-check what actually got
-        captured.
+        region: optional [x, y, w, h] to capture a sub-rectangle instead of
+        the full frame. Convention: all four values <= 1.0 are normalized
+        viewport fractions; any value > 1 means absolute pixels. A malformed
+        region returns state='failed', error='bad_region' rather than
+        raising; the result's `region` echoes the resolved absolute-pixel box.
 
         Use this when:
           - VALIDATING a deploy: capture the runtime HMI to confirm the change is live
@@ -2108,14 +1841,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     ) -> dict:
         """OCR the runtime canvas via tesseract — an OPT-IN, text-only read-back.
 
-        Prefer optix_cdp_screenshot + a vision model for verify: it reads color,
-        layout, and text. Use THIS only when vision isn't available on the caller
-        (a headless/cron run) or as a fallback signal when a capture renders blank.
-        It captures the runtime through the same path as optix_cdp_screenshot, then
-        runs `tesseract` on the JPEG and returns the recognized text. Returns
-        {state, text, size_bytes, navigated, captured_at}; if tesseract isn't
-        installed it returns state='failed', error='tesseract_not_installed' with an
-        install hint (optional infrastructure — it never crashes the loop).
+        Prefer optix_cdp_screenshot + a vision model for verify (reads color,
+        layout, AND text). Use THIS only when vision isn't available (headless/
+        cron run) or as a fallback when a capture renders blank. If tesseract
+        isn't installed, returns state='failed', error='tesseract_not_installed'
+        (optional infrastructure — never crashes the loop).
 
         Use this when:
           - a headless caller has no vision model but needs to read back rendered text
@@ -2136,15 +1866,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """OCR a region of the runtime canvas via tesseract — THE cheap check for
         "does the screen/widget say X" — zero vision tokens.
 
-        Captures through the same region-clip path as optix_cdp_screenshot (see its
-        docstring for the region coordinate convention: values all <= 1.0 are
-        normalized viewport fractions, any value > 1 means absolute pixels), then
-        runs tesseract on the JPEG. Omit `region` to OCR the full frame. Returns
-        {state, text, region, size_bytes, navigated, captured_at}. If tesseract
-        isn't installed, returns state='failed', error='tesseract_not_installed'
-        with an install hint rather than raising — optional infrastructure, same
-        contract as optix_cdp_ocr. A malformed region degrades the same way
-        (error='bad_region').
+        Same region coordinate convention as optix_cdp_screenshot (values all
+        <= 1.0 are normalized viewport fractions; > 1 means absolute pixels).
+        Omit `region` to OCR the full frame. Same degradation contract as
+        optix_cdp_ocr: missing tesseract returns error='tesseract_not_installed'
+        rather than raising; a malformed region returns error='bad_region'.
 
         Use this when:
           - checking that a specific label/widget shows expected text, cheaply
@@ -2168,18 +1894,13 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """Locate `text` on the runtime canvas via tesseract word boxes — to find
         a labeled control to click, or to build a navigation route.
 
-        Full-frame capture (no region — you're locating something, so you don't
-        know its coordinates yet). Matching is case-insensitive; a multi-word
-        `text` query only matches ADJACENT words on the same tesseract line (words
-        on different lines never join). Words scoring below 40/100 raw are
-        dropped before matching. Returns {state, found, matches: [{text,
-        confidence, bbox_px: [x,y,w,h], bbox_norm: [x,y,w,h], center_px: [x,y]}],
-        viewport: {w, h}}. `confidence` is a fraction in [0, 1] — same scale as
-        optix_cdp_ocr / optix_cdp_read_text, so one threshold works across all
-        three. No match is NOT an error — found=false, matches=[]. Requires
-        tesseract: missing binary returns state='failed',
-        error='tesseract_not_installed' (same degradation contract as
-        optix_cdp_ocr / optix_cdp_read_text), never raises.
+        Full-frame capture (you don't know coordinates yet). Case-insensitive;
+        a multi-word `text` query only matches ADJACENT words on the same
+        tesseract line. Words scoring below 40/100 are dropped before
+        matching. `confidence` is a fraction in [0, 1] — same scale as
+        optix_cdp_ocr/read_text. No match is NOT an error (found=false,
+        matches=[]). Same degradation contract as optix_cdp_ocr for missing
+        tesseract.
 
         `matches[].center_px` feeds optix_cdp_click directly — e.g. find "Start",
         then click at its center_px — without eyeballing coordinates from a
@@ -2213,38 +1934,23 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """Save a navigation routes file server-side — the CREATE half of
         the routes-banking loop for optix_cdp_navigate / optix_cdp_sweep.
 
-        Routes files are owned by the ftx-mcp service - create and read
-        them with optix_routes_save / optix_routes_get. Do NOT ask the user
-        for host folder access or try to write project files with
-        client-side file tools; the service filesystem is not reachable
-        from sandboxed clients.
+        Routes files live in the service — do NOT ask the user for host
+        folder access. `routes` accepts either the full versioned shape
+        (`{"version": 1, "routes": {"<name>": {"steps": [...]}}}`) or a bare
+        `{"<name>": {"steps": [...]}}` mapping — both normalize on disk. Each
+        route's `steps` is validated BEFORE anything is written: a malformed
+        step anywhere fails error='routes_invalid' naming the offending
+        route/step, rather than writing a partial file.
 
-        `routes` accepts either the full versioned shape (`{"version": 1,
-        "routes": {"<name>": {"steps": [...]}}}`, the same shape
-        optix_routes_get / optix_cdp_navigate read) or a bare `{"<name>":
-        {"steps": [...]}}` mapping — both normalize to the versioned shape
-        on disk. Each route's `steps` is validated with the SAME check
-        optix_cdp_navigate uses BEFORE anything is written: a malformed
-        step anywhere fails the whole save with error='routes_invalid'
-        naming the offending route and step index, rather than writing a
-        partial file.
-
-        Saved at `<project>/dev/<name>.json` (default name "ftx_ui_map",
-        the optix-blind-authoring skill's cache convention). `name` is
-        sanitized to `[a-zA-Z0-9._-]`, no path separators, no leading dot —
-        anything else fails with error='bad_name' before touching disk.
-        Saving over an existing `name` REPLACES its content wholesale
-        (atomic write) — it is not a merge.
-
-        Returns {state: 'succeeded', path, routes: [route names], bytes}.
-        `path` is directly usable as `routes_path` for optix_cdp_navigate /
-        optix_cdp_sweep — no extra lookup needed.
+        Saved at `<project>/dev/<name>.json` (default "ftx_ui_map"). `name` is
+        sanitized to `[a-zA-Z0-9._-]` — anything else fails error='bad_name'
+        before touching disk. Saving over an existing `name` REPLACES its
+        content wholesale (not a merge). `path` in the result is directly
+        usable as `routes_path`.
 
         Use this when:
-          - you've discovered a click sequence (via optix_cdp_find_text /
-            optix_cdp_screenshot) and want to bank it for cheap replay
-          - creating a NEW routes file, or adding/updating routes in one
-            you already own
+          - you've discovered a click sequence (via optix_observe
+            find_text/screenshot) and want to bank it for cheap replay
 
         Do NOT use this when:
           - the routes file already has the route you need — just
@@ -2256,28 +1962,20 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
     @mcp.tool(annotations=_RO)
     def optix_routes_get(project: str, name: str = "ftx_ui_map") -> dict:
-        """Read back a routes file saved with optix_routes_save —
-        {state, path, routes: <full parsed versioned dict>}.
+        """Read back a routes file saved with optix_routes_save.
 
-        Routes files are owned by the ftx-mcp service - create and read
-        them with optix_routes_save / optix_routes_get. Do NOT ask the user
-        for host folder access or try to read project files with
-        client-side file tools; the service filesystem is not reachable
-        from sandboxed clients.
+        Routes files live in the service (not visible to client-side file
+        tools) — do NOT ask the user for host folder access.
 
-        Looks at `<project>/dev/<name>.json`. A bad `name` fails with
-        error='bad_name' before touching disk (see optix_routes_save for
-        the sanitization rule). A missing file fails with
-        error='routes_file_not_found' and `path` naming the exact path
-        looked for; malformed JSON fails with error='routes_file_invalid'.
-        Never raises for a missing/bad file.
+        Looks at `<project>/dev/<name>.json`. A bad `name` fails
+        error='bad_name' before touching disk (see optix_routes_save for the
+        sanitization rule); a missing file fails 'routes_file_not_found'
+        (with `path`); malformed JSON fails 'routes_file_invalid'. Never
+        raises for a missing/bad file.
 
         Use this when:
           - inspecting what routes/steps a banked file actually contains,
             e.g. before editing it via optix_routes_save
-          - a caller needs the raw routes dict itself, not just to replay
-            it (optix_cdp_navigate reads the file directly — you don't
-            need this first just to navigate)
 
         Do NOT use this when:
           - you just want to replay a route (optix_cdp_navigate reads the
@@ -2291,25 +1989,17 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """List every routes file saved under a project's `dev/` — what's
         already banked, before you navigate/sweep or save more.
 
-        Routes files are owned by the ftx-mcp service - create and read
-        them with optix_routes_save / optix_routes_get. Do NOT ask the user
-        for host folder access or try to list/read project files with
-        client-side file tools; the service filesystem is not reachable
-        from sandboxed clients.
+        Routes files live in the service (not visible to client-side file
+        tools) — do NOT ask the user for host folder access.
 
-        Only files that parse as a valid routes file (JSON object with a
-        dict "routes" key) are listed; anything else under dev/*.json is
-        skipped silently per-file and counted in `skipped` — one bad file
-        never hides the rest.
-
-        Returns {state: 'succeeded', files: [{name, path, routes: [route
-        names], mtime}, ...], count, skipped}. No dev/ directory yet is not
-        an error — files=[], count=0, skipped=0.
+        Only files parsing as a valid routes file (JSON object with a dict
+        "routes" key) are listed; anything else under dev/*.json is skipped
+        silently and counted in `skipped` — one bad file never hides the
+        rest. No dev/ directory yet is not an error (files=[], count=0).
 
         Use this when:
           - you don't remember what routes files (or route names) already
-            exist for this project before saving a new one or navigating
-          - auditing what's banked across a project
+            exist before saving a new one or navigating
 
         Do NOT use this when:
           - you already know the exact `name` (optix_routes_get is more
@@ -2323,42 +2013,31 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         navigate_url: str | None = None,
     ) -> dict:
         """Zero-screenshot navigation to a banked screen: replays a sequence of
-        clicks from a routes JSON file instead of screenshot -> locate ->
-        click, click again.
+        clicks from a routes JSON file instead of screenshot -> locate -> click,
+        click again.
 
         Routes file format (version 1): `{"version": 1, "routes": {"<name>":
         {"steps": [{"click": [x, y], "settle_seconds": 0.5, "expect_text":
         "Setup Values"}]}}}`. `click` uses the SAME coordinate convention as
-        optix_cdp_screenshot's `region`: both values <= 1.0 are normalized
-        viewport fractions, any value > 1 is absolute pixels — portable
-        across window sizes. Convention: bank routes at `dev/ftx_ui_map.json`
-        in the project workspace — see the optix-blind-authoring skill for
-        the cache workflow (discover once with optix_cdp_find_text, bank the
-        route, navigate blind from then on). `routes_path` accepts the
-        `path` returned by optix_routes_save directly.
+        optix_cdp_screenshot's `region` — portable across window sizes.
+        Convention: bank routes at `dev/ftx_ui_map.json` (see the
+        optix-blind-authoring skill). `routes_path` accepts the `path`
+        returned by optix_routes_save directly.
 
-        Routes files are owned by the ftx-mcp service - create and read
-        them with optix_routes_save / optix_routes_get. Do NOT ask the user
-        for host folder access or try to write project files with
-        client-side file tools; the service filesystem is not reachable
-        from sandboxed clients.
+        Routes files live in the service (not visible to client-side file
+        tools) — do NOT ask the user for host folder access.
 
-        expect_text verification needs tesseract: with expect=true (the
-        default) and a step carrying expect_text, this OCRs the frame after
-        the click and checks expect_text is a case-insensitive substring of
-        the recognized text. The FIRST failed expectation stops the route
-        immediately — later steps do not run — and returns
-        error='expectation_failed' with the step index and a read_back
-        excerpt: fail loud rather than drift onto the wrong screen. If
-        tesseract isn't installed, the checks are skipped (not a failure) and
-        the response carries ocr_unavailable=true — the clicks still ran.
+        expect_text verification needs tesseract: with expect=true (default)
+        and a step carrying expect_text, this OCRs the frame after the click
+        and checks expect_text is a case-insensitive substring. The FIRST
+        failed expectation stops the route immediately (error=
+        'expectation_failed' with the step index) — fail loud rather than
+        drift onto the wrong screen. If tesseract isn't installed, checks are
+        skipped (not a failure; ocr_unavailable=true) — clicks still ran.
 
-        Returns {state, route, steps_run, verified_steps, ocr_unavailable?,
-        navigated, finished_at}. Never raises for a bad routes file: missing
-        path -> error='routes_file_not_found'; bad JSON ->
-        'routes_file_invalid'; unknown route -> 'route_not_found' (with
-        `available` listing known routes); a malformed step -> 'route_invalid'
-        naming the `step` index.
+        Never raises for a bad routes file: missing path ->
+        'routes_file_not_found'; bad JSON -> 'routes_file_invalid'; unknown
+        route -> 'route_not_found'; malformed step -> 'route_invalid'.
 
         Use this when:
           - jumping straight to a screen you've already banked a route for,
@@ -2384,53 +2063,35 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     ) -> dict:
         """Capture a full-frame screenshot (+ OCR text, if tesseract is
         installed) of every route in a banked routes file, in ONE CDP
-        session — builds the visual baseline optix_cdp_diff compares
-        against.
+        session — builds the visual baseline optix_cdp_diff compares against.
 
-        Loads routes_path exactly like optix_cdp_navigate (same routes
-        file format and error contract, and `routes_path` likewise accepts
-        the `path` returned by optix_routes_save directly).
+        Loads routes_path exactly like optix_cdp_navigate (same format;
+        `routes_path` accepts the `path` from optix_routes_save directly).
+        Routes files live in the service — do NOT ask the user for host
+        folder access.
 
-        Routes files are owned by the ftx-mcp service - create and read
-        them with optix_routes_save / optix_routes_get. Do NOT ask the user
-        for host folder access or try to write project files with
-        client-side file tools; the service filesystem is not reachable
-        from sandboxed clients.
+        Sweeps all routes in file order, or just the names in `routes` — an
+        unknown name fails error='route_not_found'. Steps replay like
+        optix_cdp_navigate's clicks, but expect_text checks are ALWAYS off
+        (capture pass, not verification). Between routes the tab returns to
+        the runtime's home screen.
 
-        Sweeps all routes in file order,
-        or just the names in `routes` (in the order given) — an unknown
-        name in `routes` fails the whole call with error='route_not_found',
-        same as optix_cdp_navigate. Each route's steps replay exactly like
-        optix_cdp_navigate's clicks/settle_seconds, but expect_text checks
-        are ALWAYS off (this is a capture pass, not a verification pass).
-        Between routes the tab is re-navigated back to the runtime's home
-        screen — routes are assumed to start there, the same assumption
-        banking them for optix_cdp_navigate makes.
-
-        warmup=True (default) takes and discards one full-frame capture
-        before the real one, giving the canvas one settle period to finish
-        animating/rendering. Writes <out_dir>/<route>.jpg (route names
-        sanitized to [a-zA-Z0-9._-]) and <out_dir>/manifest.json:
-        {version, created_at, viewport, ocr, screens: {route: {file,
-        size_bytes, text?}}}. A capture failure on one route (bad banked
-        coordinates, a CDP transport error) does not abort the sweep —
-        that route is recorded as {"error": ...} and the sweep continues;
-        the response then carries "errors": N.
-
-        Returns the manifest dict inline plus state='succeeded'.
+        warmup=True (default) takes and discards one capture first, giving
+        the canvas a settle period. Writes <out_dir>/<route>.jpg and
+        <out_dir>/manifest.json. A capture failure on one route does not
+        abort the sweep — recorded as {"error": ...}; response carries
+        "errors": N.
 
         Use this when:
           - building or refreshing a visual baseline of the whole HMI for
-            optix_cdp_diff, after routes are banked with
-            optix_cdp_navigate / the optix-blind-authoring skill
-          - capturing every known screen in one pass instead of a manual
-            screenshot per screen
+            optix_cdp_diff, after routes are banked
+          - capturing every known screen in one pass instead of per-screen
 
         Do NOT use this when:
           - you only need one screen right now (optix_cdp_screenshot is
             cheaper and doesn't need banked routes)
-          - the routes aren't banked yet (discover them with
-            optix_cdp_find_text first, then bank a routes file)
+          - the routes aren't banked yet (discover with optix_cdp_find_text
+            first, then bank a routes file)
         """
         return core.cdp_sweep_runtime(
             cfg, routes_path=routes_path, out_dir=out_dir, routes=routes,
@@ -2442,33 +2103,22 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         — a visual regression check, no CDP session needed (pure file
         comparison).
 
-        Matches screens by route key from each dir's manifest.json. A
-        screen present in only one dir is reported under `added`/`removed`
-        (not an error). For each common screen: if Pillow is installed
-        (`pip install ftx-mcp[visual]`), grayscale mean-pixel-difference vs
-        `threshold` (percent, default 2.0) decides changed/same, with a
-        size mismatch short-circuiting to status='size_mismatch'. Without
-        Pillow, this degrades to a text-only compare using each manifest's
-        OCR text (both sweeps must have run with tesseract installed) —
-        pixel_pct is null and the response carries degraded='no_pillow';
-        with neither Pillow nor OCR text this fails outright
-        (error='no_pillow_no_ocr').
+        Matches screens by route key from each dir's manifest.json; a screen
+        in only one dir is reported under `added`/`removed` (not an error).
+        With Pillow installed (`pip install ftx-mcp[visual]`), grayscale
+        mean-pixel-difference vs `threshold` (percent, default 2.0) decides
+        changed/same, with a size mismatch short-circuiting to
+        'size_mismatch'. Without Pillow, degrades to a text-only compare
+        using each manifest's OCR text (degraded='no_pillow'); with neither
+        Pillow nor OCR text this fails (error='no_pillow_no_ocr').
 
         TEXT is its own channel, independent of the pixel threshold: every
-        screen gets text_added/text_removed (OCR-line diff, 40-line cap)
-        and a text_changed flag. READ text_changed FIRST for label/value
-        edits - a single-label change moves well under 1% of pixels on a
-        busy screen, so pixel status stays 'same' at the 2.0 default (the
-        threshold is tuned for layout/graphic changes; lower it only when
-        hunting small VISUAL changes with no text signature). Live-updating
-        values naturally churn the text deltas between sweeps - treat
-        deltas that look like process values as benign.
-
-        Returns {state, threshold, degraded?, screens: {route: {status,
-        pixel_pct, text_added, text_removed, text_changed}}, added,
-        removed, summary: {same, changed, size_mismatch, errors,
-        text_changed}}. A missing manifest.json in either dir returns
-        state='failed', error='manifest_not_found'.
+        screen gets text_added/text_removed and a text_changed flag. READ
+        text_changed FIRST for label/value edits — a single-label change
+        moves well under 1% of pixels on a busy screen, so pixel status
+        stays 'same' at the 2.0 default. Live-updating values naturally churn
+        text deltas between sweeps — treat process-value-shaped deltas as
+        benign.
 
         Use this when:
           - checking whether a deploy/edit changed the rendered HMI,
@@ -2488,13 +2138,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     def optix_cdp_restart(allow_restart: bool = True) -> dict:
         """Recover the chrome-cdp instance that screenshot/click drive.
 
-        Usually you do NOT need this — screenshot/click self-heal once on their
-        own (open a page if Chrome is up but tab-less, or restart the
-        ftx-mcp-chrome-cdp task if Chrome is down). Call this to force
-        that recovery explicitly, or to check/repair after a reboot. Set
+        Usually you do NOT need this — screenshot/click self-heal on their own
+        (open a page if Chrome is up but tab-less, or restart the
+        ftx-mcp-chrome-cdp task if Chrome is down). Call this to force that
+        recovery explicitly, or to check/repair after a reboot. Set
         allow_restart=False to only open a page (never relaunch the process).
-        Returns {state, alive, has_page, restarted, detail} — state is
-        ok|opened_page|restarted|failed.
 
         Use this when:
           - a verify tool reported cdp_unavailable and you want to repair it
@@ -2545,41 +2193,35 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
         mode:
           - "screenshot" — full-canvas (or `region`) JPEG; THE visual-verify
-            path. Writes to `save_path` (temp if omitted) and returns the
-            `path`; `return_image=true` ALSO returns the capture as typed MCP
-            image content so the model sees it inline (no file round-trip).
-            `fresh=true` forces a reload before capture. Honors `quality`.
+            path. Writes to `save_path` (temp if omitted); `return_image=true`
+            ALSO returns typed MCP image content inline (no file round-trip).
+            `fresh=true` forces a reload before capture.
           - "ocr" — tesseract text read-back of the whole canvas (headless
             fallback when no vision model). Honors `psm`.
-          - "read_text" — tesseract OCR of a `region` (or full frame): the cheap
-            zero-vision "does it say X" check. Honors `region`, `psm`.
+          - "read_text" — tesseract OCR of a `region` (or full frame): the
+            cheap zero-vision "does it say X" check.
           - "find_text" — locate `text` on the canvas (word boxes + clickable
             centers) to drive a click or build a route. Requires `text`.
           - "diff" — compare two optix_cdp_sweep capture dirs screen-by-screen
-            (pure file compare, no CDP). Requires `dir_a`, `dir_b`; honors
-            `threshold`.
+            (pure file compare, no CDP). Requires `dir_a`, `dir_b`.
 
-        `region` uses the shared convention: all four values <= 1.0 are
-        normalized viewport fractions, any value > 1 is absolute pixels. An
-        unknown `mode` returns a structured error naming the valid modes rather
-        than raising.
+        `region`: all four values <= 1.0 are normalized viewport fractions,
+        any value > 1 is absolute pixels. An unknown `mode` returns a
+        structured error rather than raising.
 
         OCR can't resolve SMALL controls: full-frame tesseract renders small
-        button labels as garbage, so ocr/read_text/find_text legitimately fail
-        on them (find_text returns found:false — not an error). For small
-        controls, drive them by coordinates + a `screenshot` (vision) read-back
-        rather than find_text; reserve find_text for larger/clearer labels.
+        button labels as garbage (find_text returns found:false — not an
+        error). Drive small controls by coordinates + a `screenshot` (vision)
+        read-back instead.
 
         Use this when:
-          - reading anything BACK from the live canvas — a screenshot to verify
-            a deploy, an OCR check that a label says X, locating a control, or a
-            visual-regression diff
-          - you want a single read tool instead of remembering five CDP names
+          - reading anything BACK from the live canvas — verify a deploy,
+            check a label's text, locate a control, or a visual-regression diff
 
         Do NOT use this when:
           - you need to CHANGE the runtime (click/fill/type/key/navigate) —
             that's optix_interact
-          - the chrome-cdp task isn't running (modes return cdp_unavailable; run
+          - the chrome-cdp task isn't running (returns cdp_unavailable; run
             optix_doctor)
         """
         if mode not in _OBSERVE_MODES:
@@ -2651,35 +2293,31 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         per-action tools remain as deprecated aliases (FTXMCP_LEGACY_TOOLS).
 
         action:
-          - "click" — trusted CDP mouse click at (`x`, `y`) on the canvas (the
-            reliable path Optix's canvas needs). Requires `x`, `y`.
-          - "fill" — set a field in ONE call: click (`x`, `y`) -> (select-all)
-            -> type `text` -> commit with `submit` (default Enter; None types
-            without committing). THE way to set a TextBox/SpinBox. Requires
-            `x`, `y`, `text`.
-          - "type" — insert `text` into the already-focused field (no click, no
-            commit). Requires `text`.
+          - "click" — trusted CDP mouse click at (`x`, `y`); the reliable path
+            Optix's canvas needs. Requires `x`, `y`.
+          - "fill" — ONE call: click (`x`, `y`) -> select-all -> type `text` ->
+            commit with `submit` (default Enter; None types without
+            committing). THE way to set a TextBox/SpinBox. Requires `x`, `y`,
+            `text`.
+          - "type" — insert `text` into the already-focused field (no click,
+            no commit). Requires `text`.
           - "key" — press one named `key` (Enter/Escape/Tab/Backspace/Delete/
-            Arrow*) — the commit step for edits. Requires `key`.
+            Arrow*), the commit step for edits. Requires `key`.
           - "navigate" — replay a banked click `route` from `routes_path`
-            (zero-screenshot navigation). Requires `route`, `routes_path`;
-            honors `expect`.
+            (zero-screenshot navigation). Requires `route`, `routes_path`.
 
-        Coordinates use the shared convention (values <= 1.0 = normalized
-        viewport fractions, > 1 = absolute pixels). An unknown `action`, or a
-        required param missing for the chosen action, returns a structured error
-        rather than raising.
+        Coordinates use the shared convention (<= 1.0 = normalized viewport
+        fractions, > 1 = absolute pixels). An unknown `action`, or a missing
+        required param, returns a structured error rather than raising.
 
-        VERIFY, don't trust the return: state="succeeded" means the CDP event was
-        DISPATCHED, not that anything changed — a click at the wrong coordinate
-        still returns succeeded. Always follow a click/fill with a read-back
-        (optix_observe screenshot/ocr, or optix_describe_node) and confirm the
-        value actually moved before proceeding.
+        VERIFY, don't trust the return: state="succeeded" means the CDP event
+        was DISPATCHED, not that anything changed — a click at the wrong
+        coordinate still returns succeeded. Always follow with a read-back
+        (optix_observe, or optix_describe_node).
 
         Use this when:
-          - you need to CHANGE the runtime — press a button, set a field value,
-            commit an edit, or jump to a banked screen
-          - you want a single action tool instead of remembering five CDP names
+          - you need to CHANGE the runtime — press a button, set a field
+            value, commit an edit, or jump to a banked screen
 
         Do NOT use this when:
           - you only need to READ the canvas (screenshot/ocr/find) — that's
@@ -2765,61 +2403,38 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """Apply a BATCH of live-model authoring ops, validated as a whole first.
 
         Each op is a dict with an `op` field naming the verb plus that verb's
-        fields, e.g.
-            [{"op": "create_widget", "screen": "UI/MainWindow",
-              "name": "Gauge1", "widget_type": "Rectangle"},
-             {"op": "set_property", "path": "UI/MainWindow/Gauge1",
-              "name": "Width", "value": "120"}]
-
+        fields, e.g. [{"op": "create_widget", "screen": "UI/MainWindow",
+        "name": "Gauge1", "widget_type": "Rectangle"}, {"op": "set_property",
+        "path": "UI/MainWindow/Gauge1", "name": "Width", "value": "120"}].
         Valid ops: set_property, bind, create_widget, create_variable,
         create_folder, create_object, create_type, create_alias, delete, move,
         reorder, wire_event, attach_expression, add_translation.
 
         WHY BATCH: the bridge validates the ENTIRE list before anything is
-        written, against a hypothetical model that accumulates this batch's own
-        creates and deletes. So "create a node then set a property on it"
+        written, against a hypothetical model that accumulates this batch's
+        own creates/deletes — so "create a node then set a property on it"
         validates clean, while the reverse order is caught up front with the
-        offending `op_index` — instead of half-applying and leaving you to work
-        out what landed. Ordering mistakes, misspelled properties, bad values,
-        deleting a node a later op still touches, and duplicate creates are all
-        refused before the first write.
+        offending `op_index` instead of half-applying. Validation runs FIRST
+        and applies nothing on failure (state="validated" with errors), so a
+        separate dry_run pass is NOT needed to be safe — reserve
+        `dry_run=True` for a genuinely risky batch you want to inspect first.
+        `strict=True` promotes lint warnings into errors.
 
-        You normally call this ONCE and let it apply: it validates the whole
-        batch FIRST and applies nothing if validation fails (state="validated"
-        with the errors), so a separate dry_run pass is NOT needed to be safe.
-        Re-sending a large op list twice (dry_run then apply) is the single most
-        wasteful thing you can do here — you regenerate the whole payload for no
-        added safety. Reserve `dry_run=True` (validate, apply NOTHING) for a
-        genuinely risky batch you want to inspect before committing. `strict=True`
-        promotes lint warnings (e.g. creating over a node that already exists)
-        into errors.
+        SIZE: batch ONE component's related ops — a widget plus its
+        properties plus its binding — NOT a whole screen; a 100-op
+        mega-batch gambles the whole screen on one partial-failure point.
 
-        SIZE: batch ONE component's related ops — a widget plus its properties
-        plus its binding/expression — NOT a whole screen. A 100-op mega-batch
-        takes minutes to generate and apply as one blocking call and gambles the
-        whole screen on a single partial-failure point; component-sized batches
-        keep generation fast, failures local, and progress visible.
-
-        NOT ATOMIC, and the result says so. Studio's live model has no
-        transaction to roll back to, so if op N fails at apply time, ops 0..N-1
-        stay applied: you get state="partial", `applied` counting what landed,
-        and `failed_op`. Read `applied` — never assume a failure means nothing
-        happened. Validation up front is what makes that rare, not impossible.
-
-        Returns {state, applied, op_count, report, dry_run} where state is
-        validated | succeeded | partial.
+        NOT ATOMIC, and the result says so: if op N fails at apply time, ops
+        0..N-1 stay applied (state="partial", `applied` counting what landed).
+        Read `applied` — never assume a failure means nothing happened.
 
         Use this when:
-          - you have several related edits for ONE component (a widget plus its
-            properties plus a binding) — batch them so they validate and land
-            together
+          - you have several related edits for ONE component — batch them so
+            they validate and land together
 
         Do NOT use this when:
-          - you have ONE edit — the per-noun tool (optix_bridge_set_property,
-            optix_bridge_create_widget, ...) is simpler
-          - Studio is closed or the bridge is down (live authoring needs both)
-          - the bridge predates U16 — validate_ops returns bridge_unavailable
-            rather than silently applying unvalidated
+          - you have ONE edit — the per-noun tool is simpler
+          - Studio is closed or the bridge is down
         """
         if not isinstance(ops, list) or not ops:
             return {
