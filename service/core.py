@@ -5002,6 +5002,36 @@ def _match_tsv_words(words: list[dict], query: str) -> list[dict]:
     return matches
 
 
+def _ocr_css_scale(
+    jpeg: bytes, vp_w: float, vp_h: float, cfg: Config,
+) -> tuple[float, float]:
+    """Factor to convert OCR IMAGE pixels -> viewport CSS pixels.
+
+    The screenshot is rendered at deviceScaleFactor (OPTIX_CDP_SCALE), so its
+    pixel dimensions are the CSS viewport times that factor. Return
+    (vp_w/img_w, vp_h/img_h) measured from the actual JPEG — self-correcting
+    whether or not the viewport override took effect. Falls back to
+    1/cfg.cdp_viewport_scale only if Pillow can't measure the image, and to
+    (1.0, 1.0) if even that is unusable. At scale=1 the image equals the
+    viewport, so the factor is 1.0 and callers are unchanged."""
+    if vp_w <= 0 or vp_h <= 0:
+        return 1.0, 1.0
+    pil = _load_pil()
+    if pil is not None:
+        try:
+            import io
+            with pil.Image.open(io.BytesIO(jpeg)) as im:
+                img_w, img_h = im.size
+            if img_w > 0 and img_h > 0:
+                return vp_w / img_w, vp_h / img_h
+        except Exception:
+            pass
+    scale = cfg.cdp_viewport_scale
+    if scale and scale > 0:
+        return 1.0 / scale, 1.0 / scale
+    return 1.0, 1.0
+
+
 def cdp_find_text_runtime(
     cfg: Config, text: str, navigate_url: str | None = None,
     settle_seconds: float | None = None, runner: Runner = _DEFAULT_RUNNER,
@@ -5022,6 +5052,10 @@ def cdp_find_text_runtime(
     captured_at}. `matches[].confidence` is a fraction in [0, 1] — the same
     scale as cdp_ocr_runtime / cdp_read_text_runtime's confidence{mean,min},
     so one threshold reads correctly across all three.
+    bbox_px / center_px are viewport CSS pixels (the space cdp_click_runtime
+    dispatches in), NOT raw image pixels — so center_px stays correct even
+    under OPTIX_CDP_SCALE>1, where the capture is rendered larger than the
+    viewport (see _ocr_css_scale).
     No match is NOT an error: found=false, matches=[]. Tesseract
     missing => state='failed', error='tesseract_not_installed' (standard
     degradation contract, never raises).
@@ -5061,9 +5095,20 @@ def cdp_find_text_runtime(
         words = _parse_tesseract_tsv(proc.stdout or "")
 
     raw_matches = _match_tsv_words(words, text)
+    # Tesseract boxes are in IMAGE pixels. The capture is rendered at the
+    # emulated deviceScaleFactor (OPTIX_CDP_SCALE), so at scale>1 the image is
+    # LARGER than the CSS viewport that clicks use — center_px would then feed
+    # cdp_click_runtime a device-pixel coordinate and the click would land at
+    # scale× the intended spot. Rescale image px -> CSS px by the MEASURED
+    # image/viewport ratio (not 1/cfg.scale) so it self-corrects even if the
+    # viewport override silently no-op'd on an older Chrome. At scale=1 the
+    # image equals the viewport and this is an exact no-op. Result: bbox_px /
+    # center_px are always in viewport CSS px, the same space as clicks.
+    sx, sy = _ocr_css_scale(jpeg, vp_w, vp_h, cfg)
     result_matches = []
     for m in raw_matches:
         x, y, w, h = m["bbox_px"]
+        x, y, w, h = x * sx, y * sy, w * sx, h * sy
         if vp_w > 0 and vp_h > 0:
             bbox_norm = [x / vp_w, y / vp_h, w / vp_w, h / vp_h]
         else:

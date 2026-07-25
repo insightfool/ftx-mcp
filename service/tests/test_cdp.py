@@ -775,6 +775,61 @@ def test_find_text_reports_tesseract_nonzero(cfg, fake_cdp, monkeypatch):
     assert out["found"] is False and out["matches"] == []
 
 
+_FIND_TSV_SCALE = (
+    "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n"
+    # box in the 2000x1600 IMAGE space (a 2x render of a 1000x800 viewport)
+    "5\t1\t1\t1\t1\t1\t200\t100\t160\t60\t95.0\tFan\n"
+)
+
+
+def test_find_text_rescales_ocr_coords_to_css_under_devicescale(cfg, fake_cdp, monkeypatch):
+    """OPTIX_CDP_SCALE>1 renders the capture LARGER than the CSS viewport, so
+    tesseract's image-pixel boxes must be rescaled to CSS px — center_px feeds a
+    click that dispatches in CSS px. A real 2000x1600 JPEG over a 1000x800
+    viewport must halve every coordinate. Measured from the image, so it holds
+    regardless of cfg.cdp_viewport_scale (self-correcting)."""
+    import io
+    import shutil
+
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (2000, 1600), (0, 0, 0)).save(buf, format="JPEG")
+    jpeg = buf.getvalue()
+    fake_cdp(results={
+        "Page.captureScreenshot": {"data": base64.b64encode(jpeg).decode()},
+        "Page.getLayoutMetrics": _layout_metrics(1000, 800),  # CSS viewport
+    })
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tesseract")
+    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, _FIND_TSV_SCALE))
+    out = core.cdp_find_text_runtime(cfg, "Fan", runner=runner)
+    assert out["state"] == "succeeded" and out["found"] is True
+    m = out["matches"][0]
+    # image px [200,100,160,60] * 0.5 -> CSS px [100,50,80,30]
+    assert m["bbox_px"] == [100.0, 50.0, 80.0, 30.0]
+    assert m["center_px"] == [140.0, 65.0]  # (100+80/2, 50+30/2), in CSS px
+    assert m["bbox_norm"] == [0.1, 0.0625, 0.08, 0.0375]  # normed to CSS vp
+    assert out["viewport"] == {"w": 1000.0, "h": 800.0}
+
+
+def test_find_text_scale_fallback_uses_cfg_when_pil_absent(cfg, fake_cdp, monkeypatch):
+    """No Pillow to measure the image -> fall back to 1/OPTIX_CDP_SCALE. cfg
+    scale=2 with an unmeasurable JPEG must still halve the coordinates."""
+    import shutil
+    monkeypatch.setattr(core, "_load_pil", lambda: None)
+    cfg2 = dataclasses.replace(cfg, cdp_viewport_scale=2.0)
+    jpeg = b"\xff\xd8jpeg\xff\xd9"  # unmeasurable; PIL is stubbed out regardless
+    fake_cdp(results={
+        "Page.captureScreenshot": {"data": base64.b64encode(jpeg).decode()},
+        "Page.getLayoutMetrics": _layout_metrics(1000, 800),
+    })
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tesseract")
+    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, _FIND_TSV_SCALE))
+    out = core.cdp_find_text_runtime(cfg2, "Fan", runner=runner)
+    m = out["matches"][0]
+    assert m["bbox_px"] == [100.0, 50.0, 80.0, 30.0]
+    assert m["center_px"] == [140.0, 65.0]
+
+
 # ---- cdp_navigate (S5): blind navigation via banked routes files --------
 
 def _write_routes(tmp_path: Path, routes: dict) -> Path:
