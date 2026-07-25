@@ -16,6 +16,8 @@ so behavior is unchanged wherever this read is unavailable.
 """
 from __future__ import annotations
 
+import re as _re
+
 
 def read_selected_target_name(pid: int, target_names: set[str]) -> str | None:
     """Return the live selected deploy-target Name for Studio window `pid`.
@@ -79,19 +81,72 @@ def read_selected_target_name(pid: int, target_names: set[str]) -> str | None:
         return None
 
 
+def _is_app_window(title: str) -> bool:
+    """True for a caption that is Studio's own app identity, not a dialog.
+
+    Matched SPACE-STRIPPED: the main project window is 'FactoryTalk Optix
+    Studio', but undocked tool panes (a floating Properties panel, seen live on
+    the VM 2026-07-24) are captioned with the bare executable name
+    'FTOptixStudio'. Both collapse to 'optixstudio'; a real dialog ('Device
+    access') keeps its own caption.
+    """
+    return not title or "optixstudio" in title.replace(" ", "").casefold()
+
+
+_USER_LABEL = _re.compile(r"\b(user(?:name)?)\s*:\s*\S+", _re.IGNORECASE)
+
+
+def _dialog_text(ctrl) -> str:
+    """Static text exposed directly under a dialog node, account name redacted.
+
+    Only LABELS and static text are read (`.Name`), never `ValuePattern`, so a
+    field's typed contents — a password above all — are never harvested. But a
+    credentials dialog renders its account as a static label, so a live capture
+    read 'Please insert the access password for Device: Panel Username: admin'
+    (VM, 2026-07-24). That string flows into run_emulator's result, and thus
+    into model context and transcripts, from a tool sitting BELOW the deploy
+    scope — the same disclosure this repo just closed in doctor's
+    deploy_username row. The dialog's job here is naming the blocker, which
+    'Device access' on 'Panel' does completely; the account name adds no
+    diagnostic value, so it is dropped.
+    """
+    text = ""
+    try:
+        for t in ctrl.GetChildren():
+            if (t.ControlTypeName in ("TextControl", "EditControl")
+                    and (t.Name or "")):
+                text += t.Name + " "
+    except Exception:
+        pass
+    return _USER_LABEL.sub(r"\1: <redacted>", text).strip()
+
+
 def pending_dialog(pid: int) -> list[dict]:
-    """Blocking top-level dialog(s) owned by Studio window `pid`, if any.
+    """Blocking dialog(s) owned by Studio window `pid`, if any.
 
-    Read-only, background-safe. Enumerates the process's top-level windows and
-    returns any that read as a distinct dialog (a WindowControl with a title
-    that is not the main project window) plus whatever static text it exposes —
-    e.g. the deploy/credentials prompt that eats an F5 keystroke and leaves the
-    emulator never spawning. This gives the F5-not-serving diagnosis a concrete
-    cause instead of "the service cannot see dialogs".
+    Read-only, background-safe. Returns a list of {title, text} dicts (usually
+    0 or 1) — e.g. the deploy/credentials prompt that eats an F5 keystroke and
+    leaves the emulator never spawning. This gives the F5-not-serving diagnosis
+    a concrete cause instead of "the service cannot see dialogs".
 
-    Returns a list of {title, text} dicts (usually 0 or 1). Returns [] on ANY
-    failure — off-Windows / uiautomation absent / no interactive desktop / no
-    dialog. [] means "no visible blocking dialog (or I cannot see one)".
+    Looks in TWO places, because Studio uses both:
+
+      1. top-level windows owned by `pid` (a dialog that really is its own
+         desktop window), and
+      2. WindowControl children NESTED INSIDE those windows.
+
+    (2) is the case that actually fires in practice. Studio is Qt/QML and draws
+    its modals into the main window's scene graph, so they are NOT children of
+    the desktop root. Confirmed live on the VM 2026-07-24: clicking Play with a
+    hardware panel selected raised a 'Device access' password prompt that sat as
+    a child of 'FactoryTalk Optix Studio' and was invisible to a desktop-root
+    scan — the top-level-only version of this function returned [] with the
+    prompt plainly on screen. Only DIRECT children are scanned; descending
+    further starts picking up ordinary in-scene panels.
+
+    Returns [] on ANY failure — off-Windows / uiautomation absent / no
+    interactive desktop / no dialog. [] means "no visible blocking dialog (or I
+    cannot see one)".
     """
     try:
         import uiautomation as auto  # lazy: Windows-only, may be absent
@@ -99,24 +154,21 @@ def pending_dialog(pid: int) -> list[dict]:
         hits: list[dict] = []
         for w in auto.GetRootControl().GetChildren():
             try:
-                if w.ProcessId != pid:
+                if w.ProcessId != pid or w.ControlTypeName != "WindowControl":
                     continue
-                if w.ControlTypeName != "WindowControl":
-                    continue
-                title = w.Name or ""
-                # the main project window carries the app title; a dialog is a
-                # distinct top-level window owned by the same PID.
-                if not title or "Optix Studio" in title:
-                    continue
-                text = ""
+                # (2) in-scene modals parented to this window
                 try:
-                    for t in w.GetChildren():
-                        if (t.ControlTypeName in ("TextControl", "EditControl")
-                                and (t.Name or "")):
-                            text += t.Name + " "
+                    for d in w.GetChildren():
+                        if (d.ControlTypeName == "WindowControl"
+                                and not _is_app_window(d.Name or "")):
+                            hits.append({"title": d.Name or "",
+                                         "text": _dialog_text(d)})
                 except Exception:
                     pass
-                hits.append({"title": title, "text": text.strip()})
+                # (1) the window itself, when it is a distinct dialog
+                if _is_app_window(w.Name or ""):
+                    continue
+                hits.append({"title": w.Name or "", "text": _dialog_text(w)})
             except Exception:
                 continue
         return hits
