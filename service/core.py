@@ -1813,6 +1813,34 @@ def bridge_validate_ops(
     return data
 
 
+def _normalize_edit_op(op: dict) -> dict:
+    """Reconcile attach_expression's property-name field across the seam.
+
+    The bridge validator (StudioMCPBridge ValidateOnNode) treats
+    set_property / bind / attach_expression as ONE shape targeting a property
+    `name`, so it refuses an attach_expression op that carries only
+    `prop_name`. The Python applier, however, reads `prop_name` (the op-spec
+    field name). An op with just one of the two therefore validates-but-can't-
+    apply or applies-but-won't-validate — the batch dies `partial` mid-apply
+    (found live 2026-07-25 building a segmented tank indicator).
+
+    Coalesce them: whichever spelling the caller used, populate BOTH with the
+    same value so the validator (`name`) and the applier (`prop_name`) are each
+    satisfied. `name` wins if both are present. Returns a shallow copy — the
+    caller's op dicts are never mutated. Non-attach_expression ops pass
+    through untouched. REGRESSION-CITE: keep validator (`name`, .cs) and
+    applier (`prop_name`, _BRIDGE_EDIT_OPS) reconciled here or in a bridge
+    rebuild — do not split them again."""
+    if not isinstance(op, dict) or op.get("op") != "attach_expression":
+        return op
+    prop = op.get("name") or op.get("prop_name")
+    if not prop:
+        return op
+    out = dict(op)
+    out["name"] = out["prop_name"] = prop
+    return out
+
+
 def _apply_one_edit(cfg: Config, project: str, op: dict) -> dict:
     """Dispatch ONE validated op to its per-noun bridge_* call."""
     verb = op.get("op")
@@ -1862,6 +1890,9 @@ def bridge_edit(
     if not isinstance(ops, list) or not ops:
         raise BridgeWriteFailed("bridge_edit requires a non-empty list of ops")
 
+    # Reconcile attach_expression's name/prop_name across the validator/applier
+    # seam BEFORE both phases (see _normalize_edit_op). Never mutates caller ops.
+    ops = [_normalize_edit_op(op) for op in ops]
     report = bridge_validate_ops(cfg, project, ops, strict=strict)
     out: dict = {
         "op_count": len(ops),

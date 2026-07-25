@@ -828,6 +828,68 @@ def test_bridge_edit_sends_ops_and_strict_in_the_body(alpha, monkeypatch):
     assert [o["op"] for o in payload["ops"]] == ["create_widget", "set_property"]
 
 
+def test_bridge_edit_reconciles_attach_expression_name_and_prop_name(alpha, monkeypatch):
+    """The C# validator reads `name` for attach_expression (one shape with
+    set_property/bind) while the Python applier reads `prop_name`. A batch
+    carrying only ONE spelling used to validate-but-not-apply or vice versa and
+    die `partial` mid-apply (found live 2026-07-25 building a segmented tank).
+    bridge_edit coalesces so BOTH phases see BOTH fields, in either direction,
+    WITHOUT mutating the caller's ops."""
+    seen: list = []
+    applied: list = []
+    monkeypatch.setattr(core, "_bridge_post_body",
+                        _fake_validate(_OK_REPORT, seen=seen))
+    monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_apply_one_edit",
+                        lambda cfg, project, op: applied.append(op))
+    ops = [
+        {"op": "attach_expression", "path": "UI/MainWindow/Seg1",
+         "prop_name": "FillColor", "expression": "if({0}>5,1,0)",
+         "sources": "Model/L"},
+        {"op": "attach_expression", "path": "UI/MainWindow/Seg2",
+         "name": "FillColor", "expression": "if({0}>6,1,0)",
+         "sources": "Model/L"},
+    ]
+    out = core.bridge_edit(alpha, "Alpha", ops)
+    assert out["state"] == "succeeded"
+    # validator side (reads `name`) now sees both, whichever spelling was given
+    _, payload = seen[0]
+    assert payload["ops"][0]["name"] == "FillColor"
+    assert payload["ops"][1]["name"] == "FillColor"
+    # applier side (reads `prop_name`) sees both too
+    assert applied[0]["prop_name"] == "FillColor"
+    assert applied[1]["prop_name"] == "FillColor"
+    # caller's original dicts are untouched (normalization returns copies)
+    assert "name" not in ops[0]
+    assert "prop_name" not in ops[1]
+
+
+def test_normalize_edit_op_coalesces_attach_expression_fields():
+    only_prop = core._normalize_edit_op(
+        {"op": "attach_expression", "prop_name": "FillColor"})
+    assert only_prop == {"op": "attach_expression",
+                         "prop_name": "FillColor", "name": "FillColor"}
+    only_name = core._normalize_edit_op(
+        {"op": "attach_expression", "name": "FillColor"})
+    assert only_name == {"op": "attach_expression",
+                         "name": "FillColor", "prop_name": "FillColor"}
+    # both present but differing: `name` wins for both, so the two sides can't
+    # silently disagree.
+    both = core._normalize_edit_op(
+        {"op": "attach_expression", "name": "A", "prop_name": "B"})
+    assert both["name"] == "A" and both["prop_name"] == "A"
+
+
+def test_normalize_edit_op_passes_through_other_ops_and_never_mutates():
+    sp = {"op": "set_property", "path": "X", "name": "Width", "value": "1"}
+    assert core._normalize_edit_op(sp) is sp  # non-attach: identity, untouched
+    orig = {"op": "attach_expression", "prop_name": "FillColor"}
+    core._normalize_edit_op(orig)
+    assert "name" not in orig  # returned a copy; caller's dict unmutated
+    empty = {"op": "attach_expression", "path": "X"}  # neither field present
+    assert core._normalize_edit_op(empty) is empty
+
+
 def test_bridge_edit_treats_a_missing_endpoint_as_unavailable(alpha, monkeypatch):
     """An older bridge answers the unknown route with not_found. That must raise
     BridgeUnavailable — never be mistaken for 'validated clean' and applied."""
