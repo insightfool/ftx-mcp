@@ -19,11 +19,23 @@ HOW TO RUN (on the Windows VM, NOT CI):
 Without FTX_LIVE_BRIDGE=1 the whole module is skipped, so it adds only skips to
 the Linux/CI count and never touches the network.
 
+WHAT THE LIVE PROJECT MUST CONTAIN (all overridable via env — see each const):
+    * A node at FTX_LIVE_NODE (default UI/MainWindow/Rectangle1) whose type is a
+      Rectangle (or any builtin carrying a Color-family property).
+    * The builtin type named by FTX_LIVE_TYPE (default Rectangle) resolvable in
+      the type catalog (it is, in every stock project — it's a Studio builtin).
+
 HOME for the live-contract suite:
-    * U5  (did_you_mean)  — implemented below: a misspelled property surfaces
-      the bridge's DeclaredPropertyGuard "(did you mean ...)" suggestion.
-    * U15 (schema dump)   — TEMPLATE stub below (describe_type contract).
-    * U16 (validate_ops)  — future home; extends the reachability template.
+    * U5  (did_you_mean)  — a misspelled property surfaces the bridge's
+      DeclaredPropertyGuard "(did you mean ...)" suggestion.
+    * bridge reachability — core.bridge_state reports available + serving.
+    * type catalog        — core.list_ui_types returns a non-empty builtin set.
+    * U15 (describe_type)  — REAL contract: describe_type returns per-property
+      {name, datatype, settable} for a builtin, incl. a Color-family property.
+    * U15 (schema dump)   — /bridge/schema/dump contract PINNED; xfails until the
+      C# endpoint (service.optix_schema.SCHEMA_DUMP_ROUTE) ships.
+    * U16 (validate_ops)  — POST /bridge/validate_ops report shape PINNED;
+      xfails until the C# endpoint ships.
 """
 from __future__ import annotations
 
@@ -31,7 +43,7 @@ import os
 
 import pytest
 
-from service import core
+from service import core, optix_schema
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("FTX_LIVE_BRIDGE") != "1",
@@ -40,15 +52,23 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-# ---- U5 did_you_mean target -----------------------------------------------
+# ---- Project-specific targets (env-overridable; defaults for a stock box) ---
 # FTX_LIVE_PROJECT MUST contain a node at FTX_LIVE_NODE whose type is a
 # Rectangle (or any builtin with a Color-family property). The misspelling
 # FTX_LIVE_MISSPELLED_PROP="BackgroundColour" is a near-miss for the real
 # "BackgroundColor" so the C# SuggestPropertyName guard emits a suggestion.
-# Override any of these via env when the live project uses a different node.
+# Override any of these via env when the live project uses a different node/type.
 _LIVE_NODE = os.environ.get("FTX_LIVE_NODE", "UI/MainWindow/Rectangle1")
 _MISSPELLED_PROP = os.environ.get("FTX_LIVE_MISSPELLED_PROP", "BackgroundColour")
 _EXPECTED_SUGGESTION = os.environ.get("FTX_LIVE_EXPECTED_SUGGESTION", "BackgroundColor")
+# The builtin UI type whose property schema test_describe_type_shape introspects.
+_LIVE_TYPE = os.environ.get("FTX_LIVE_TYPE", "Rectangle")
+# A never-declared property name used to exercise the crash-safety REJECTION
+# path (test_set_property_validity_gate). Must NOT be a real property — the
+# point is the guard's rejection, not a mutation.
+_GARBAGE_PROP = os.environ.get("FTX_LIVE_GARBAGE_PROP", "ZzzNotARealProperty")
+# Common builtin type names — at least one must appear in the catalog.
+_COMMON_TYPES = {"Rectangle", "Label", "Button", "Panel", "Image"}
 
 
 @pytest.fixture
@@ -61,9 +81,131 @@ def live():
     project = os.environ.get("FTX_LIVE_PROJECT")
     if project is None:
         pytest.skip("FTX_LIVE_PROJECT unset — name the project open in Studio")
+    core.reset_bridge_cache()
     cfg = core.Config.from_env()
+    st = core.bridge_state(cfg, force=True)
+    if not st.get("available"):
+        pytest.skip(
+            f"bridge not available (reason: {st.get('reason')!r}) — open "
+            f"{project!r} in Studio and run StartBridge"
+        )
     return cfg, project
 
+
+# ---- reachability ----------------------------------------------------------
+
+def test_bridge_reachable(live):
+    """core.bridge_state(cfg) reports the live bridge available AND serving
+    FTX_LIVE_PROJECT. Reachability is the precondition every other live test
+    depends on; asserting it explicitly makes a mis-armed bridge a clear
+    single failure instead of a cascade. Return shape: {available, project,
+    bridge_version, reason}."""
+    cfg, project = live
+    st = core.bridge_state(cfg, force=True)
+    assert st["available"] is True, f"bridge not available: {st.get('reason')!r}"
+    assert st["reason"] == "ok"
+    assert (st["project"] or "").strip().lower() == project.strip().lower(), (
+        f"bridge is serving {st['project']!r}, not {project!r} — open {project!r} "
+        f"in Studio"
+    )
+
+
+# ---- type catalog ----------------------------------------------------------
+
+def test_list_ui_types_nonempty(live):
+    """core.list_ui_types returns the builtin UI type catalog from the live
+    model. Shape: {types:[{name, browse_name}], count, truncated, source}.
+    Assert the catalog is non-empty and includes a common builtin (Rectangle/
+    Label/Button/...) so we know the type system is actually reflected, not an
+    empty stub."""
+    cfg, project = live
+    out = core.list_ui_types(cfg, project)
+    assert out["source"] == "bridge"
+    assert out["count"] > 0, "empty type catalog — bridge type reflection broken"
+    types = out["types"]
+    assert isinstance(types, list) and types
+    seen = {str(t.get("browse_name") or t.get("name") or "") for t in types}
+    assert seen & _COMMON_TYPES, (
+        f"catalog has {len(seen)} types but none of the common builtins "
+        f"{sorted(_COMMON_TYPES)}; sample: {sorted(seen)[:10]}"
+    )
+
+
+# ---- U15 describe_type contract (made real) --------------------------------
+
+def test_describe_type_shape(live):
+    """U15: describe_type on a builtin (FTX_LIVE_TYPE, default Rectangle) returns
+    a property schema sourced from the bridge. Each property must carry
+    {name, datatype, settable} — the exact per-property shape the schema-dump
+    contract (optix_schema DUMP CONTRACT) is built on — and a Color-family
+    property must be present. Shape: {type, browse_name, properties:[...],
+    truncated, source}."""
+    cfg, project = live
+    schema = core.describe_type(cfg, project, _LIVE_TYPE)
+    assert schema["source"] == "bridge"
+    props = schema["properties"]
+    assert isinstance(props, list) and props, (
+        f"{_LIVE_TYPE!r} returned no properties"
+    )
+    for p in props:
+        assert "name" in p and p["name"], f"property missing name: {p!r}"
+        assert "datatype" in p, f"property {p.get('name')!r} missing datatype"
+        # `settable` is the U15 write-gate signal the schema-dump contract
+        # requires; pin it so the C# reflection can't silently drop it.
+        assert "settable" in p, (
+            f"property {p['name']!r} missing 'settable' — U15 describe_type "
+            f"contract requires the write-gate flag on every property"
+        )
+    names_lower = {str(p["name"]).lower() for p in props}
+    assert any("color" in n for n in names_lower), (
+        f"{_LIVE_TYPE!r} has no Color-family property; got {sorted(names_lower)}"
+    )
+
+
+# ---- crash-safety validity gate (REJECTION path only) ----------------------
+
+def test_set_property_validity_gate(live):
+    """Setting an UNDECLARED property (FTX_LIVE_GARBAGE_PROP) on a real node
+    (FTX_LIVE_NODE) must be REJECTED by the bridge's DeclaredPropertyGuard —
+    surfacing as BridgeWriteFailed, never a crash and never a silent success.
+    This is the crash-safety gate: a scalar write to an unmaterialized/undeclared
+    UA variable used to crash Studio outright (2026-07-16 array trap), so the
+    guard rejecting BEFORE touching the model is load-bearing.
+
+    We assert the REJECTION only (a garbage name is never written), so the live
+    project is never mutated. classify_bridge_failure must classify it as a
+    per-op write_failed with the bridge still reachable (NOT an "open Studio"
+    nudge). When FTX_LIVE_NODE is a correctly-staged real node the guard's
+    message also carries the unknown_property code + valid-set hint; we assert
+    that softly since a mis-set FTX_LIVE_NODE yields a node-not-found rejection
+    instead — either way the crash-safety contract (raise, don't crash) holds.
+
+    Note: valid_properties is a STRUCTURED sibling field on the C# error dict
+    that _bridge_write_result flattens away (message+code only reach the caller),
+    so it never appears in str(exc) — the message's "(...valid set)" hint is the
+    surface the LLM actually sees."""
+    cfg, project = live
+    with pytest.raises(core.BridgeWriteFailed) as excinfo:
+        core.bridge_set_property(cfg, project, _LIVE_NODE, _GARBAGE_PROP, "red")
+
+    detail = str(excinfo.value)
+    assert detail, "empty BridgeWriteFailed message"
+
+    out = core.classify_bridge_failure(cfg, project, excinfo.value)
+    assert out["reason_code"] == "write_failed", (
+        f"a rejected write must classify as write_failed, got {out['reason_code']!r}"
+    )
+    assert out["bridge"]["reachable"] is True
+    assert out["detail"] == detail
+
+    # Softer contract: on a correctly-staged node the guard names the code.
+    if "unknown_property" in detail:
+        assert "valid" in detail.lower(), (
+            "unknown_property rejection should point at the valid-property set"
+        )
+
+
+# ---- U5 did_you_mean (retained) --------------------------------------------
 
 def test_live_misspelled_property_surfaces_did_you_mean(live):
     """U5: setting a MISSPELLED property on a real node makes the live bridge's
@@ -93,28 +235,79 @@ def test_live_misspelled_property_surfaces_did_you_mean(live):
     assert _EXPECTED_SUGGESTION in out["detail"]
 
 
-# ---- TEMPLATE stubs (skipped by default) ----------------------------------
-# Minimal shapes for the next contract tests. Marked skip so they document the
-# intended call + assertion without asserting against a bridge state this VM
-# run hasn't set up. Drop the skip and flesh out once the target is staged.
+# ---- U15 schema-dump contract (pinned; xfails until the C# endpoint ships) --
 
-@pytest.mark.skip(reason="TEMPLATE (U16 groundwork): bridge-reachability contract")
-def test_live_bridge_reachable(live):
-    """TEMPLATE: the live bridge answers /bridge/health and serves this project.
-    core.bridge_state(cfg) must report available with the project name."""
+@pytest.mark.xfail(
+    raises=core.BridgeUnavailable,
+    reason="U15 C# /bridge/schema/dump endpoint not yet implemented",
+    strict=False,
+)
+def test_schema_dump_contract(live):
+    """U15: exercise the schema-dump path (optix_schema.fetch_schema_dump, which
+    GETs SCHEMA_DUMP_ROUTE = /bridge/schema/dump). The C# endpoint DOES NOT
+    EXIST YET, so on a real box fetch_schema_dump raises BridgeUnavailable and
+    this xfails — pinning that the Python half is wired ahead of the endpoint.
+
+    IF/when the endpoint lands and a dump comes back, this ASSERTS the DUMP
+    CONTRACT the C# must satisfy (optix_schema module docstring):
+        {studio_version, generated_at,
+         types: {<T>: {browse_name, properties:[{name, datatype, settable}]}}}
+    so the day the endpoint ships this test flips from xfail to a real contract
+    guard with no edit."""
     cfg, project = live
-    st = core.bridge_state(cfg, force=True)
-    assert st["available"] is True
-    assert (st["project"] or "").strip().lower() == project.strip().lower()
+    dump = optix_schema.fetch_schema_dump(cfg, project)  # raises until C# ships
+
+    # Only reached once the endpoint exists — assert the full dump contract.
+    assert isinstance(dump.get("studio_version"), str) and dump["studio_version"]
+    assert isinstance(dump.get("generated_at"), str) and dump["generated_at"]
+    types = dump.get("types")
+    assert isinstance(types, dict) and types, "dump has no types map"
+    for tname, tbody in types.items():
+        assert isinstance(tbody, dict), f"type {tname!r} body not an object"
+        assert isinstance(tbody.get("browse_name"), str), (
+            f"type {tname!r} missing browse_name"
+        )
+        props = tbody.get("properties")
+        assert isinstance(props, list), f"type {tname!r} properties not a list"
+        for p in props:
+            assert {"name", "datatype", "settable"} <= set(p), (
+                f"type {tname!r} property {p!r} missing name/datatype/settable"
+            )
 
 
-@pytest.mark.skip(reason="TEMPLATE (U15): describe_type schema-dump contract")
-def test_live_describe_type_returns_properties(live):
-    """TEMPLATE: describe_type on a known builtin (Rectangle) returns a
-    property schema — {type, properties:[{name, datatype}], ...} — sourced from
-    the bridge. This is the U15 schema-dump home."""
+# ---- U16 validate_ops contract (pinned; placeholder until the C# endpoint) --
+
+@pytest.mark.xfail(
+    reason="U16 C# POST /bridge/validate_ops endpoint not yet implemented",
+    strict=False,
+)
+def test_validate_ops_contract(live):
+    """U16: dry-run op validation via POST /bridge/validate_ops. The endpoint
+    does NOT exist yet (no Python wrapper either), so this documents + pins the
+    expected REPORT SHAPE the C# must return so the contract is fixed before the
+    code lands:
+        {ok: bool,
+         errors:   [{op_index: int, code: str, ...}],
+         warnings: [...]}
+
+    Until the endpoint ships this posts a trivially-empty op batch and expects
+    the bridge to 404 (unknown route) — surfacing as a BridgeWriteFailed /
+    non-200 — which keeps the test xfailing. When the route lands, replace the
+    call with the real batch and assert the report shape asserted below."""
     cfg, project = live
-    schema = core.describe_type(cfg, project, "Rectangle")
-    assert schema["source"] == "bridge"
-    names = {p["name"] for p in schema["properties"]}
-    assert _EXPECTED_SUGGESTION in names
+    # No Python wrapper exists yet; hit the future route directly. Guard first so
+    # a bridge serving the wrong project skips rather than muddies the xfail.
+    if not core._use_bridge_for(cfg, project):
+        pytest.skip(f"bridge not serving {project!r}")
+    status, data = core._bridge_post_json(cfg, "/bridge/validate_ops?ops=[]")
+    # The route does not exist yet -> non-200. Force the xfail explicitly so a
+    # stray 200 from a stubbed route still gets its shape checked below.
+    assert status == 200, f"/bridge/validate_ops not implemented (status={status})"
+
+    # Reached only once the endpoint returns 200 — pin the report contract.
+    assert isinstance(data.get("ok"), bool)
+    assert isinstance(data.get("errors"), list)
+    for e in data["errors"]:
+        assert isinstance(e.get("op_index"), int)
+        assert isinstance(e.get("code"), str) and e["code"]
+    assert isinstance(data.get("warnings"), list)
