@@ -32,8 +32,8 @@ HOME for the live-contract suite:
     * type catalog        — core.list_ui_types returns a non-empty builtin set.
     * U15 (describe_type)  — REAL contract: describe_type returns per-property
       {name, datatype, settable} for a builtin, incl. a Color-family property.
-    * U15 (schema dump)   — /bridge/schema/dump contract PINNED; xfails until the
-      C# endpoint (service.optix_schema.SCHEMA_DUMP_ROUTE) ships.
+    * U15 (schema dump)   — /bridge/schema/dump contract as a REAL gate; the C#
+      endpoint (service.optix_schema.SCHEMA_DUMP_ROUTE) shipped with U15.
     * U16 (validate_ops)  — POST /bridge/validate_ops report shape PINNED;
       xfails until the C# endpoint ships.
 """
@@ -235,27 +235,25 @@ def test_live_misspelled_property_surfaces_did_you_mean(live):
     assert _EXPECTED_SUGGESTION in out["detail"]
 
 
-# ---- U15 schema-dump contract (pinned; xfails until the C# endpoint ships) --
+# ---- U15 schema-dump contract (REAL gate; the C# endpoint shipped) ---------
 
-@pytest.mark.xfail(
-    raises=core.BridgeUnavailable,
-    reason="U15 C# /bridge/schema/dump endpoint not yet implemented",
-    strict=False,
-)
 def test_schema_dump_contract(live):
     """U15: exercise the schema-dump path (optix_schema.fetch_schema_dump, which
-    GETs SCHEMA_DUMP_ROUTE = /bridge/schema/dump). The C# endpoint DOES NOT
-    EXIST YET, so on a real box fetch_schema_dump raises BridgeUnavailable and
-    this xfails — pinning that the Python half is wired ahead of the endpoint.
-
-    IF/when the endpoint lands and a dump comes back, this ASSERTS the DUMP
-    CONTRACT the C# must satisfy (optix_schema module docstring):
+    GETs SCHEMA_DUMP_ROUTE = /bridge/schema/dump) and assert the DUMP CONTRACT
+    the C# must satisfy (optix_schema module docstring):
         {studio_version, generated_at,
          types: {<T>: {browse_name, properties:[{name, datatype, settable}]}}}
-    so the day the endpoint ships this test flips from xfail to a real contract
-    guard with no edit."""
+
+    Was xfail(raises=BridgeUnavailable) while only the Python half existed. The
+    C# endpoint shipped with U15, so this is now a real gate — it caught nothing
+    on the way in (first live run xpassed), and its job from here is to fail loud
+    if a future bridge build changes the dump shape.
+
+    Note the dump is NOT capped at the bridge's MaxItems, unlike describe_type:
+    a truncated dump would cache as a schema that looks complete and would then
+    surface as phantom add/removes in the next cross-version diff."""
     cfg, project = live
-    dump = optix_schema.fetch_schema_dump(cfg, project)  # raises until C# ships
+    dump = optix_schema.fetch_schema_dump(cfg, project)
 
     # Only reached once the endpoint exists — assert the full dump contract.
     assert isinstance(dump.get("studio_version"), str) and dump["studio_version"]

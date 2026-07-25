@@ -265,6 +265,11 @@ public class StudioMCPBridge : BaseNetLogic
                     body = TypesUiJson();
                     status = "200 OK";
                 }
+                else if (firstLine.StartsWith("GET /bridge/schema/dump"))
+                {
+                    body = SchemaDumpJson();
+                    status = "200 OK";
+                }
                 else if (firstLine.StartsWith("GET /bridge/types/schema"))
                 {
                     string typeName = QueryParam(firstLine, "type");
@@ -598,6 +603,82 @@ public class StudioMCPBridge : BaseNetLogic
         }
         return "{\"types\":[" + sb + "],\"count\":" + count +
                ",\"truncated\":" + Bool(trunc) + "}";
+    }
+
+    // GET /bridge/schema/dump - the WHOLE builtin type catalog x per-type property
+    // reflection, in one call, so the service can cache it offline (keyed by Studio
+    // version) and diff it across Studio upgrades.
+    //
+    // Deliberately NOT capped at MaxItems, unlike TypesUiJson/TypeSchemaJson: those
+    // serve a human/LLM reading one answer, where 500 is a sane ceiling. A dump that
+    // silently dropped types or properties would cache as a schema that looks
+    // complete and would then show up as phantom additions/removals in the next
+    // version diff. Size is fine - WriteResponse sets a real Content-Length and
+    // writes the whole body.
+    //
+    // Reuses the same two reflectors as the single-type routes so the dump can never
+    // disagree with describe_type: the ObjectTypes field set for the catalog, and the
+    // ResolveWidgetClrType + IsLegendProp loop for properties. Emits only the three
+    // contract fields {name, datatype, settable}; the placeholder-collection extras
+    // TypeSchemaJson adds are omitted (the Python schema_diff ignores unknown keys,
+    // so the narrow shape is the safer default).
+    //
+    // NOTE: ObjectTypes also carries EVENT types (MouseClickEvent...), which appear
+    // in the dump with an empty property list. Harmless for diffing; filtering to
+    // BaseUIObject subtypes is a future nicety.
+    private string SchemaDumpJson()
+    {
+        string version = "unknown";
+        try
+        {
+            var v = typeof(FTOptix.UI.ObjectTypes).Assembly.GetName().Version;
+            if (v != null && !string.IsNullOrEmpty(v.ToString())) version = v.ToString();
+        }
+        catch { /* keep "unknown" - the Python _version_key sanitizes whatever it gets */ }
+
+        var types = new StringBuilder();
+        int typeCount = 0;
+        var fields = typeof(FTOptix.UI.ObjectTypes)
+            .GetFields(BindingFlags.Public | BindingFlags.Static);
+        foreach (var f in fields)
+        {
+            // Per-type guard: one unresolvable type must not abort the whole dump.
+            try
+            {
+                string browse = f.Name;
+                if (f.GetValue(null) is NodeId nid)
+                {
+                    var t = InformationModel.Get(nid);
+                    if (t != null) browse = t.BrowseName;
+                }
+
+                var props = new StringBuilder();
+                int propCount = 0;
+                var clr = ResolveWidgetClrType(f.Name);
+                if (clr != null)
+                {
+                    foreach (var pi in clr.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                                 .Where(IsLegendProp)
+                                 .GroupBy(p => p.Name).Select(g => g.First()).OrderBy(p => p.Name))
+                    {
+                        if (propCount++ > 0) props.Append(",");
+                        props.Append("{\"name\":\"" + JsonEscape(pi.Name) +
+                                     "\",\"datatype\":\"" + JsonEscape(pi.PropertyType.Name) +
+                                     "\",\"settable\":" +
+                                     Bool(pi.CanWrite && !pi.PropertyType.IsArray) + "}");
+                    }
+                }
+
+                if (typeCount++ > 0) types.Append(",");
+                types.Append("\"" + JsonEscape(f.Name) + "\":{\"browse_name\":\"" +
+                             JsonEscape(browse) + "\",\"properties\":[" + props + "]}");
+            }
+            catch { /* skip this type, keep dumping the rest */ }
+        }
+
+        return "{\"studio_version\":\"" + JsonEscape(version) +
+               "\",\"generated_at\":\"" + JsonEscape(DateTime.UtcNow.ToString("o")) +
+               "\",\"types\":{" + types + "}}";
     }
 
     // Property schema of a builtin UI type, e.g. ?type=Label. Returns null
