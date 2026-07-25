@@ -91,6 +91,10 @@ EXPECTED_TOOLS = {
     "optix_cdp_sweep",
     "optix_cdp_diff",
     "optix_cdp_restart",
+    # U14 consolidated CDP surface (the 12 optix_cdp_* aliases above stay
+    # registered under the default FTXMCP_LEGACY_TOOLS gate).
+    "optix_observe",
+    "optix_interact",
 }
 
 
@@ -143,11 +147,15 @@ def test_mcp_tools_carry_readonly_destructive_annotations(cfg: core.Config) -> N
             "optix_get_project_map", "optix_list_skills", "optix_get_skill",
             "optix_routes_get", "optix_routes_list",
             "optix_schema_dump", "optix_schema_list", "optix_schema_diff",
-            "optix_active_target"}
+            "optix_active_target",
+            # U14 consolidated read-side capture
+            "optix_observe"}
     DESTRUCTIVE = {"optix_deploy","optix_deploy_updatesvc","optix_bridge_delete_node",
                    "optix_runtime_stop","optix_cdp_click","optix_cdp_type",
                    "optix_cdp_key","optix_cdp_fill","optix_cdp_navigate",
                    "optix_cdp_sweep",
+                   # U14 consolidated action-side driver
+                   "optix_interact",
                    # replace=true deletes the original instance after the move
                    "optix_bridge_convert_to_type",
                    # re-author move deletes the original after the copy
@@ -757,10 +765,12 @@ def test_with_project_tool_count_and_annotations_unchanged(cfg: core.Config) -> 
     """The mechanical pass is behavior-preserving: the shared
     _RO/_RW/_RW_DESTRUCTIVE constants carry the same hint values the per-site
     ToolAnnotations did (spot-check one of each class). Tool count grows as
-    new tools land (69: 68 after the U15 schema tools + optix_active_target)."""
+    new tools land (69: 68 after the U15 schema tools + optix_active_target;
+    71 after the U14 consolidated optix_observe + optix_interact land alongside
+    the 12 optix_cdp_* aliases kept under the default FTXMCP_LEGACY_TOOLS gate)."""
     mcp = make_mcp(cfg)
     by_name = {t.name: t for t in _list_tools(mcp)}
-    assert len(by_name) == 69
+    assert len(by_name) == 71
     assert by_name["optix_list_screens"].annotations.readOnlyHint is True
     write = by_name["optix_bridge_set_property"].annotations
     assert write.readOnlyHint is False and write.destructiveHint is False

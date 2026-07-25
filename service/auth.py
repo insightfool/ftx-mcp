@@ -312,6 +312,7 @@ TOOL_SCOPES: dict[str, str] = {
     "optix_routes_get": "read",
     "optix_routes_list": "read",
     "optix_cdp_diff": "read",
+    "optix_observe": "read",  # U14 consolidated read-side CDP capture
     # ---- author (34): mutates project / previews / drives canvas ----
     "optix_bridge_create_widget": "author",
     "optix_bridge_add_bound_widget": "author",
@@ -347,6 +348,7 @@ TOOL_SCOPES: dict[str, str] = {
     "optix_cdp_key": "author",
     "optix_cdp_navigate": "author",
     "optix_cdp_sweep": "author",
+    "optix_interact": "author",  # U14 consolidated action-side CDP driver
     # ---- deploy (4): pushes to / controls the runtime ----
     "optix_runtime_start": "deploy",
     "optix_runtime_stop": "deploy",
