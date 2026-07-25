@@ -25,6 +25,9 @@ dependencies = [
     "mcp>=1.2",
     "psutil>=5.9",
     "websocket-client>=1.7",
+    # Offline structural validator (service/optix_validate.py, U17) safe_loads
+    # the Nodes/**/*.yaml source tree; Linux/CI-buildable, no Studio required.
+    "pyyaml>=6",
     # Windows-only: the per-window UIA read of Studio's live deploy target
     # (service/studio_uia.py) used by the F5 guard / optix_active_target.
     # sys_platform marker keeps Linux dev/CI clean (studio_uia lazy-imports
@@ -46,6 +49,7 @@ visual = [
 
 [project.scripts]
 ftx-mcp = "service.main:main"
+ftx-mcp-validate = "service._validate_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/asqi-carter/ftx-mcp"
