@@ -2565,6 +2565,12 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         unknown `mode` returns a structured error naming the valid modes rather
         than raising.
 
+        OCR can't resolve SMALL controls: full-frame tesseract renders small
+        button labels as garbage, so ocr/read_text/find_text legitimately fail
+        on them (find_text returns found:false — not an error). For small
+        controls, drive them by coordinates + a `screenshot` (vision) read-back
+        rather than find_text; reserve find_text for larger/clearer labels.
+
         Use this when:
           - reading anything BACK from the live canvas — a screenshot to verify
             a deploy, an OCR check that a label says X, locating a control, or a
@@ -2664,6 +2670,12 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         viewport fractions, > 1 = absolute pixels). An unknown `action`, or a
         required param missing for the chosen action, returns a structured error
         rather than raising.
+
+        VERIFY, don't trust the return: state="succeeded" means the CDP event was
+        DISPATCHED, not that anything changed — a click at the wrong coordinate
+        still returns succeeded. Always follow a click/fill with a read-back
+        (optix_observe screenshot/ocr, or optix_describe_node) and confirm the
+        value actually moved before proceeding.
 
         Use this when:
           - you need to CHANGE the runtime — press a button, set a field value,

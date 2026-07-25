@@ -185,6 +185,26 @@ def test_oracle_unavailable_with_missing_exe(tmp_path: Path):
     assert result["oracle"] == "oracle_unavailable"
 
 
+def test_snapshot_tree_detects_source_mutation(tmp_path: Path):
+    """The source-mutation guard's mechanism: _snapshot_tree + a set-diff flags a
+    file whose size/mtime changed (the signal that Studio export rewrote the
+    source in place). The full oracle path is Windows-gated; this covers the
+    detection logic on any platform."""
+    root = tmp_path / "proj"
+    (root / "Nodes").mkdir(parents=True)
+    f = root / "Nodes" / "m.yaml"
+    f.write_text("x: 1\n")
+    before = _validate_cli._snapshot_tree(root)
+    # Unchanged tree -> empty diff.
+    same = _validate_cli._snapshot_tree(root)
+    assert [k for k in set(before) | set(same) if before.get(k) != same.get(k)] == []
+    # Grow the file -> detected as changed.
+    f.write_text("x: 1\ny: 2\n")
+    after = _validate_cli._snapshot_tree(root)
+    changed = [k for k in set(before) | set(after) if before.get(k) != after.get(k)]
+    assert any("m.yaml" in c for c in changed)
+
+
 def test_cli_validate_json_clean(tmp_path: Path, capsys: pytest.CaptureFixture):
     nodes = _nodes_dir(tmp_path)
     (nodes / "model.yaml").write_text(_clean_yaml())
