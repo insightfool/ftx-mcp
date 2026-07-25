@@ -63,6 +63,21 @@ def _resolve_studio_exe() -> Path | None:
         return None
 
 
+def _snapshot_tree(root: Path) -> dict[str, tuple[float, int]]:
+    """{relpath: (mtime, size)} for every file under `root`, for detecting
+    whether an in-place mutation (e.g. Studio export rewriting the source)
+    touched any file. Best-effort: unreadable entries are skipped."""
+    snap: dict[str, tuple[float, int]] = {}
+    for p in glob.glob(os.path.join(str(root), "**", "*"), recursive=True):
+        try:
+            if os.path.isfile(p):
+                st = os.stat(p)
+                snap[os.path.relpath(p, str(root))] = (st.st_mtime, st.st_size)
+        except OSError:
+            continue
+    return snap
+
+
 def run_export_oracle(project_dir: Path, studio_exe: Path | None) -> dict[str, Any]:
     """Ground-truth check: run Studio's real `export` verb, report the outcome.
 
@@ -92,6 +107,12 @@ def run_export_oracle(project_dir: Path, studio_exe: Path | None) -> dict[str, A
     optix_file = optix_files[0]
 
     staging_dir = tempfile.mkdtemp(prefix="ftx-oracle-")
+    # Snapshot the SOURCE tree before export. Studio's export opens/builds the
+    # source .optix and MAY mutate it (regenerate GUIDs / reserialize YAML) even
+    # though --location points at a throwaway dir. Compare mtime+size after to
+    # REPORT (not block) whether the source changed — the answer to "is --oracle
+    # safe against a working tree?".
+    before = _snapshot_tree(project_dir)
     try:
         cmd = [
             str(studio_exe),
@@ -120,6 +141,11 @@ def run_export_oracle(project_dir: Path, studio_exe: Path | None) -> dict[str, A
             for p in glob.glob(os.path.join(staging_dir, "**", "*"), recursive=True)
             if os.path.isfile(p)
         )
+        after = _snapshot_tree(project_dir)
+        changed = sorted(
+            rel for rel in set(before) | set(after)
+            if before.get(rel) != after.get(rel)
+        )
         result: dict[str, Any] = {
             "oracle": "ran",
             "returncode": proc.returncode,
@@ -127,6 +153,8 @@ def run_export_oracle(project_dir: Path, studio_exe: Path | None) -> dict[str, A
             "stderr_tail": (proc.stderr or "")[-2000:],
             "staged_files": staged_files,
             "optix_file": os.path.basename(optix_file),
+            "source_mutated": bool(changed),
+            "source_changed_files": changed[:20],
         }
         # An exit-0 export that staged nothing is a silent failure worth flagging.
         if proc.returncode == 0 and not staged_files:

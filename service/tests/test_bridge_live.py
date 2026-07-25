@@ -55,14 +55,15 @@ pytestmark = pytest.mark.skipif(
 
 
 # ---- Project-specific targets (env-overridable; defaults for a stock box) ---
-# FTX_LIVE_PROJECT MUST contain a node at FTX_LIVE_NODE whose type is a
-# Rectangle (or any builtin with a Color-family property). The misspelling
-# FTX_LIVE_MISSPELLED_PROP="BackgroundColour" is a near-miss for the real
-# "BackgroundColor" so the C# SuggestPropertyName guard emits a suggestion.
-# Override any of these via env when the live project uses a different node/type.
+# FTX_LIVE_PROJECT MUST contain a node at FTX_LIVE_NODE that is a Rectangle-like
+# control exposing a Color-FAMILY property. NOTE: a Rectangle exposes FillColor
+# and BorderColor, NOT BackgroundColor — so the default misspelling below is
+# "BorderColo" (a near-miss for the real "BorderColor") which the C#
+# SuggestPropertyName guard can actually resolve on a Rectangle. Every FTX_LIVE_*
+# is env-overridable when the live project uses a different node/type/property.
 _LIVE_NODE = os.environ.get("FTX_LIVE_NODE", "UI/MainWindow/Rectangle1")
-_MISSPELLED_PROP = os.environ.get("FTX_LIVE_MISSPELLED_PROP", "BackgroundColour")
-_EXPECTED_SUGGESTION = os.environ.get("FTX_LIVE_EXPECTED_SUGGESTION", "BackgroundColor")
+_MISSPELLED_PROP = os.environ.get("FTX_LIVE_MISSPELLED_PROP", "BorderColo")
+_EXPECTED_SUGGESTION = os.environ.get("FTX_LIVE_EXPECTED_SUGGESTION", "BorderColor")
 # The builtin UI type whose property schema test_describe_type_shape introspects.
 _LIVE_TYPE = os.environ.get("FTX_LIVE_TYPE", "Rectangle")
 # A never-declared property name used to exercise the crash-safety REJECTION
