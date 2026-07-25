@@ -28,7 +28,7 @@ model — no YAML, no deploy needed to see it in the designer.
 
 3. **Runtime (only if the user wants it live):**
    `optix_restart_emulator(project)` →
-   `optix_cdp_screenshot(project, save_path="<session dir>/label.jpg")`.
+   `optix_observe(mode="screenshot", project=project, save_path="<session dir>/label.jpg")`.
 
 ## Show/hide on a condition
 

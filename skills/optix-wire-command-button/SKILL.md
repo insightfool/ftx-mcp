@@ -34,5 +34,5 @@ To run a NetLogic `[ExportMethod]` on click, pass `method_path` instead of
 - **Describe first** if unsure of the event name: `optix_describe_type("Button")`
   lists events/props; `MouseClickEvent` is the click.
 - Verify at runtime: `optix_restart_emulator` then
-  `optix_cdp_click`/`optix_cdp_screenshot` (trusted CDP events reach the Optix
+  `optix_interact(action="click", ...)`/`optix_observe(mode="screenshot", ...)` (trusted CDP events reach the Optix
   hit-tester).

@@ -31,8 +31,8 @@ That's it — the model is live in the designer immediately.
 
 ## Verify at runtime
 
-`optix_restart_emulator(project)` → `optix_cdp_screenshot(...)`;
-drive it with `optix_cdp_click` (trusted CDP events reach Optix's hit-tester
+`optix_restart_emulator(project)` → `optix_observe(mode="screenshot", ...)`;
+drive it with `optix_interact(action="click", ...)` (trusted CDP events reach Optix's hit-tester
 where synthetic clicks no-op). Switch on → label appears; off → hides.
 
 ## Why the bridge fixes the old writability caveat

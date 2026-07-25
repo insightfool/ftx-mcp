@@ -12,7 +12,7 @@ diff -> read TEXT deltas. Images are only opened as a last resort.
 ## 1. Bank routes (once per project)
 
 Build a routes file with `optix_routes_save` (one route per screen you
-care about) -- the service owns the file; never ask for host folder access. Use `optix_cdp_find_text` on visible labels to get
+care about) -- the service owns the file; never ask for host folder access. Use `optix_observe(mode="find_text", text=...)` on visible labels to get
 clickable centers, then store NORMALIZED coords (0..1) so routes survive
 window-size changes. Give important steps an `expect_text` so a broken route
 fails loudly instead of capturing the wrong screen.
@@ -32,7 +32,7 @@ Capture discipline (matters for diff quality):
 ## 3. Compare + diff
 
 After changes: `optix_cdp_sweep(routes_path, out_dir="dev/compare")`, then
-`optix_cdp_diff("dev/baseline", "dev/compare")`.
+`optix_observe(mode="diff", dir_a="dev/baseline", dir_b="dev/compare")`.
 
 Read the result as text, `text_changed` FIRST:
 - `text_changed: true` screens: `text_added` / `text_removed` IS the answer

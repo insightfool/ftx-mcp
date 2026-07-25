@@ -34,7 +34,7 @@ Fresh Windows 11 box, FactoryTalk Optix Studio already installed. ~15 min.
 6. **First authoring loop:**
    - **Author** via the bridge (`optix_bridge_add_label`, `optix_bridge_create_widget`, `optix_bridge_set_property`, ...) — writes the live in-memory model, no file races.
    - **Preview** with `optix_run_emulator` — sends F5; stages the model (saves as part of staging) and boots a local FTOptixRuntime. Polls the runtime port until it answers (`wait_ready`, default on).
-   - **Verify** with `optix_cdp_screenshot` — headless Chrome/CDP captures the rendered canvas; no URL needed, it auto-targets the runtime.
+   - **Verify** with `optix_observe(mode="screenshot", ...)` — headless Chrome/CDP captures the rendered canvas; no URL needed, it auto-targets the runtime.
    - **Iterate.** A running emulator doesn't pick up further Studio edits (separate process, its own snapshot). Interactive elements (switches, fields) can be exercised live; structural changes need `optix_stop_emulator` -> `optix_run_emulator`.
    - **Ship** from Studio's own Deploy dialog once the preview looks right — this distribution has no MCP deploy path to hardware.
 

@@ -21,10 +21,10 @@ Never deploy just to look at a change.
 
 3. **Interactive-only exercise?** (clicking a switch, typing a value into an
    already-rendered widget): no restart needed — drive it live with
-   `optix_cdp_click` / `optix_cdp_screenshot`.
+   `optix_interact(action="click", ...)` / `optix_observe(mode="screenshot", ...)`.
 
 4. **Wait for `serving:true`** in the run result (or poll status to
-   `running`), THEN `optix_cdp_screenshot`. `starting` means the port isn't
+   `running`), THEN `optix_observe(mode="screenshot", ...)`. `starting` means the port isn't
    up yet — a screenshot now hits nothing.
 
 4b. **Run reported launched but the emulator never spawns?** If
