@@ -58,7 +58,7 @@ Every value below is verified against the live bridge.
 
 5. **Verify:**
    `optix_restart_emulator(project)` →
-   `optix_cdp_screenshot(project, save_path="<your session dir>/nav-verify.jpg")`.
+   `optix_observe(mode="screenshot", project=project, save_path="<your session dir>/nav-verify.jpg")`.
    **Always pass `save_path`** and read the file — an inline base64 return makes some
    hosts try to *render* it ("visualize"), which stalls on a headless/sandboxed box.
 

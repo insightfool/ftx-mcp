@@ -57,7 +57,7 @@ ftx-mcp: http://127.0.0.1:8766/mcp (HTTP) - ✓ Connected
    ```powershell
    claude mcp list
    ```
-   Shows `✓ Connected`. Canvas verification needs no MCP registration (`optix_cdp_screenshot` / `optix_cdp_click`). Confirm the verify task with `netstat -ano | findstr :9222` (should show `LISTENING`).
+   Shows `✓ Connected`. Canvas verification needs no MCP registration (`optix_observe(mode="screenshot", ...)` / `optix_interact(action="click", ...)`). Confirm the verify task with `netstat -ano | findstr :9222` (should show `LISTENING`).
 
 ## Cross-references
 

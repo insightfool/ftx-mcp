@@ -29,7 +29,7 @@ emulator to look at it — F5 writes the live model to disk. If an edit was
 exploratory, revert it in the model BEFORE any emulator restart, or be ready
 to revert on disk afterward.
 
-## optix_cdp_screenshot: current tab vs navigate
+## optix_observe(mode="screenshot") (dedicated screenshot alias retired): current tab vs navigate
 
 Omit `navigate_url` entirely to shoot the CURRENT tab state. Passing a URL
 navigates first — which resets transient UI state (open dropdowns, dialog
