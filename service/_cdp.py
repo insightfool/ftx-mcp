@@ -18,6 +18,7 @@ transport without a live Chrome.
 from __future__ import annotations
 
 import json
+import sys
 import urllib.request
 from typing import Any
 
@@ -159,6 +160,35 @@ class CDPClient:
             kwargs["clip"] = clip
         r = self.cmd("Page.captureScreenshot", **kwargs)
         return base64.b64decode(r["data"])
+
+    def set_viewport(self, width: int, height: int, scale: float = 1.0) -> bool:
+        """Override the emulated device metrics (CDP
+        Emulation.setDeviceMetricsOverride) so the Optix WebPresentationEngine
+        renders to fill (width, height) instead of the chrome-cdp launch
+        window (--window-size=800,600 in bootstrap/install-chrome-cdp.ps1,
+        which measures as a 769x434 *visible* slice once scrollbar/chrome
+        overhead is subtracted — the source of the clipped-HMI bug this
+        exists to fix). Page.getLayoutMetrics reflects the override
+        afterward, so viewport_size() — and every click/region computed
+        from it — stays in the SAME coordinate space as a screenshot taken
+        under the same override.
+
+        Safe no-op: an older Chrome/CDP build that rejects the command (or
+        any transport hiccup) returns False instead of raising. The caller
+        proceeds with whatever window size is already in effect — a failed
+        override must never abort a screenshot/click."""
+        try:
+            self.cmd(
+                "Emulation.setDeviceMetricsOverride",
+                width=int(width), height=int(height),
+                deviceScaleFactor=float(scale), mobile=False,
+            )
+            return True
+        except CDPError as e:
+            print(f"[ftx-mcp] Emulation.setDeviceMetricsOverride failed "
+                  f"({width}x{height}@{scale}), falling back to current "
+                  f"window size: {e}", file=sys.stderr)
+            return False
 
     def viewport_size(self) -> tuple[float, float]:
         """CSS-pixel viewport size via Page.getLayoutMetrics, used to resolve

@@ -340,6 +340,11 @@ def test_cdp_session_selfheals_and_retries(cfg, monkeypatch):
             n["c"] += 1
             if n["c"] == 1:
                 raise _cdp.CDPError("no page target")
+
+        def set_viewport(self, width, height, scale=1.0):
+            # _cdp_session applies the viewport override to every session
+            # (real CDPClient.set_viewport) — this fake stands in for it.
+            return True
     monkeypatch.setattr(_cdp, "CDPClient", OneShotFail)
     monkeypatch.setattr(core, "ensure_chrome_cdp", lambda c, **k: {"state": "restarted"})
     core._cdp_session(healed)
@@ -518,6 +523,113 @@ def test_cdp_fill_invalid_submit_key(cfg, fake_cdp):
     from service import core as core_mod
     out = core_mod.cdp_fill_runtime(cfg, x=1, y=2, text="x", submit="F13")
     assert out["state"] == "failed" and out["error"] == "invalid_key"
+
+
+# ---- CDP viewport override (clipped-HMI fix: Emulation.setDeviceMetricsOverride) --
+#
+# Problem: chrome-cdp launches with --window-size=800,600, but the Optix
+# runtime's cssVisualViewport measures 769x434 (scrollbar/chrome overhead) —
+# the visible slice a raw screenshot captures, clipping the bottom/right of
+# the HMI. The fix overrides the emulated device metrics to a larger,
+# configurable size before every screenshot (default 1280x720 @ scale 1),
+# and applies the SAME override at every CDP session's open (core._cdp_session)
+# so a later, separate click call's coordinate space still matches.
+
+def test_screenshot_applies_viewport_override_before_capture(cfg, fake_cdp):
+    jpeg = b"\xff\xd8jpeg\xff\xd9"
+    ws = fake_cdp(results={"Page.captureScreenshot":
+                           {"data": base64.b64encode(jpeg).decode()}})
+    out = core.cdp_screenshot_runtime(cfg, navigate_url="")
+    assert out["state"] == "succeeded"
+    methods = [m for (m, _, _) in ws.sent]
+    assert "Emulation.setDeviceMetricsOverride" in methods
+    override_idx = methods.index("Emulation.setDeviceMetricsOverride")
+    capture_idx = methods.index("Page.captureScreenshot")
+    assert override_idx < capture_idx
+    override_params = next(
+        p for (m, p, _) in ws.sent if m == "Emulation.setDeviceMetricsOverride")
+    assert override_params == {
+        "width": cfg.cdp_viewport_width, "height": cfg.cdp_viewport_height,
+        "deviceScaleFactor": cfg.cdp_viewport_scale, "mobile": False,
+    }
+
+
+def test_screenshot_viewport_override_applied_after_navigate(cfg, fake_cdp):
+    # Auto-navigate case (navigate_url omitted, tab starts on about:blank):
+    # the override must land AFTER Page.navigate, not before — a region
+    # resolved against the pre-override viewport would be wrong.
+    jpeg = b"\xff\xd8jpeg\xff\xd9"
+    ws = fake_cdp(results=_shot_results(jpeg, current_url="about:blank"))
+    out = core.cdp_screenshot_runtime(cfg)
+    assert out["state"] == "succeeded" and out["navigated"] is True
+    methods = [m for (m, _, _) in ws.sent]
+    nav_idx = methods.index("Page.navigate")
+    capture_idx = methods.index("Page.captureScreenshot")
+    override_after_nav = [i for i, m in enumerate(methods)
+                          if m == "Emulation.setDeviceMetricsOverride" and i > nav_idx]
+    assert override_after_nav, "expected an override call after Page.navigate"
+    assert override_after_nav[0] < capture_idx
+
+
+def test_config_cdp_viewport_defaults_1280x720_scale_1(cfg):
+    assert cfg.cdp_viewport_width == 1280
+    assert cfg.cdp_viewport_height == 720
+    assert cfg.cdp_viewport_scale == 1.0
+
+
+def test_screenshot_uses_configured_viewport_values(cfg, fake_cdp):
+    custom = dataclasses.replace(
+        cfg, cdp_viewport_width=1920, cdp_viewport_height=1080,
+        cdp_viewport_scale=2.0)
+    jpeg = b"\xff\xd8jpeg\xff\xd9"
+    ws = fake_cdp(results={"Page.captureScreenshot":
+                           {"data": base64.b64encode(jpeg).decode()}})
+    out = core.cdp_screenshot_runtime(custom, navigate_url="")
+    assert out["state"] == "succeeded"
+    override_params = next(
+        p for (m, p, _) in ws.sent if m == "Emulation.setDeviceMetricsOverride")
+    assert override_params == {
+        "width": 1920, "height": 1080, "deviceScaleFactor": 2.0, "mobile": False,
+    }
+
+
+def test_screenshot_survives_viewport_override_rejected(cfg, fake_cdp):
+    # Older Chrome/CDP (or any transport hiccup) rejects the override command
+    # — set_viewport swallows it and returns False; the screenshot must still
+    # succeed at whatever size Chrome already has, never crash.
+    jpeg = b"\xff\xd8jpeg\xff\xd9"
+    ws = fake_cdp(results={
+        "Page.captureScreenshot": {"data": base64.b64encode(jpeg).decode()},
+        "Emulation.setDeviceMetricsOverride": Exception("Not supported"),
+    })
+    out = core.cdp_screenshot_runtime(cfg, navigate_url="")
+    assert out["state"] == "succeeded"
+    assert base64.b64decode(out["b64"]) == jpeg
+    # the (failed) override was still attempted
+    assert any(m == "Emulation.setDeviceMetricsOverride" for (m, _, _) in ws.sent)
+
+
+def test_click_session_also_gets_viewport_override(cfg, fake_cdp):
+    # The hard invariant: a LATER, separate click call (its own CDP session)
+    # must see the same override a screenshot call applied, or coordinates
+    # read off a screenshot land in the wrong place. core._cdp_session
+    # applies it to every session, so a bare click call gets it too.
+    ws = fake_cdp()
+    out = core.cdp_click_runtime(cfg, x=10, y=20)
+    assert out["state"] == "succeeded"
+    override_params = next(
+        p for (m, p, _) in ws.sent if m == "Emulation.setDeviceMetricsOverride")
+    assert override_params["width"] == cfg.cdp_viewport_width
+    assert override_params["height"] == cfg.cdp_viewport_height
+
+
+def test_set_viewport_returns_false_on_cdp_error(cfg, fake_cdp):
+    fake_cdp(results={"Emulation.setDeviceMetricsOverride": _cdp.CDPError("nope")})
+    sess = core._cdp_session(cfg)
+    try:
+        assert sess.set_viewport(1280, 720, 1.0) is False
+    finally:
+        sess.close()
 
 
 # ---- screenshot region clipping (S4 feature 1: optix_cdp_screenshot region) --

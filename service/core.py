@@ -333,6 +333,50 @@ def _default_studio_exe() -> Path:
 # Anything else read from the environment collapses to "blanket".
 _STUDIO_GUARD_MODES = frozenset({"blanket", "attributed"})
 
+# Default CDP emulated-device viewport (Config.cdp_viewport_width/height).
+# chrome-cdp launches with --window-size=800,600 (bootstrap/install-chrome-cdp.ps1)
+# and the Optix WebPresentationEngine renders to FILL whatever size it's given —
+# measured live: cssContentSize == the 800x600 window, but cssVisualViewport /
+# cssLayoutViewport == 769x434 (scrollbar/chrome overhead), so a screenshot at
+# the raw window size clips the bottom/right of the HMI. 1280x720 is larger
+# than the content the HMI needs at 1:1, so the override both un-clips AND
+# renders sharper (the canvas fills the given size, it doesn't just reveal more
+# of a fixed-size render).
+_CDP_VIEWPORT_DEFAULT: tuple[int, int] = (1280, 720)
+_CDP_SCALE_DEFAULT: float = 1.0
+
+
+def _parse_cdp_viewport(raw: str | None) -> tuple[int, int]:
+    """Parse OPTIX_CDP_VIEWPORT ("WIDTHxHEIGHT", e.g. "1280x720") into a
+    (width, height) int pair. Defensive by design: a missing var, wrong
+    shape ("1280"), non-numeric ("ax b"), or non-positive value falls back
+    to _CDP_VIEWPORT_DEFAULT rather than raising — a typo'd env var must
+    degrade to "screenshots look like today", never crash startup."""
+    if raw:
+        parts = raw.strip().lower().split("x")
+        if len(parts) == 2:
+            try:
+                w, h = int(parts[0]), int(parts[1])
+            except ValueError:
+                w = h = 0
+            if w > 0 and h > 0:
+                return w, h
+    return _CDP_VIEWPORT_DEFAULT
+
+
+def _parse_cdp_scale(raw: str | None) -> float:
+    """Parse OPTIX_CDP_SCALE into a positive deviceScaleFactor float.
+    Defensive: missing/non-numeric/non-positive falls back to
+    _CDP_SCALE_DEFAULT (1.0) rather than raising."""
+    if raw:
+        try:
+            scale = float(raw)
+        except ValueError:
+            scale = 0.0
+        if scale > 0:
+            return scale
+    return _CDP_SCALE_DEFAULT
+
 
 @dataclass(frozen=True)
 class Config:
@@ -430,6 +474,21 @@ class Config:
     # find_text's per-word 40-conf match filter — that gates word matching, this
     # gates "is this whole OCR pass trustworthy." OPTIX_OCR_CONF_THRESHOLD tunes it.
     ocr_conf_threshold: float = 0.60
+    # Emulated device-metrics override applied to every CDP session before any
+    # screenshot/click/OCR/route-replay (see core._cdp_session / _cdp.py
+    # CDPClient.set_viewport). Fixes runtime screenshots clipping the HMI:
+    # chrome-cdp's launch window (800x600) renders a 769x434 visible slice
+    # (scrollbar/chrome overhead) and the Optix canvas fills whatever size
+    # it's given, so the un-overridden capture is both clipped AND small.
+    # OPTIX_CDP_VIEWPORT ("WIDTHxHEIGHT") / OPTIX_CDP_SCALE tune it; malformed
+    # values fall back to 1280x720 / 1.0 (see _parse_cdp_viewport/_parse_cdp_scale).
+    # Applying it centrally in _cdp_session (rather than only in the
+    # screenshot path) is what keeps a LATER, separate click/route-replay call
+    # (its own CDP session) seeing the SAME viewport a screenshot was taken
+    # at — the hard invariant this feature depends on.
+    cdp_viewport_width: int = 1280
+    cdp_viewport_height: int = 720
+    cdp_viewport_scale: float = 1.0
 
     @classmethod
     def from_env(cls) -> Config:
@@ -448,6 +507,7 @@ class Config:
             runtime_dir: Path | None = Path(runtime_dir_env)
         else:
             runtime_dir = state_dir / "runtime"
+        cdp_vp_w, cdp_vp_h = _parse_cdp_viewport(os.environ.get("OPTIX_CDP_VIEWPORT"))
         return cls(
             projects_root=Path(os.environ.get(
                 "OPTIX_PROJECTS_ROOT",
@@ -509,6 +569,9 @@ class Config:
                 in ("1", "true", "yes", "on"),
             ocr_conf_threshold=float(
                 os.environ.get("OPTIX_OCR_CONF_THRESHOLD", "0.60")),
+            cdp_viewport_width=cdp_vp_w,
+            cdp_viewport_height=cdp_vp_h,
+            cdp_viewport_scale=_parse_cdp_scale(os.environ.get("OPTIX_CDP_SCALE")),
         )
 
 
@@ -4211,13 +4274,23 @@ def _cdp_session(cfg: Config, _heal: bool | None = None):
     retry — so screenshot/click self-recover when Chrome was closed. `_heal` is
     the internal recursion guard (the retry passes False so heal fires once).
 
+    Every CDP tool (click/type/fill/key/screenshot/ocr/find_text/sweep/
+    navigate) opens its OWN session through this one function, and each
+    session is its own CDP client connection. Applying the viewport
+    override HERE — once, right after the session is established — is what
+    keeps a screenshot's coordinate space and a LATER, separate click's
+    coordinate space identical: without it, a click call issued after a
+    screenshot call would see whatever raw window size Chrome falls back to
+    once the screenshot's session detaches. See _cdp.CDPClient.set_viewport
+    (safe no-op on failure — a rejected override never blocks the session).
+
     Seam: tests monkeypatch service._cdp.CDPClient (or _connect_ws) so this
     runs without a live Chrome.
     """
     from . import _cdp
     heal = cfg.cdp_autoheal if _heal is None else _heal
     try:
-        return _cdp.CDPClient(cfg.cdp_url)
+        sess = _cdp.CDPClient(cfg.cdp_url)
     except (_cdp.CDPError, OSError) as e:
         if heal and ensure_chrome_cdp(cfg)["state"] in (
             "ok", "opened_page", "restarted"
@@ -4226,6 +4299,9 @@ def _cdp_session(cfg: Config, _heal: bool | None = None):
         if isinstance(e, _cdp.CDPError):
             raise CDPUnavailable(str(e)) from e
         raise CDPUnavailable(f"CDP endpoint {cfg.cdp_url} unreachable: {e}") from e
+    sess.set_viewport(cfg.cdp_viewport_width, cfg.cdp_viewport_height,
+                       cfg.cdp_viewport_scale)
+    return sess
 
 
 def attach_mode(cfg: Config) -> bool:
@@ -4554,6 +4630,15 @@ def cdp_screenshot_runtime(
     After a navigation it waits settle_seconds for the Optix canvas to render
     (capturing mid-navigation fails).
 
+    Before capture, the emulated device viewport is (re)set to
+    cfg.cdp_viewport_width x cfg.cdp_viewport_height @ cfg.cdp_viewport_scale
+    (default 1280x720 @ 1, tune via OPTIX_CDP_VIEWPORT / OPTIX_CDP_SCALE) so
+    the capture isn't clipped to chrome-cdp's launch window size. A rejected
+    override (older Chrome/CDP) is a safe no-op — the capture still proceeds
+    at whatever size is in effect. This is the SAME override every other CDP
+    tool applies at session-open (see _cdp_session), so click/route-replay
+    coordinates computed from this screenshot stay valid in a later call.
+
     region: optional [x, y, w, h] clip, resolved via CDP
     Page.captureScreenshot's native `clip`. Coordinate convention: if ALL
     four values are <= 1.0 they are normalized fractions of the viewport
@@ -4578,6 +4663,16 @@ def cdp_screenshot_runtime(
             sess.reload()
             time.sleep(max(0.0, settle))
             navigated = True
+        # Reapply the viewport override after any navigation this call just
+        # did (_cdp_session already applied it once at session-open, before
+        # navigate_url was known — belt-and-suspenders in case a real
+        # navigation ever resets emulation state on some Chrome build).
+        # Deliberately AFTER navigate, BEFORE region resolution/capture: a
+        # region resolved against the pre-override viewport would be wrong,
+        # and a capture taken before the override is applied is the exact
+        # clipped-HMI bug this exists to fix.
+        sess.set_viewport(cfg.cdp_viewport_width, cfg.cdp_viewport_height,
+                           cfg.cdp_viewport_scale)
         px_region, err = _resolve_region(sess, region)
         if err is not None:
             return {

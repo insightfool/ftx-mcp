@@ -378,6 +378,52 @@ class TestConfigFromEnv:
         monkeypatch.setenv("OPTIX_OCR_CONF_THRESHOLD", "0.8")
         assert core.Config.from_env().ocr_conf_threshold == 0.8
 
+    def test_cdp_viewport_default_and_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OPTIX_CDP_VIEWPORT ('WIDTHxHEIGHT') / OPTIX_CDP_SCALE tune the
+        emulated device viewport applied before every CDP screenshot/click
+        (see core._cdp_session, core.cdp_screenshot_runtime). Default is
+        1280x720 @ scale 1 — larger than chrome-cdp's 800x600 launch window,
+        which fixes the clipped-HMI bug (see _CDP_VIEWPORT_DEFAULT)."""
+        monkeypatch.delenv("OPTIX_CDP_VIEWPORT", raising=False)
+        monkeypatch.delenv("OPTIX_CDP_SCALE", raising=False)
+        cfg = core.Config.from_env()
+        assert cfg.cdp_viewport_width == 1280
+        assert cfg.cdp_viewport_height == 720
+        assert cfg.cdp_viewport_scale == 1.0
+
+        monkeypatch.setenv("OPTIX_CDP_VIEWPORT", "1920x1080")
+        monkeypatch.setenv("OPTIX_CDP_SCALE", "2.0")
+        cfg = core.Config.from_env()
+        assert cfg.cdp_viewport_width == 1920
+        assert cfg.cdp_viewport_height == 1080
+        assert cfg.cdp_viewport_scale == 2.0
+
+    @pytest.mark.parametrize("bad_viewport", [
+        "1280",           # missing the 'x' separator
+        "axb",            # non-numeric
+        "0x720",          # zero width
+        "1280x-720",      # negative height
+        "1280x720x1",     # too many parts
+        "",                # empty
+    ])
+    def test_cdp_viewport_malformed_falls_back_to_default(
+        self, monkeypatch: pytest.MonkeyPatch, bad_viewport: str
+    ) -> None:
+        monkeypatch.setenv("OPTIX_CDP_VIEWPORT", bad_viewport)
+        cfg = core.Config.from_env()
+        assert cfg.cdp_viewport_width == 1280
+        assert cfg.cdp_viewport_height == 720
+
+    @pytest.mark.parametrize("bad_scale", ["abc", "0", "-1", ""])
+    def test_cdp_scale_malformed_falls_back_to_default(
+        self, monkeypatch: pytest.MonkeyPatch, bad_scale: str
+    ) -> None:
+        monkeypatch.setenv("OPTIX_CDP_SCALE", bad_scale)
+        cfg = core.Config.from_env()
+        assert cfg.cdp_viewport_scale == 1.0
+
     def test_studio_guard_mode_default_and_validation(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
