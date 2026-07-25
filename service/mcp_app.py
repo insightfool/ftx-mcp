@@ -2171,10 +2171,12 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         Full-frame capture (no region — you're locating something, so you don't
         know its coordinates yet). Matching is case-insensitive; a multi-word
         `text` query only matches ADJACENT words on the same tesseract line (words
-        on different lines never join). Words with OCR confidence < 40 are dropped
-        before matching. Returns {state, found, matches: [{text, confidence,
-        bbox_px: [x,y,w,h], bbox_norm: [x,y,w,h], center_px: [x,y]}], viewport: {w,
-        h}}. No match is NOT an error — found=false, matches=[]. Requires
+        on different lines never join). Words scoring below 40/100 raw are
+        dropped before matching. Returns {state, found, matches: [{text,
+        confidence, bbox_px: [x,y,w,h], bbox_norm: [x,y,w,h], center_px: [x,y]}],
+        viewport: {w, h}}. `confidence` is a fraction in [0, 1] — same scale as
+        optix_cdp_ocr / optix_cdp_read_text, so one threshold works across all
+        three. No match is NOT an error — found=false, matches=[]. Requires
         tesseract: missing binary returns state='failed',
         error='tesseract_not_installed' (same degradation contract as
         optix_cdp_ocr / optix_cdp_read_text), never raises.

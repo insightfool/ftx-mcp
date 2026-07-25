@@ -2093,6 +2093,21 @@ def _resolve_edit_content(target: Path, edit: dict, rel: str) -> tuple[bytes, di
 
     if "content" in edit:
         new_text = edit["content"]
+        # U11 round-trip guard: read_file hands back `<untrusted source="...">`
+        # -delimited content, and an agent that forgets to strip it before
+        # reusing the text writes the markers straight into the project file.
+        # The ANCHORED modes defend themselves (a wrapped anchor matches
+        # nothing and raises edit_anchor_mismatch), but full-replace has no
+        # such check — verified 2026-07-24: the wrapper landed on disk with no
+        # error at all, and would then ship in the next deploy. Refuse loudly
+        # instead. Only the exact leading marker read_file emits is rejected,
+        # so project text that merely mentions the word stays writable.
+        if new_text.lstrip().startswith('<untrusted source="'):
+            raise InvalidEdit(
+                f"edit content for {rel} still carries the <untrusted> wrapper "
+                "that read_file adds. Strip it before reusing the text — the "
+                "on-disk file holds raw content, never the markers."
+            )
         new_bytes = new_text.encode("utf-8")
         before = target.stat().st_size if target.is_file() else 0
         return new_bytes, {
@@ -2845,6 +2860,12 @@ def run_emulator(
     # file when UIA is unavailable (the post-launch process-identity check below
     # is the second layer in either case).
     tgt = resolve_active_target(cfg, bridge_pid=target_pid or None)
+    # Kept because `tgt` is REBOUND to the config-file read further down (the
+    # F5-sent-but-nothing-spawned diagnosis). Reaching that code means this
+    # guard passed, and whether it passed on a definitive live read or on the
+    # lazily-flushed file changes what the failure most likely IS — see the
+    # blocking-dialog hint below.
+    guard_source = tgt.get("source")
     if tgt.get("known") and not tgt.get("is_emulator"):
         audit(cfg, "emulator_run_refused", project=project, target=tgt.get("name"))
         live = tgt.get("source") == "uia_live"
@@ -2964,20 +2985,43 @@ def run_emulator(
                 tgt = studio_active_deployment_target(cfg)
                 file_claims_emu = tgt.get("known") and tgt.get("is_emulator")
                 result["probable_cause"] = "target_or_modal"
-                # UIA can SEE a blocking dialog the keystroke path is blind to
-                # (the deploy/credentials prompt). Name it when present, turning
-                # this from "the service cannot see dialogs" into a concrete cause.
+                # UIA can SEE a blocking dialog the keystroke path is blind to.
+                # Name it when present, turning this from "the service cannot
+                # see dialogs" into a concrete cause.
                 dialogs = studio_uia.pending_dialog(target_pid) if target_pid else []
                 if dialogs:
                     d = dialogs[0]
                     result["blocking_dialog"] = d
+                    # The advice MUST branch on how the F5 guard resolved the
+                    # target. This hint used to say the dialog was "most likely
+                    # a deploy/credentials prompt from a non-emulator target"
+                    # and to go set the dropdown to Emulator — but a live UIA
+                    # read that says non-emulator REFUSES before F5, so that is
+                    # the one case which cannot reach here. Telling a user with
+                    # a confirmed-correct dropdown to go fix the dropdown sends
+                    # them looking in the wrong place.
+                    if guard_source == "uia_live":
+                        cause = (
+                            "The toolbar target was read LIVE and is the "
+                            "Emulator, so this is NOT a target-selection "
+                            "problem — the dialog is unrelated (unsaved "
+                            "changes, a license/sign-in prompt, a build "
+                            "error). Ask the user to dismiss it and retry.")
+                    else:
+                        cause = (
+                            "The target could NOT be read live (no bridge PID, "
+                            "uiautomation unavailable, or no session-1 "
+                            "desktop); the guard fell back to Studio's "
+                            "Configuration.xml, which Studio flushes lazily and "
+                            "which may be stale. The toolbar may really be on a "
+                            "hardware target despite the file saying Emulator. "
+                            "Ask the user to check the dropdown and dismiss the "
+                            "dialog, then retry.")
                     result["hint"] = (
-                        "F5 was sent and Studio took focus, but NO emulator process "
-                        f"spawned — a dialog titled {d.get('title')!r} is open on "
-                        "Studio and is eating the keystroke (most likely a deploy/"
-                        "credentials prompt from a non-emulator target). Ask the user "
-                        "to dismiss it and set the target dropdown to Emulator, then "
-                        "retry. Do NOT retry-loop F5 — each press fires at whatever "
+                        "F5 was sent and Studio took focus, but NO emulator "
+                        f"process spawned — a dialog titled {d.get('title')!r} "
+                        f"is open on Studio and is eating the keystroke. {cause} "
+                        "Do NOT retry-loop F5 — each press fires at whatever "
                         "target is selected.")
                 else:
                     result["hint"] = (
@@ -3411,12 +3455,26 @@ def doctor(cfg: Config) -> dict:
     # wired (it is not in the public distribution) — a red deploy row on a
     # server that cannot deploy is pure confusion.
     if cfg.enable_deploy:
-        add("deploy_username", bool(cfg.deploy_username), cfg.deploy_username or "(unset)",
+        # U1: doctor sits at the `read` scope (auth.py DEFAULT_SCOPE_RULES /
+        # TOOL_SCOPES) — deliberately, because "run this first on a new box" is
+        # exactly what a low-privilege caller needs. But `read` is the whole
+        # 27-tool introspection tier, so anything printed here is readable by
+        # any agent that can list a project. deploy_password was already
+        # reduced to a boolean for that reason; username and thumbprint are now
+        # treated the same way. Doctor's question is "is this configured?",
+        # which a boolean answers completely — the literal value only matters
+        # when it is WRONG, and the `fix` string already names the env var.
+        # The thumbprint keeps a last-4 tail so an operator can still tell two
+        # certs apart without the field being the whole identifier.
+        _tp = cfg.deploy_thumbprint
+        add("deploy_username", bool(cfg.deploy_username),
+            "set" if cfg.deploy_username else "MISSING",
             "For UpdateSvc deploy: set OPTIX_DEPLOY_USERNAME to a Windows account on the target.")
         add("deploy_password", bool(os.environ.get("OPTIX_STUDIO_DEPLOYMENT_PASSWORD")),
             "set" if os.environ.get("OPTIX_STUDIO_DEPLOYMENT_PASSWORD") else "MISSING",
             "For UpdateSvc deploy: set OPTIX_STUDIO_DEPLOYMENT_PASSWORD in the environment.")
-        add("deploy_thumbprint", bool(cfg.deploy_thumbprint), cfg.deploy_thumbprint or "(unset)",
+        add("deploy_thumbprint", bool(_tp),
+            f"set (...{_tp[-4:]})" if _tp else "MISSING",
             "For UpdateSvc deploy: set OPTIX_DEPLOY_THUMBPRINT (the UpdateSvc certificate thumbprint).")
 
     try:
@@ -4592,7 +4650,15 @@ def _match_tsv_words(words: list[dict], query: str) -> list[dict]:
     consecutive word_num) joined with a single space. Words with conf < 40
     are dropped BEFORE matching — a filtered-out word breaks adjacency for
     its neighbors, so a low-confidence word inside a multi-word query
-    prevents that query from matching at all (fail-loud over guessing)."""
+    prevents that query from matching at all (fail-loud over guessing).
+
+    SCALE INVARIANT: the raw tesseract 0..100 value lives ONLY under the key
+    `conf` (word rows out of _parse_tesseract_tsv). Anything named
+    `confidence` — here and in _ocr_confidence_fields — is a fraction in
+    [0, 1]. Before U8 this returned the raw 0..100 under `confidence`, so
+    find_text reported 96.76 while its sibling OCR tools reported 0.7754 for
+    a comparable read; an agent applying one threshold to both silently got
+    it wrong. The `>= 40` filter below stays on the raw scale on purpose."""
     q = (query or "").strip()
     if not q:
         return []
@@ -4618,7 +4684,8 @@ def _match_tsv_words(words: list[dict], query: str) -> list[dict]:
         right = max(w["left"] + w["width"] for w in window)
         bottom = max(w["top"] + w["height"] for w in window)
         matches.append({
-            "text": joined, "confidence": min(w["conf"] for w in window),
+            "text": joined,
+            "confidence": round(min(w["conf"] for w in window) / 100.0, 4),
             "bbox_px": [left, top, right - left, bottom - top],
         })
     return matches
@@ -4636,12 +4703,15 @@ def cdp_find_text_runtime(
     Always a full-frame capture (no region — the point is to find where
     something is, before you know its coordinates). Matching is
     case-insensitive; a multi-word `text` is matched only against ADJACENT
-    words on the same tesseract line (see _match_tsv_words). Words with
-    confidence < 40 are dropped before matching.
+    words on the same tesseract line (see _match_tsv_words). Words scoring
+    below 40/100 raw are dropped before matching.
 
     Returns {state, found, matches: [{text, confidence, bbox_px: [x,y,w,h],
     bbox_norm: [x,y,w,h], center_px: [x,y]}], viewport: {w, h}, navigated,
-    captured_at}. No match is NOT an error: found=false, matches=[]. Tesseract
+    captured_at}. `matches[].confidence` is a fraction in [0, 1] — the same
+    scale as cdp_ocr_runtime / cdp_read_text_runtime's confidence{mean,min},
+    so one threshold reads correctly across all three.
+    No match is NOT an error: found=false, matches=[]. Tesseract
     missing => state='failed', error='tesseract_not_installed' (standard
     degradation contract, never raises).
     """
