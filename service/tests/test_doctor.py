@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 
 import pytest
 
@@ -50,3 +51,27 @@ def test_deploy_checks_reflect_config(cfg, monkeypatch):
     assert by["deploy_password"]["ok"] is False
     # deploy checks aren't required -> ready still True
     assert out["ready"] is True
+
+
+def test_deploy_checks_do_not_disclose_credential_values(cfg, monkeypatch):
+    """U1: doctor sits at the `read` scope, which is the whole 27-tool
+    introspection tier — so any agent that can list a project can read these
+    rows. `ok` answers "is it configured"; the literal username and thumbprint
+    are not disclosed. deploy_password was always handled this way; username
+    and thumbprint now match it.
+    """
+    monkeypatch.setenv("OPTIX_STUDIO_DEPLOYMENT_PASSWORD", "hunter2")
+    c = dataclasses.replace(
+        cfg, deploy_username="svc_deploy", deploy_thumbprint="A1B2C3D4E5F6")
+    out = core.doctor(c)
+    blob = json.dumps(out)
+
+    assert "svc_deploy" not in blob
+    assert "A1B2C3D4E5F6" not in blob
+    assert "hunter2" not in blob
+
+    by = {x["name"]: x for x in out["checks"]}
+    assert by["deploy_username"]["detail"] == "set"
+    assert by["deploy_password"]["detail"] == "set"
+    # last-4 tail survives so two certs stay tellable apart
+    assert by["deploy_thumbprint"]["detail"] == "set (...E5F6)"

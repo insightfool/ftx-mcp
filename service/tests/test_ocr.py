@@ -72,7 +72,7 @@ def test_ocr_returns_recognized_text(cfg, monkeypatch) -> None:
 
 
 def test_ocr_missing_binary_is_soft_failure(cfg, monkeypatch) -> None:
-    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(core, "_find_tesseract", lambda: None)
     # screenshot must NOT even be attempted when tesseract is absent
     monkeypatch.setattr(core, "cdp_screenshot_runtime",
                         lambda *a, **k: pytest.fail("should not capture"))
@@ -131,7 +131,7 @@ def test_read_text_forwards_region_to_screenshot(cfg, monkeypatch) -> None:
 
 
 def test_read_text_missing_binary_is_soft_failure(cfg, monkeypatch) -> None:
-    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(core, "_find_tesseract", lambda: None)
     # screenshot must NOT even be attempted when tesseract is absent
     monkeypatch.setattr(core, "cdp_screenshot_runtime",
                         lambda *a, **k: pytest.fail("should not capture"))
@@ -272,7 +272,9 @@ def test_match_multiword_joins_adjacent_words_same_line() -> None:
     assert len(matches) == 1
     assert matches[0]["text"] == "Start Button"
     assert matches[0]["bbox_px"] == [10.0, 10.0, 185.0, 30.0]
-    assert matches[0]["confidence"] == 92.0  # min() of the two joined words
+    # min() of the two joined words, as a [0,1] fraction (raw 92 -> 0.92):
+    # `confidence` is always a fraction, `conf` is always raw 0..100
+    assert matches[0]["confidence"] == 0.92
 
 
 def test_match_is_case_insensitive_and_finds_all_occurrences() -> None:
@@ -302,8 +304,30 @@ def test_match_no_match_returns_empty_list() -> None:
     assert core._match_tsv_words(words, "Nonexistent Label") == []
 
 
+def test_confidence_is_a_fraction_on_every_path(cfg) -> None:
+    """SCALE INVARIANT: `confidence` is ALWAYS a [0,1] fraction; the raw
+    tesseract 0..100 value is only ever under `conf`.
+
+    find_text used to leak the raw scale — it reported 96.76 where the sibling
+    OCR tools reported 0.7754 for a comparable read, so one threshold applied
+    across the family silently mis-graded the word-box path. Validated live on
+    the VM 2026-07-24.
+    """
+    words = core._parse_tesseract_tsv(_TSV_FIXTURE)
+
+    for m in core._match_tsv_words(words, "Start Button"):
+        assert 0.0 <= m["confidence"] <= 1.0, m
+
+    agg = core._ocr_confidence_fields(cfg, words)
+    assert 0.0 <= agg["confidence"]["mean"] <= 1.0
+    assert 0.0 <= agg["confidence"]["min"] <= 1.0
+
+    # the raw scale still exists, under its own key, for the >= 40 filter
+    assert any(w["conf"] > 1.0 for w in words)
+
+
 def test_find_text_missing_binary_is_soft_failure(cfg, monkeypatch) -> None:
-    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(core, "_find_tesseract", lambda: None)
     out = core.cdp_find_text_runtime(cfg, "Start")
     assert out["state"] == "failed"
     assert out["error"] == "tesseract_not_installed"

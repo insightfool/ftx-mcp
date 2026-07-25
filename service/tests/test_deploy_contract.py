@@ -223,6 +223,41 @@ def test_edits_land_on_disk_and_appear_in_files_written(
     assert (project_dir / "ProjectFiles" / "Logic.cs").read_text() == "// stub\n"
 
 
+def test_edits_reject_unstripped_untrusted_wrapper(
+    cfg: core.Config, projects_root: Path
+) -> None:
+    """U11 round-trip: read_file delimits content as `<untrusted source=...>`.
+    An agent that reuses that text without stripping would write the markers
+    into the project file — silently, since full-replace has no anchor to
+    mismatch on. Verified on the VM 2026-07-24: the wrapper landed on disk with
+    no error and would have shipped in the next deploy. Refuse it instead.
+    """
+    make_project(projects_root, "Alpha")
+    runner = make_fake_runner(make_export_handler())
+    wrapped = core._untrusted("Type: Panel\n", "read_file")
+    req = core.DeployRequest(
+        edits=[{"path": "Nodes/UI/screen.yaml", "content": wrapped}]
+    )
+    with pytest.raises(core.InvalidEdit, match="untrusted"):
+        core.deploy(cfg, "Alpha", req, runner=runner, runtime=_NoopRuntime())
+
+
+def test_edits_allow_content_that_merely_mentions_untrusted(
+    cfg: core.Config, projects_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard keys on the exact leading marker, so ordinary project text
+    that happens to contain the word stays writable."""
+    project_dir = make_project(projects_root, "Alpha")
+    monkeypatch.setattr(core, "_tcp_probe", lambda *a, **kw: True)
+    runner = make_fake_runner(make_export_handler())
+    body = "Type: Panel\nDescription: handles untrusted source data\n"
+    req = core.DeployRequest(
+        edits=[{"path": "Nodes/UI/screen.yaml", "content": body}]
+    )
+    core.deploy(cfg, "Alpha", req, runner=runner, runtime=_NoopRuntime())
+    assert (project_dir / "Nodes" / "UI" / "screen.yaml").read_text() == body
+
+
 def test_edits_reject_path_traversal(cfg: core.Config, projects_root: Path) -> None:
     make_project(projects_root, "Alpha")
     runner = make_fake_runner(make_export_handler())

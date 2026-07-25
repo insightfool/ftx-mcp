@@ -310,6 +310,50 @@ def test_run_emulator_no_spawn_names_blocking_dialog(
     assert "Deploy credentials" in out["hint"] and "retry-loop" in out["hint"]
 
 
+def _no_spawn_hint(cfg, projects_root, monkeypatch, *, live: bool) -> str:
+    """Drive the F5-sent-but-nothing-spawned path with a dialog visible, with
+    the target guard resolving either live (uia) or from the config file."""
+    from service import studio_uia
+    import dataclasses
+    _proj(projects_root)
+    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "FOCUSED=True PID=1"))
+    monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_bridge_owner_pid", lambda cfg, runner=None: 4242)
+    monkeypatch.setattr(core, "emulator_status",
+                        lambda c, runner=None: {"state": "not_running"})
+    monkeypatch.setattr(studio_uia, "pending_dialog",
+                        lambda pid: [{"title": "Device access", "text": "x"}])
+    monkeypatch.setattr(core, "resolve_active_target", lambda cfg, bridge_pid=None: {
+        "known": True, "is_emulator": True, "name": "Emulator",
+        "source": "uia_live" if live else "C:/.../Configuration.xml"})
+    cfg2 = dataclasses.replace(cfg, runtime_test_port=65431)
+    out = core.run_emulator(cfg2, "Alpha", wait_ready=True, ready_timeout=0.1,
+                            runner=runner)
+    return out["hint"]
+
+
+def test_no_spawn_hint_does_not_blame_the_dropdown_when_read_live(
+    cfg, projects_root, monkeypatch
+) -> None:
+    """A live read that says non-emulator REFUSES before F5, so reaching this
+    path with source=uia_live means the dropdown is CONFIRMED correct. The hint
+    used to tell the user to go set it to Emulator — sending someone with an
+    already-correct dropdown to look in the wrong place."""
+    hint = _no_spawn_hint(cfg, projects_root, monkeypatch, live=True)
+    assert "NOT a target-selection problem" in hint
+    assert "unrelated" in hint
+
+
+def test_no_spawn_hint_flags_possible_staleness_on_the_file_fallback(
+    cfg, projects_root, monkeypatch
+) -> None:
+    """Without a live read the guard trusted Configuration.xml, which Studio
+    flushes lazily — so here the dropdown genuinely IS worth checking."""
+    hint = _no_spawn_hint(cfg, projects_root, monkeypatch, live=False)
+    assert "could NOT be read live" in hint
+    assert "stale" in hint and "dropdown" in hint
+
+
 def test_run_emulator_no_spawn_no_dialog_visible(
     cfg, projects_root, monkeypatch
 ) -> None:

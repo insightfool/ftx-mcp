@@ -758,7 +758,7 @@ def test_navigate_tesseract_absent_skips_checks_but_runs_all_clicks(
         ]}
     })
     ws = fake_cdp(results={"Page.getLayoutMetrics": _layout_metrics(1000, 800)})
-    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(core, "_find_tesseract", lambda: None)
 
     out = core.cdp_navigate_runtime(
         cfg, route="r1", routes_path=str(routes_file), navigate_url="")
@@ -861,7 +861,7 @@ def test_sweep_happy_path_writes_files_and_manifest(
         "Page.getLayoutMetrics": _layout_metrics(1000, 800),
         "Page.captureScreenshot": {"data": base64.b64encode(jpeg).decode()},
     })
-    monkeypatch.setattr(shutil, "which", lambda name: None)  # no tesseract here
+    monkeypatch.setattr(core, "_find_tesseract", lambda: None)  # no tesseract here
     out_dir = tmp_path / "out"
 
     out = core.cdp_sweep_runtime(cfg, routes_path=str(routes_file), out_dir=str(out_dir))
@@ -900,7 +900,7 @@ def test_sweep_route_subset_in_given_order(cfg, fake_cdp, tmp_path: Path, monkey
         "Page.getLayoutMetrics": _layout_metrics(1000, 800),
         "Page.captureScreenshot": {"data": base64.b64encode(jpeg).decode()},
     })
-    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(core, "_find_tesseract", lambda: None)
     out_dir = tmp_path / "out"
     out = core.cdp_sweep_runtime(
         cfg, routes_path=str(routes_file), out_dir=str(out_dir), routes=["c", "a"])
@@ -952,7 +952,7 @@ def test_sweep_warmup_discards_extra_capture(cfg, fake_cdp, tmp_path: Path, monk
         "Page.getLayoutMetrics": _layout_metrics(1000, 800),
         "Page.captureScreenshot": {"data": base64.b64encode(jpeg).decode()},
     })
-    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(core, "_find_tesseract", lambda: None)
     out = core.cdp_sweep_runtime(
         cfg, routes_path=str(routes_file), out_dir=str(tmp_path / "out_warm"),
         warmup=True)
@@ -971,7 +971,7 @@ def test_sweep_no_warmup_single_capture(cfg, fake_cdp, tmp_path: Path, monkeypat
         "Page.getLayoutMetrics": _layout_metrics(1000, 800),
         "Page.captureScreenshot": {"data": base64.b64encode(jpeg).decode()},
     })
-    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(core, "_find_tesseract", lambda: None)
     out = core.cdp_sweep_runtime(
         cfg, routes_path=str(routes_file), out_dir=str(tmp_path / "out_nowarm"),
         warmup=False)
@@ -1015,7 +1015,7 @@ def test_sweep_per_route_capture_error_continues(cfg, fake_cdp, tmp_path: Path, 
         "Page.getLayoutMetrics": _layout_metrics(1000, 800),
         "Page.captureScreenshot": {"data": base64.b64encode(jpeg).decode()},
     })
-    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(core, "_find_tesseract", lambda: None)
     out_dir = tmp_path / "out_err"
     out = core.cdp_sweep_runtime(cfg, routes_path=str(routes_file), out_dir=str(out_dir))
     assert out["state"] == "succeeded"
@@ -1065,7 +1065,7 @@ def test_sweep_cdp_transport_error_mid_sweep_continues(cfg, tmp_path: Path, monk
                         lambda url, timeout=5.0: "ws://x/devtools/page/1")
     monkeypatch.setattr(_cdp_mod, "_connect_ws", lambda url, timeout=30.0: ws)
     monkeypatch.setattr(core.time, "sleep", lambda s: None)
-    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(core, "_find_tesseract", lambda: None)
 
     out = core.cdp_sweep_runtime(
         cfg, routes_path=str(routes_file), out_dir=str(tmp_path / "out_flaky"))

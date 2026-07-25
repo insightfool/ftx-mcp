@@ -9,7 +9,23 @@ from typing import Any
 
 import pytest
 
-from service import core
+from service import core, studio_guard
+
+
+@pytest.fixture(autouse=True)
+def _no_host_processes(monkeypatch: pytest.MonkeyPatch):
+    """Isolate the suite from the host's real process table.
+
+    The corruption guard (studio_guard) refuses project reads/writes while
+    FTOptixStudio.exe is running. On a Windows dev box that is the NORMAL
+    state, so without this the guard fires against real machine state and
+    ~25 unrelated tests fail. Tests that exercise the guard itself patch
+    `_scan` again in the test body, which wins over this default.
+    """
+    monkeypatch.setattr(studio_guard, "_scan", lambda: [])
+    studio_guard.reset_cache()
+    yield
+    studio_guard.reset_cache()
 
 
 @dataclass

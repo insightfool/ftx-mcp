@@ -43,6 +43,35 @@ class TestAdd:
         assert rec["hash"] == auth.hash_secret(result["bearer"])
         assert "bearer" not in rec  # never persist the secret
 
+    def test_add_tolerates_a_utf8_bom_on_stdin(self) -> None:
+        """PowerShell 5.1 piping to a native process emits a UTF-8 BOM when the
+        console code page is 65001, so an EMPTY first-install payload arrives as
+        '\\ufeff\\r\\n'. str.strip() does not remove U+FEFF (it is not
+        whitespace), so the very first `issue-token.ps1` on a UTF-8-mode box
+        died with "stdin is not valid JSON: Unexpected UTF-8 BOM".
+        Reproduced on the VM 2026-07-24 under CP 65001.
+        """
+        rc, out, err = _run(
+            ["add", "--label", "utf8box", "--scope", "author"],
+            stdin="﻿\r\n",
+        )
+        assert rc == 0, err
+        result = json.loads(out)
+        assert result["scope"] == "author"
+        assert len(result["payload"]["tokens"]) == 1
+
+    def test_add_tolerates_a_bom_on_a_populated_payload(self) -> None:
+        """Same wrapper, but the box already had tokens — the BOM precedes real
+        JSON rather than an empty string."""
+        rec_a, _ = self._make_existing_record(label="laptop")
+        existing = json.dumps({"tokens": [auth.serialize_record(rec_a)]})
+        rc, out, err = _run(
+            ["add", "--label", "second", "--scope", "read"],
+            stdin="﻿" + existing,
+        )
+        assert rc == 0, err
+        assert len(json.loads(out)["payload"]["tokens"]) == 2
+
     def test_add_appends_to_existing_payload(self) -> None:
         rec_a, _ = self._make_existing_record(label="laptop")
         existing = json.dumps({"tokens": [auth.serialize_record(rec_a)]})
