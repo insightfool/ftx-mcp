@@ -2867,33 +2867,34 @@ def make_mcp(cfg: core.Config) -> FastMCP:
                    "optix_set_property"):
             mcp._tool_manager._tools.pop(_t, None)
 
-    # U14 consolidation: the 10 optix_cdp_* primitives folded into
-    # optix_observe / optix_interact stay registered as DEPRECATED thin aliases
-    # (they delegate to the same core.* functions) so no existing config
-    # breaks. Mark each with a deprecation prefix on its client-visible
-    # description, and gate them behind FTXMCP_LEGACY_TOOLS: default (unset /
-    # any value other than "0") keeps both consolidated + aliases;
-    # FTXMCP_LEGACY_TOOLS=0 suppresses the aliases, exposing the consolidated
-    # surface only. optix_cdp_sweep / optix_cdp_restart are NOT aliases — they
-    # are the batch/lifecycle tools kept as-is and always registered.
+    # U14 consolidation: the 10 optix_cdp_* primitives were folded into
+    # optix_observe / optix_interact. The DEFAULT surface is now
+    # consolidated-only — the aliases are NOT registered. Setting
+    # FTXMCP_LEGACY_TOOLS=1 is the opt-in escape hatch for existing configs:
+    # it restores the 10 deprecated aliases (each delegating to the same
+    # core.* functions) with a deprecation prefix on its client-visible
+    # description. Any other value (unset / "0" / anything != "1") keeps the
+    # consolidated-only default and pops the aliases. optix_cdp_sweep /
+    # optix_cdp_restart are NOT aliases — they are the batch/lifecycle tools
+    # kept as-is and always registered.
     _CDP_ALIASES = (
         "optix_cdp_screenshot", "optix_cdp_ocr", "optix_cdp_read_text",
         "optix_cdp_find_text", "optix_cdp_diff", "optix_cdp_click",
         "optix_cdp_fill", "optix_cdp_type", "optix_cdp_key",
         "optix_cdp_navigate",
     )
-    _legacy_suppressed = os.environ.get("FTXMCP_LEGACY_TOOLS") == "0"
+    _legacy_enabled = os.environ.get("FTXMCP_LEGACY_TOOLS") == "1"
     for _alias in _CDP_ALIASES:
         _tool = mcp._tool_manager._tools.get(_alias)
         if _tool is None:
             continue
-        if _legacy_suppressed:
-            mcp._tool_manager._tools.pop(_alias, None)
-        else:
+        if _legacy_enabled:
             _tool.description = (
                 "(deprecated: use optix_observe/optix_interact) "
                 + (_tool.description or "")
             )
+        else:
+            mcp._tool_manager._tools.pop(_alias, None)
 
     # Offload the tools that shell out to Studio / PowerShell / Chrome-CDP onto a
     # worker thread. The official FastMCP runs a sync `def` tool fn DIRECTLY on the
