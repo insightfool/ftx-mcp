@@ -409,8 +409,64 @@ public class StudioMCPBridge : BaseNetLogic
                 status = "500 Internal Server Error";
             }
 
+            // U21: one Output line per MUTATION (never for reads — they burst).
+            // Sited here, after the dispatch chain and the catch, because this
+            // is the single point where every route's FINAL body passes on its
+            // way to the one WriteResponse — including the internal-error path.
+            MaybeLogMutation(firstLine, body);
+
             WriteResponse(stream, status, body);
         }
+    }
+
+    // ---- U21: per-mutation Output logging -----------------------------------
+
+    // Routes that MUTATE the model — the only ones that log. Keep in sync with
+    // the POST branches in the dispatcher (model/*, ui/widget, i18n/translation,
+    // setup/web-engine, and node/{property,bind,alias,move,convert-to-type,
+    // reorder,delete,event,attach-expression}). Read routes are deliberately
+    // absent, and so is POST /bridge/expr/validate — a POST by shape but a pure
+    // read (it validates, mutates nothing).
+    private static readonly string[] _MutationRoutes = {
+        "POST /bridge/model/", "POST /bridge/ui/widget",
+        "POST /bridge/i18n/translation", "POST /bridge/setup/web-engine",
+        "POST /bridge/node/property", "POST /bridge/node/bind",
+        "POST /bridge/node/alias", "POST /bridge/node/move",
+        "POST /bridge/node/convert-to-type", "POST /bridge/node/reorder",
+        "POST /bridge/node/delete", "POST /bridge/node/event",
+        "POST /bridge/node/attach-expression",
+    };
+
+    private void MaybeLogMutation(string firstLine, string body)
+    {
+        try
+        {
+            bool isMutation = false;
+            foreach (var r in _MutationRoutes)
+                if (firstLine.StartsWith(r)) { isMutation = true; break; }
+            if (!isMutation) return;
+            // ErrorJson (and the did_you_mean builder) always start
+            // {"error":{"code":... ; anything else is a success body
+            // (PropOkJson / create-node builders).
+            bool ok = !string.IsNullOrEmpty(body) && !body.StartsWith("{\"error\"");
+            Log.Info("StudioBridge", (ok ? "OK " : "FAIL ") + OpLabel(firstLine));
+        }
+        catch { /* logging must NEVER break a write */ }
+    }
+
+    private string OpLabel(string firstLine)
+    {
+        // "<VERB> <route>" + path=/name= query params. NEVER the `value` param —
+        // it can be large and is untrusted content.
+        var parts = firstLine.Split(' ');
+        string route = parts.Length >= 2 ? parts[0] + " " + parts[1].Split('?')[0]
+                                         : firstLine;
+        var sb = new StringBuilder(route);
+        string p = QueryParam(firstLine, "path");
+        string nm = QueryParam(firstLine, "name");
+        if (!string.IsNullOrEmpty(p)) sb.Append(" path=").Append(p);
+        if (!string.IsNullOrEmpty(nm)) sb.Append(" name=").Append(nm);
+        return sb.ToString();
     }
 
     // ---- endpoint bodies ----------------------------------------------------
