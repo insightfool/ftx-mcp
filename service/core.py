@@ -1814,30 +1814,39 @@ def bridge_validate_ops(
 
 
 def _normalize_edit_op(op: dict) -> dict:
-    """Reconcile attach_expression's property-name field across the seam.
+    """Reconcile the field-name seams between the per-noun bridge tools, the
+    batch op-spec, and the C# validator, so an op composed with EITHER surface's
+    naming applies cleanly. Two aliases, both from live-2026-07-25 detours:
 
-    The bridge validator (StudioMCPBridge ValidateOnNode) treats
-    set_property / bind / attach_expression as ONE shape targeting a property
-    `name`, so it refuses an attach_expression op that carries only
-    `prop_name`. The Python applier, however, reads `prop_name` (the op-spec
-    field name). An op with just one of the two therefore validates-but-can't-
-    apply or applies-but-won't-validate — the batch dies `partial` mid-apply
-    (found live 2026-07-25 building a segmented tank indicator).
+    * `node_path` -> `path`: the standalone tools name the target `node_path`
+      (optix_bridge_set_property(node_path=...), optix_bridge_attach_expression,
+      ...) but the batch ops AND the C# validator read `path`. An agent carrying
+      the per-noun spelling into a batch had every such op rejected.
+    * attach_expression `name` <-> `prop_name`: the C# validator (ValidateOnNode)
+      keys the property on `name` (one shape with set_property/bind) while the
+      Python applier reads `prop_name`. An op with only one spelling
+      validates-but-can't-apply or vice versa (state="partial" mid-apply).
 
-    Coalesce them: whichever spelling the caller used, populate BOTH with the
-    same value so the validator (`name`) and the applier (`prop_name`) are each
-    satisfied. `name` wins if both are present. Returns a shallow copy — the
-    caller's op dicts are never mutated. Non-attach_expression ops pass
-    through untouched. REGRESSION-CITE: keep validator (`name`, .cs) and
-    applier (`prop_name`, _BRIDGE_EDIT_OPS) reconciled here or in a bridge
-    rebuild — do not split them again."""
-    if not isinstance(op, dict) or op.get("op") != "attach_expression":
+    Coalesce so both spellings are present; `name` wins for attach_expression.
+    Returns the SAME object when nothing needs fixing (identity preserved), else
+    a shallow copy — caller op dicts are never mutated. REGRESSION-CITE: keep
+    these seams reconciled here (or in a bridge rebuild) — do not re-split the
+    validator/applier/tool field names."""
+    if not isinstance(op, dict):
         return op
-    prop = op.get("name") or op.get("prop_name")
-    if not prop:
+    needs_path = bool(op.get("node_path")) and not op.get("path")
+    prop = None
+    if op.get("op") == "attach_expression":
+        prop = op.get("name") or op.get("prop_name")
+        if prop and op.get("name") == prop and op.get("prop_name") == prop:
+            prop = None  # already coalesced
+    if not needs_path and not prop:
         return op
     out = dict(op)
-    out["name"] = out["prop_name"] = prop
+    if needs_path:
+        out["path"] = op["node_path"]
+    if prop:
+        out["name"] = out["prop_name"] = prop
     return out
 
 

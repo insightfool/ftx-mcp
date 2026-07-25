@@ -890,6 +890,24 @@ def test_normalize_edit_op_passes_through_other_ops_and_never_mutates():
     assert core._normalize_edit_op(empty) is empty
 
 
+def test_normalize_edit_op_aliases_node_path_to_path():
+    """The per-noun tools name the target `node_path`; batch ops + the C#
+    validator read `path`. An op carrying only `node_path` must get `path` too."""
+    out = core._normalize_edit_op(
+        {"op": "set_property", "node_path": "UI/M/R", "name": "Width", "value": "10"})
+    assert out["path"] == "UI/M/R" and out["node_path"] == "UI/M/R"
+    # attach_expression composed with node_path + prop_name gets path AND name
+    ax = core._normalize_edit_op(
+        {"op": "attach_expression", "node_path": "UI/M/R", "prop_name": "FillColor",
+         "expression": "{0}", "sources": "Model/x"})
+    assert ax["path"] == "UI/M/R"
+    assert ax["name"] == "FillColor" and ax["prop_name"] == "FillColor"
+    # explicit path present -> node_path ignored, op passes through untouched
+    both = {"op": "set_property", "path": "UI/M/R", "node_path": "OTHER",
+            "name": "W", "value": "1"}
+    assert core._normalize_edit_op(both) is both
+
+
 def test_bridge_edit_treats_a_missing_endpoint_as_unavailable(alpha, monkeypatch):
     """An older bridge answers the unknown route with not_found. That must raise
     BridgeUnavailable — never be mistaken for 'validated clean' and applied."""
