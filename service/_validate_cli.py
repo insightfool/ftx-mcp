@@ -185,6 +185,18 @@ def _print_human(report: dict[str, Any], oracle: dict[str, Any] | None) -> None:
                 f"oracle: export returncode={oracle['returncode']}, "
                 f"{len(oracle['staged_files'])} staged file(s){note}"
             )
+            # Surface the source-mutation answer in human mode too — it is the
+            # reason the snapshot exists, and it was previously only visible in
+            # --json. Silence here would read as "no mutation" whether or not
+            # the check ran.
+            if oracle.get("source_mutated"):
+                changed = oracle.get("source_changed_files") or []
+                print(
+                    f"oracle: !! SOURCE TREE MUTATED by export "
+                    f"({len(changed)} file(s) changed): {', '.join(changed[:5])}"
+                )
+            elif "source_mutated" in oracle:
+                print("oracle: source tree unchanged by export")
         else:
             print(f"oracle: {state} ({oracle.get('reason', '')})")
 
@@ -200,7 +212,36 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
     oracle: dict[str, Any] | None = None
     if args.oracle:
-        oracle = run_export_oracle(project_dir, _resolve_studio_exe())
+        # Do NOT hand a project the static pass already rejected to Studio's
+        # export. Observed on the VM 2026-07-25 with a deliberately malformed
+        # Nodes/UI/UI.yaml: export cannot open the project, so the spawned Studio
+        # raises an INTERACTIVE modal ("An error occurred while opening the
+        # current project. Do you want to attempt to open the project anyway (a
+        # backup will be created before proceeding)?") and blocks there until the
+        # 300s timeout. Three reasons that is worse than it sounds:
+        #   * unattended (cron/CI/headless) there is nobody to dismiss it, so
+        #     every invocation on a broken tree stalls for the full timeout;
+        #   * the affirmative button CREATES A BACKUP — i.e. the one escape a
+        #     human is most likely to click MUTATES the source tree, defeating
+        #     the property run_export_oracle's snapshot exists to guarantee;
+        #   * if the process is killed while the modal is up, the finally-block
+        #     never runs and the staging dir leaks.
+        # The oracle also cannot tell us anything new here: the static pass
+        # already named the file and line. So skip it and say why.
+        if not report.get("ok"):
+            oracle = {
+                "oracle": "skipped",
+                "reason": (
+                    "static validation failed; the export oracle was NOT run. "
+                    "Studio cannot open a malformed project and would block on "
+                    "an interactive 'open anyway (a backup will be created)' "
+                    "modal until the timeout. Fix the errors above, then re-run "
+                    "with --oracle."
+                ),
+                "static_error_count": len(report.get("errors") or []),
+            }
+        else:
+            oracle = run_export_oracle(project_dir, _resolve_studio_exe())
 
     if args.json:
         out: dict[str, Any] = dict(report)

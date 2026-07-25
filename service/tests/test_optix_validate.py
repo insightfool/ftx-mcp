@@ -241,3 +241,83 @@ def test_cli_oracle_unavailable_when_no_studio(
     assert rc == 0
     out = capsys.readouterr().out
     assert "oracle_unavailable" in out
+
+
+def test_cli_skips_the_oracle_when_static_validation_failed(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+):
+    """--oracle must NOT hand a project the static pass already rejected to
+    Studio's export.
+
+    Observed on the VM 2026-07-25: export cannot open a malformed project, so the
+    spawned Studio raises an INTERACTIVE "open anyway (a backup will be created)"
+    modal and blocks until the 300s timeout. Unattended that is a guaranteed
+    stall, and the affirmative button MUTATES the source tree — defeating the very
+    property the snapshot guard exists to verify. The oracle also cannot add
+    anything: the static pass already named the file and line.
+
+    A boom() resolver proves the oracle was never even reached.
+    """
+    def boom():  # pragma: no cover - must not be called
+        raise AssertionError("the oracle ran on a statically-invalid project")
+
+    monkeypatch.setattr(_validate_cli, "_resolve_studio_exe", boom)
+    proj = tmp_path / "Proj"
+    proj.mkdir()
+    (proj / "Proj.optix").write_text("fake")
+    (proj / "Nodes").mkdir()
+    (proj / "Nodes" / "bad.yaml").write_text("!!! not: valid yaml\n  [unclosed\n")
+
+    rc = _validate_cli.main(["validate", str(proj), "--oracle", "--json"])
+
+    assert rc == 1, "a statically-invalid project must still exit non-zero"
+    out = capsys.readouterr().out
+    assert '"oracle": "skipped"' in out
+    assert "static validation failed" in out
+    assert "static_error_count" in out
+
+
+def test_cli_still_runs_the_oracle_when_static_validation_passed(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+):
+    """The gate must not swallow the oracle on a CLEAN project — it only skips
+    when the static pass already failed."""
+    called: list[bool] = []
+
+    def fake_oracle(project_dir, studio_exe):
+        called.append(True)
+        return {"oracle": "ran", "returncode": 0, "staged_files": [],
+                "stdout_tail": "", "stderr_tail": "", "optix_file": "Proj.optix",
+                "source_mutated": False, "source_changed_files": []}
+
+    monkeypatch.setattr(_validate_cli, "_resolve_studio_exe", lambda: None)
+    monkeypatch.setattr(_validate_cli, "run_export_oracle", fake_oracle)
+    proj = tmp_path / "Proj"
+    proj.mkdir()
+    (proj / "Proj.optix").write_text("fake")
+    (proj / "Nodes").mkdir()
+    (proj / "Nodes" / "m.yaml").write_text(_clean_yaml())
+
+    rc = _validate_cli.main(["validate", str(proj), "--oracle", "--json"])
+
+    assert rc == 0 and called == [True]
+
+
+def test_human_output_surfaces_the_source_mutation_answer(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    """source_mutated was only visible in --json; in human mode silence read as
+    "no mutation" whether or not the check had run."""
+    report = {"ok": True, "errors": [], "warnings": []}
+
+    _validate_cli._print_human(report, {
+        "oracle": "ran", "returncode": 0, "staged_files": ["a"],
+        "source_mutated": True, "source_changed_files": ["Nodes/UI/UI.yaml"]})
+    out = capsys.readouterr().out
+    assert "SOURCE TREE MUTATED" in out and "Nodes/UI/UI.yaml" in out
+
+    _validate_cli._print_human(report, {
+        "oracle": "ran", "returncode": 0, "staged_files": ["a"],
+        "source_mutated": False, "source_changed_files": []})
+    out = capsys.readouterr().out
+    assert "source tree unchanged" in out
