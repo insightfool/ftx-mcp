@@ -204,7 +204,14 @@ def test_cli_validate_fails_on_bad_guid(tmp_path: Path, capsys: pytest.CaptureFi
     assert "FAIL" in out
 
 
-def test_cli_oracle_flag_unavailable_on_linux(tmp_path: Path, capsys: pytest.CaptureFixture):
+def test_cli_oracle_unavailable_when_no_studio(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+):
+    # Force the studio_exe resolver to miss so the oracle path returns
+    # oracle_unavailable on ANY platform. Without this the test only held on
+    # non-Windows: on a real Windows box with Studio installed _resolve_studio_exe
+    # finds it and the oracle would actually attempt an export (not this test's job).
+    monkeypatch.setattr(_validate_cli, "_resolve_studio_exe", lambda: None)
     proj = tmp_path / "Proj"
     proj.mkdir()
     (proj / "Proj.optix").write_text("fake")
