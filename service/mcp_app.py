@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 import time
-from typing import Any
+from typing import Any, Literal
 
 import anyio
 from mcp.server.fastmcp import FastMCP
@@ -2506,6 +2507,232 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return core.ensure_chrome_cdp(cfg, allow_restart=allow_restart)
 
+    # ---- consolidated CDP surface (U14) --------------------------------
+    # optix_observe / optix_interact collapse the 12 optix_cdp_* tools into a
+    # mode/action-discriminated pair so an agent sees ~4 CDP tools instead of
+    # 12 (the 10 read/interact primitives folded in here, plus the two batch/
+    # lifecycle tools optix_cdp_sweep / optix_cdp_restart kept as-is). The 10
+    # folded originals stay registered as DEPRECATED thin aliases (same core.*
+    # delegation) behind FTXMCP_LEGACY_TOOLS so no existing config breaks; set
+    # FTXMCP_LEGACY_TOOLS=0 to expose the consolidated surface only. Schema uses
+    # a plain Literal discriminator + per-branch optional params rather than a
+    # nested pydantic discriminated union: FastMCP builds the input schema from
+    # the raw signature, and a flat param set with a runtime valid-vocab nudge
+    # is the robust-and-shipping shape (see the invalid-mode branch).
+    _OBSERVE_MODES = ("screenshot", "ocr", "read_text", "find_text", "diff")
+    _INTERACT_ACTIONS = ("click", "fill", "type", "key", "navigate")
+
+    @mcp.tool(annotations=_RO)
+    def optix_observe(
+        mode: Literal["screenshot", "ocr", "read_text", "find_text", "diff"],
+        # screenshot / read_text
+        region: list[float] | None = None,
+        save_path: str | None = None, quality: int = 65,
+        fresh: bool = False, return_image: bool = False,
+        # ocr / read_text
+        psm: int = 6,
+        # find_text
+        text: str | None = None,
+        # diff
+        dir_a: str | None = None, dir_b: str | None = None,
+        threshold: float = 2.0,
+        # shared CDP-capture params
+        navigate_url: str | None = None, settle_seconds: float | None = None,
+    ):
+        """Read-side capture of the running Optix HMI via CDP — ONE tool, pick a
+        `mode`. Consolidates the optix_cdp_screenshot / _ocr / _read_text /
+        _find_text / _diff family; the per-mode tools remain as deprecated
+        aliases (FTXMCP_LEGACY_TOOLS).
+
+        mode:
+          - "screenshot" — full-canvas (or `region`) JPEG; THE visual-verify
+            path. Writes to `save_path` (temp if omitted) and returns the
+            `path`; `return_image=true` ALSO returns the capture as typed MCP
+            image content so the model sees it inline (no file round-trip).
+            `fresh=true` forces a reload before capture. Honors `quality`.
+          - "ocr" — tesseract text read-back of the whole canvas (headless
+            fallback when no vision model). Honors `psm`.
+          - "read_text" — tesseract OCR of a `region` (or full frame): the cheap
+            zero-vision "does it say X" check. Honors `region`, `psm`.
+          - "find_text" — locate `text` on the canvas (word boxes + clickable
+            centers) to drive a click or build a route. Requires `text`.
+          - "diff" — compare two optix_cdp_sweep capture dirs screen-by-screen
+            (pure file compare, no CDP). Requires `dir_a`, `dir_b`; honors
+            `threshold`.
+
+        `region` uses the shared convention: all four values <= 1.0 are
+        normalized viewport fractions, any value > 1 is absolute pixels. An
+        unknown `mode` returns a structured error naming the valid modes rather
+        than raising.
+
+        Use this when:
+          - reading anything BACK from the live canvas — a screenshot to verify
+            a deploy, an OCR check that a label says X, locating a control, or a
+            visual-regression diff
+          - you want a single read tool instead of remembering five CDP names
+
+        Do NOT use this when:
+          - you need to CHANGE the runtime (click/fill/type/key/navigate) —
+            that's optix_interact
+          - the chrome-cdp task isn't running (modes return cdp_unavailable; run
+            optix_doctor)
+        """
+        if mode not in _OBSERVE_MODES:
+            return {
+                "state": "failed", "error": "bad_mode",
+                "message": (f"unknown mode {mode!r}; valid modes: "
+                            f"{', '.join(_OBSERVE_MODES)}"),
+                "valid_modes": list(_OBSERVE_MODES),
+            }
+        if mode == "screenshot":
+            sp = save_path
+            if not sp:
+                import tempfile
+                import time as _t
+                d = os.path.join(tempfile.gettempdir(), "ftx-cdp-screenshots")
+                os.makedirs(d, exist_ok=True)
+                sp = os.path.join(d, f"runtime-{int(_t.time() * 1000)}.jpg")
+            result = core.cdp_screenshot_runtime(
+                cfg, save_path=sp, quality=quality,
+                navigate_url=navigate_url, settle_seconds=settle_seconds,
+                fresh=fresh, region=region)
+            if result.get("state") == "succeeded":
+                result["hint"] = (
+                    "JPEG written to `path` - read it with your file tool. If "
+                    "your file tool cannot reach that path, re-call with "
+                    "save_path inside your workspace, or return_image=true to "
+                    "receive the image inline."
+                )
+            if (return_image and result.get("state") == "succeeded"
+                    and result.get("path")):
+                # Typed MCP image content (see optix_cdp_screenshot) — the List
+                # return shape is why optix_observe carries NO -> dict.
+                from mcp.server.fastmcp import Image as _McpImage
+                return [json.dumps(result), _McpImage(path=result["path"])]
+            return result
+        if mode == "ocr":
+            return core.cdp_ocr_runtime(
+                cfg, navigate_url=navigate_url, settle_seconds=settle_seconds,
+                psm=psm)
+        if mode == "read_text":
+            return core.cdp_read_text_runtime(
+                cfg, region=region, navigate_url=navigate_url,
+                settle_seconds=settle_seconds, psm=psm)
+        if mode == "find_text":
+            return core.cdp_find_text_runtime(
+                cfg, text, navigate_url=navigate_url,
+                settle_seconds=settle_seconds)
+        # mode == "diff"
+        return core.cdp_diff_runtime(dir_a, dir_b, threshold=threshold)
+
+    @mcp.tool(annotations=_RW_DESTRUCTIVE)
+    def optix_interact(
+        action: Literal["click", "fill", "type", "key", "navigate"],
+        # click / fill
+        x: float | None = None, y: float | None = None,
+        # fill / type
+        text: str | None = None,
+        submit: str | None = "Enter", select_all: bool = True,
+        # key
+        key: str | None = None,
+        # navigate
+        route: str | None = None, routes_path: str | None = None,
+        expect: bool = True,
+        # shared CDP params
+        navigate_url: str | None = None, settle_seconds: float | None = None,
+    ) -> dict:
+        """Act on the running Optix HMI via CDP — ONE tool, pick an `action`.
+        Consolidates optix_cdp_click / _fill / _type / _key / _navigate; the
+        per-action tools remain as deprecated aliases (FTXMCP_LEGACY_TOOLS).
+
+        action:
+          - "click" — trusted CDP mouse click at (`x`, `y`) on the canvas (the
+            reliable path Optix's canvas needs). Requires `x`, `y`.
+          - "fill" — set a field in ONE call: click (`x`, `y`) -> (select-all)
+            -> type `text` -> commit with `submit` (default Enter; None types
+            without committing). THE way to set a TextBox/SpinBox. Requires
+            `x`, `y`, `text`.
+          - "type" — insert `text` into the already-focused field (no click, no
+            commit). Requires `text`.
+          - "key" — press one named `key` (Enter/Escape/Tab/Backspace/Delete/
+            Arrow*) — the commit step for edits. Requires `key`.
+          - "navigate" — replay a banked click `route` from `routes_path`
+            (zero-screenshot navigation). Requires `route`, `routes_path`;
+            honors `expect`.
+
+        Coordinates use the shared convention (values <= 1.0 = normalized
+        viewport fractions, > 1 = absolute pixels). An unknown `action`, or a
+        required param missing for the chosen action, returns a structured error
+        rather than raising.
+
+        Use this when:
+          - you need to CHANGE the runtime — press a button, set a field value,
+            commit an edit, or jump to a banked screen
+          - you want a single action tool instead of remembering five CDP names
+
+        Do NOT use this when:
+          - you only need to READ the canvas (screenshot/ocr/find) — that's
+            optix_observe
+          - the chrome-cdp task isn't running (returns cdp_unavailable; run
+            optix_doctor)
+        """
+        if action not in _INTERACT_ACTIONS:
+            return {
+                "state": "failed", "error": "bad_action",
+                "message": (f"unknown action {action!r}; valid actions: "
+                            f"{', '.join(_INTERACT_ACTIONS)}"),
+                "valid_actions": list(_INTERACT_ACTIONS),
+            }
+
+        def _missing(*names):
+            miss = [n for n in names if locals_map.get(n) is None]
+            if miss:
+                return {
+                    "state": "failed", "error": "missing_param",
+                    "message": (f"action {action!r} requires: "
+                                f"{', '.join(miss)}"),
+                    "required": list(names),
+                }
+            return None
+
+        locals_map = {"x": x, "y": y, "text": text, "key": key,
+                      "route": route, "routes_path": routes_path}
+        if action == "click":
+            err = _missing("x", "y")
+            if err:
+                return err
+            return core.cdp_click_runtime(
+                cfg, x=x, y=y, navigate_url=navigate_url,
+                settle_seconds=settle_seconds)
+        if action == "fill":
+            err = _missing("x", "y", "text")
+            if err:
+                return err
+            return core.cdp_fill_runtime(
+                cfg, x=x, y=y, text=text, submit=submit, select_all=select_all,
+                navigate_url=navigate_url, settle_seconds=settle_seconds)
+        if action == "type":
+            err = _missing("text")
+            if err:
+                return err
+            return core.cdp_type_runtime(
+                cfg, text=text, navigate_url=navigate_url,
+                settle_seconds=settle_seconds)
+        if action == "key":
+            err = _missing("key")
+            if err:
+                return err
+            return core.cdp_key_runtime(
+                cfg, key=key, navigate_url=navigate_url,
+                settle_seconds=settle_seconds)
+        # action == "navigate"
+        err = _missing("route", "routes_path")
+        if err:
+            return err
+        return core.cdp_navigate_runtime(
+            cfg, route=route, routes_path=routes_path, expect=expect,
+            navigate_url=navigate_url)
+
     @mcp.tool(annotations=_RO)
     def optix_services_status() -> dict:
         """Aggregate health + studio version + runtime/cdp probes.
@@ -2538,6 +2765,34 @@ def make_mcp(cfg: core.Config) -> FastMCP:
                    "optix_set_property"):
             mcp._tool_manager._tools.pop(_t, None)
 
+    # U14 consolidation: the 10 optix_cdp_* primitives folded into
+    # optix_observe / optix_interact stay registered as DEPRECATED thin aliases
+    # (they delegate to the same core.* functions) so no existing config
+    # breaks. Mark each with a deprecation prefix on its client-visible
+    # description, and gate them behind FTXMCP_LEGACY_TOOLS: default (unset /
+    # any value other than "0") keeps both consolidated + aliases;
+    # FTXMCP_LEGACY_TOOLS=0 suppresses the aliases, exposing the consolidated
+    # surface only. optix_cdp_sweep / optix_cdp_restart are NOT aliases — they
+    # are the batch/lifecycle tools kept as-is and always registered.
+    _CDP_ALIASES = (
+        "optix_cdp_screenshot", "optix_cdp_ocr", "optix_cdp_read_text",
+        "optix_cdp_find_text", "optix_cdp_diff", "optix_cdp_click",
+        "optix_cdp_fill", "optix_cdp_type", "optix_cdp_key",
+        "optix_cdp_navigate",
+    )
+    _legacy_suppressed = os.environ.get("FTXMCP_LEGACY_TOOLS") == "0"
+    for _alias in _CDP_ALIASES:
+        _tool = mcp._tool_manager._tools.get(_alias)
+        if _tool is None:
+            continue
+        if _legacy_suppressed:
+            mcp._tool_manager._tools.pop(_alias, None)
+        else:
+            _tool.description = (
+                "(deprecated: use optix_observe/optix_interact) "
+                + (_tool.description or "")
+            )
+
     # Offload the tools that shell out to Studio / PowerShell / Chrome-CDP onto a
     # worker thread. The official FastMCP runs a sync `def` tool fn DIRECTLY on the
     # event loop (Tool.run -> FuncMetadata.call_fn_with_arg_validation), so a slow
@@ -2558,6 +2813,8 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         # tesseract subprocesses; diff decodes N JPEG pairs (Pillow, CPU).
         "optix_cdp_read_text", "optix_cdp_find_text", "optix_cdp_navigate",
         "optix_cdp_sweep", "optix_cdp_diff",
+        # U14 consolidated CDP surface — same multi-second CDP/tesseract paths.
+        "optix_observe", "optix_interact",
     ))
     for _name, _tool in mcp._tool_manager._tools.items():
         if _name not in _OFFLOAD_TOOLS or _tool.is_async:

@@ -1,6 +1,6 @@
 # Tool reference
 
-68 tools, grouped by where they sit in the loop. Every tool's docstring
+70 tools, grouped by where they sit in the loop. Every tool's docstring
 carries "Use when / Do NOT use when" guidance for the model, and MCP
 annotations (`readOnlyHint`/`destructiveHint`) so hosts can auto-run reads
 and gate writes. `project` is optional everywhere — it defaults to the
@@ -57,8 +57,18 @@ with the valid-property list rather than crashing Studio.
 
 ## Verify (rendered canvas)
 
+The 10 read/interact CDP primitives below are consolidated into two
+discriminator tools — `optix_observe(mode=…)` for reads and
+`optix_interact(action=…)` for actions — so an agent sees ~4 CDP tools
+instead of 12. The originals stay registered as **deprecated aliases** that
+delegate to the same functions; set `FTXMCP_LEGACY_TOOLS=0` to expose the
+consolidated surface only (default keeps both). `optix_cdp_sweep` /
+`optix_cdp_restart` are batch/lifecycle tools kept as-is.
+
 | Tool | What it does |
 |---|---|
+| `optix_observe` | Read-side capture: `mode` in `screenshot` / `ocr` / `read_text` / `find_text` / `diff` — consolidates the five read CDP tools |
+| `optix_interact` | Action: `action` in `click` / `fill` / `type` / `key` / `navigate` — consolidates the five interact CDP tools |
 | `optix_cdp_screenshot` | Screenshot the running HMI (auto-targets it); `fresh=true` forces a reload when a stale frame is suspected; `region=[x,y,w,h]` crops (<=1.0 = viewport fractions, >1 = pixels); `return_image=true` returns typed MCP image content inline |
 | `optix_cdp_click` | Click at coordinates — reaches the Optix canvas where synthetic clicks don't |
 | `optix_cdp_fill` | Set a field in one call: click + select-all + type + Enter |
