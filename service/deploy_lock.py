@@ -23,6 +23,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
+import sys as _sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -51,9 +52,19 @@ class DeployLockEvicted(Exception):
 # create_time comparison tolerance (seconds). psutil reports a stable
 # create_time for a live process across calls, but a small epsilon guards
 # against coarse-clock / platform rounding (mirrors the mtime-coarseness
-# idiom around core.py::_atomic_swap). See U4 open question #1 — confirm
-# the right value against the live Windows deploy box.
-_CREATE_TIME_EPSILON = 2.0
+# idiom around core.py::_atomic_swap).
+#
+# U4 open question #1, resolved on the Windows deploy box (2026-07-24):
+# create_time there comes from the Win32 FILETIME and is EXACT — 200 reads of
+# one long-lived pid gave 1 distinct value (0.0 jitter), and 304 live processes
+# produced 303 distinct sub-second fractions (finest ~2.7ms). So the tolerance
+# is pure headroom on Windows, and every second of it is a window in which a
+# recycled PID reads as the original lock holder. Tightened to 0.05s there.
+#
+# Left at 2.0s elsewhere: on Linux create_time is derived from /proc starttime
+# in clock ticks plus a boot-time estimate, which is NOT measured here — do not
+# tighten it without the same measurement on that platform.
+_CREATE_TIME_EPSILON = 0.05 if _sys.platform == "win32" else 2.0
 
 
 def _pid_create_time(pid: int) -> float | None:
