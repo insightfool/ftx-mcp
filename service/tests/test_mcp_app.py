@@ -40,6 +40,7 @@ EXPECTED_TOOLS = {
     "optix_schema_dump",
     "optix_schema_list",
     "optix_schema_diff",
+    "optix_bridge_edit",
     "optix_bridge_create_widget",
     "optix_bridge_add_label",
     "optix_bridge_add_bound_widget",
@@ -159,7 +160,10 @@ def test_mcp_tools_carry_readonly_destructive_annotations(cfg: core.Config) -> N
                    # replace=true deletes the original instance after the move
                    "optix_bridge_convert_to_type",
                    # re-author move deletes the original after the copy
-                   "optix_bridge_move_node"}
+                   "optix_bridge_move_node",
+                   # U16 batch: a batch may carry a delete op, so the batch tool
+                   # inherits the most destructive thing it can dispatch
+                   "optix_bridge_edit"}
     mcp = make_mcp(cfg)
     for tool in _list_tools(mcp):
         ann = tool.annotations
@@ -767,10 +771,11 @@ def test_with_project_tool_count_and_annotations_unchanged(cfg: core.Config) -> 
     ToolAnnotations did (spot-check one of each class). Tool count grows as
     new tools land (69: 68 after the U15 schema tools + optix_active_target;
     71 after the U14 consolidated optix_observe + optix_interact land alongside
-    the 12 optix_cdp_* aliases kept under the default FTXMCP_LEGACY_TOOLS gate)."""
+    the 12 optix_cdp_* aliases kept under the default FTXMCP_LEGACY_TOOLS gate;
+    72 after U16's optix_bridge_edit)."""
     mcp = make_mcp(cfg)
     by_name = {t.name: t for t in _list_tools(mcp)}
-    assert len(by_name) == 71
+    assert len(by_name) == 72
     assert by_name["optix_list_screens"].annotations.readOnlyHint is True
     write = by_name["optix_bridge_set_property"].annotations
     assert write.readOnlyHint is False and write.destructiveHint is False

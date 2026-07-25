@@ -34,8 +34,10 @@ HOME for the live-contract suite:
       {name, datatype, settable} for a builtin, incl. a Color-family property.
     * U15 (schema dump)   — /bridge/schema/dump contract as a REAL gate; the C#
       endpoint (service.optix_schema.SCHEMA_DUMP_ROUTE) shipped with U15.
-    * U16 (validate_ops)  — POST /bridge/validate_ops report shape PINNED;
-      xfails until the C# endpoint ships.
+    * U16 (validate_ops)  — POST /bridge/validate_ops as a REAL gate across all
+      three tiers (per-op validity, batch coherence, strict lint) plus proof that
+      validation and bridge_edit's dry_run mutate nothing. Endpoint shipped
+      with U16.
 """
 from __future__ import annotations
 
@@ -273,39 +275,135 @@ def test_schema_dump_contract(live):
             )
 
 
-# ---- U16 validate_ops contract (pinned; placeholder until the C# endpoint) --
+# ---- U16 validate_ops contract (REAL gate; the C# endpoint shipped) --------
 
-@pytest.mark.xfail(
-    reason="U16 C# POST /bridge/validate_ops endpoint not yet implemented",
-    strict=False,
-)
+# A node the batch pretends to create. Never actually created: every call below
+# is validation-only, and the last test proves the model is untouched.
+_HYPO = _LIVE_NODE.rsplit("/", 1)[0] + "/ZzzU16Hypothetical"
+
+
+def _report(cfg, project, ops, strict=False):
+    rep = core.bridge_validate_ops(cfg, project, ops, strict=strict)
+    assert isinstance(rep.get("ok"), bool), rep
+    assert isinstance(rep.get("errors"), list) and isinstance(rep.get("warnings"), list)
+    for e in rep["errors"] + rep["warnings"]:
+        assert isinstance(e.get("op_index"), int), e
+        assert isinstance(e.get("code"), str) and e["code"], e
+    return rep
+
+
 def test_validate_ops_contract(live):
-    """U16: dry-run op validation via POST /bridge/validate_ops. The endpoint
-    does NOT exist yet (no Python wrapper either), so this documents + pins the
-    expected REPORT SHAPE the C# must return so the contract is fixed before the
-    code lands:
+    """U16: POST /bridge/validate_ops reports on an op batch without touching the
+    model. Pins the REPORT SHAPE the C# must keep:
         {ok: bool,
          errors:   [{op_index: int, code: str, ...}],
          warnings: [...]}
 
-    Until the endpoint ships this posts a trivially-empty op batch and expects
-    the bridge to 404 (unknown route) — surfacing as a BridgeWriteFailed /
-    non-200 — which keeps the test xfailing. When the route lands, replace the
-    call with the real batch and assert the report shape asserted below."""
+    Was xfail while only the shape was agreed; the endpoint shipped with U16, so
+    this is now a real gate. `_report` asserts the shape on every call below."""
     cfg, project = live
-    # No Python wrapper exists yet; hit the future route directly. Guard first so
-    # a bridge serving the wrong project skips rather than muddies the xfail.
-    if not core._use_bridge_for(cfg, project):
-        pytest.skip(f"bridge not serving {project!r}")
-    status, data = core._bridge_post_json(cfg, "/bridge/validate_ops?ops=[]")
-    # The route does not exist yet -> non-200. Force the xfail explicitly so a
-    # stray 200 from a stubbed route still gets its shape checked below.
-    assert status == 200, f"/bridge/validate_ops not implemented (status={status})"
+    rep = _report(cfg, project, [
+        {"op": "set_property", "path": _LIVE_NODE, "name": "Width", "value": "125"},
+    ])
+    assert rep["ok"] is True, rep
+    assert rep["errors"] == []
+    assert rep.get("op_count") == 1
 
-    # Reached only once the endpoint returns 200 — pin the report contract.
-    assert isinstance(data.get("ok"), bool)
-    assert isinstance(data.get("errors"), list)
-    for e in data["errors"]:
-        assert isinstance(e.get("op_index"), int)
-        assert isinstance(e.get("code"), str) and e["code"]
-    assert isinstance(data.get("warnings"), list)
+
+def test_validate_ops_accepts_create_then_reference(live):
+    """Tier 2: a batch is validated against a HYPOTHETICAL model carrying its own
+    creates, so referring to a node the batch creates EARLIER is legal."""
+    cfg, project = live
+    rep = _report(cfg, project, [
+        {"op": "create_widget", "screen": _LIVE_NODE.rsplit("/", 1)[0],
+         "name": _HYPO.rsplit("/", 1)[1], "widget_type": "Rectangle"},
+        {"op": "set_property", "path": _HYPO, "name": "Width", "value": "40"},
+    ])
+    assert rep["ok"] is True, rep
+
+
+def test_validate_ops_rejects_reversed_order_with_a_hint(live):
+    """The same two ops in the wrong order must fail — and the message must name
+    the later create, because "no such node" alone does not tell an agent that
+    its ORDERING is the bug."""
+    cfg, project = live
+    rep = _report(cfg, project, [
+        {"op": "set_property", "path": _HYPO, "name": "Width", "value": "40"},
+        {"op": "create_widget", "screen": _LIVE_NODE.rsplit("/", 1)[0],
+         "name": _HYPO.rsplit("/", 1)[1], "widget_type": "Rectangle"},
+    ])
+    assert rep["ok"] is False
+    codes = [e["code"] for e in rep["errors"]]
+    assert "unresolved_reference" in codes, rep
+    msg = " ".join(e["message"] for e in rep["errors"])
+    assert "LATER op" in msg or "op order" in msg, msg
+
+
+def test_validate_ops_flags_a_misspelled_property_with_did_you_mean(live):
+    """Tier 1 reuses the SAME DeclaredPropertyGuard the write path runs, so the
+    report carries its valid_properties + did_you_mean."""
+    cfg, project = live
+    rep = _report(cfg, project, [
+        {"op": "set_property", "path": _LIVE_NODE,
+         "name": _MISSPELLED_PROP, "value": "1"},
+    ])
+    assert rep["ok"] is False
+    err = next(e for e in rep["errors"] if e["code"] == "unknown_property")
+    guard = (err.get("guard") or {}).get("error") or {}
+    assert guard.get("did_you_mean") == _EXPECTED_SUGGESTION, err
+    assert _EXPECTED_SUGGESTION in (guard.get("valid_properties") or []), err
+
+
+def test_validate_ops_catches_delete_then_modify(live):
+    """Tier 2 coherence: deleting a node a later op still touches is refused up
+    front — the batch would otherwise half-apply and strand the model."""
+    cfg, project = live
+    rep = _report(cfg, project, [
+        {"op": "delete", "path": _LIVE_NODE},
+        {"op": "set_property", "path": _LIVE_NODE, "name": "Width", "value": "1"},
+    ])
+    assert rep["ok"] is False
+    assert "modifies_deleted_node" in [e["code"] for e in rep["errors"]], rep
+
+
+def test_validate_ops_strict_promotes_warnings(live):
+    """Tier 3 lint is warnings-only by default; strict makes them fatal."""
+    cfg, project = live
+    ops = [{"op": "create_widget", "screen": _LIVE_NODE.rsplit("/", 1)[0],
+            "name": _LIVE_NODE.rsplit("/", 1)[1], "widget_type": "Rectangle"}]
+
+    lax = _report(cfg, project, ops)
+    assert lax["ok"] is True
+    assert "already_exists" in [w["code"] for w in lax["warnings"]], lax
+
+    strict = _report(cfg, project, ops, strict=True)
+    assert strict["ok"] is False
+    assert "already_exists" in [e["code"] for e in strict["errors"]], strict
+
+
+def test_validate_ops_and_dry_run_mutate_nothing(live):
+    """The whole point: validation is side-effect free, and bridge_edit's
+    dry_run applies nothing even when the report is clean."""
+    cfg, project = live
+
+    def width():
+        node = core.describe_node(cfg, project, _LIVE_NODE)
+        return next((p.get("value") for p in node.get("properties") or []
+                     if p.get("name") == "Width"), None)
+
+    before = width()
+    parent = _LIVE_NODE.rsplit("/", 1)[0]
+    ops = [
+        {"op": "create_widget", "screen": parent,
+         "name": _HYPO.rsplit("/", 1)[1], "widget_type": "Rectangle"},
+        {"op": "set_property", "path": _LIVE_NODE, "name": "Width", "value": "999"},
+    ]
+
+    out = core.bridge_edit(cfg, project, ops, dry_run=True)
+    assert out["state"] == "validated" and out["applied"] == 0, out
+    assert out["dry_run"] is True
+
+    assert width() == before, "dry_run changed a live property value"
+    kids = [c.get("browse_name")
+            for c in core.describe_node(cfg, project, parent).get("children") or []]
+    assert _HYPO.rsplit("/", 1)[1] not in kids, "dry_run created a node"

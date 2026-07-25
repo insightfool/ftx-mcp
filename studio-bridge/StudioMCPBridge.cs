@@ -316,6 +316,15 @@ public class StudioMCPBridge : BaseNetLogic
                     body = DiagClrTypeJson(QueryParam(firstLine, "name"));
                     status = "200 OK";
                 }
+                else if (firstLine.StartsWith("POST /bridge/validate_ops"))
+                {
+                    // U16: the ONLY handler that takes a POST BODY. Every other
+                    // write route passes params on the query string (see
+                    // WriteVariableInline's note) - an op LIST does not fit
+                    // there, so this one reads the body after the headers.
+                    body = ValidateOpsJson(ReadRequestBody(stream, buf, n, req));
+                    status = "200 OK";
+                }
                 else if (firstLine.StartsWith("POST /bridge/expr/validate"))
                 {
                     body = ValidateExprJson(firstLine);
@@ -1969,6 +1978,502 @@ public class StudioMCPBridge : BaseNetLogic
         return null;
     }
 
+    // ---- U16: POST /bridge/validate_ops -------------------------------------
+    //
+    // Dry-run an op BATCH and report what would fail, without touching the model.
+    // Every check here reuses a guard the real write path already runs, so a
+    // clean report means the same guards will pass on apply - the point is to
+    // fail the batch BEFORE it half-applies, not to re-implement the rules.
+    //
+    // Three tiers:
+    //   1 per-op validity  - node resolves, property is declared, value coerces
+    //   2 batch coherence  - ops are checked against a HYPOTHETICAL model that
+    //                        accumulates this batch's creates/deletes, so
+    //                        "create X then set X.Prop" validates clean and the
+    //                        reverse order does not
+    //   3 lint             - warnings only; `strict` promotes them to errors
+    //
+    // Body: {"ops":[{"op":"...", ...}], "strict":false}
+    // Reply: {"ok":bool, "op_count":N, "errors":[{op_index,code,message,...}],
+    //         "warnings":[{op_index,code,message}]}
+    private string ValidateOpsJson(string body)
+    {
+        var errors = new StringBuilder();
+        var warnings = new StringBuilder();
+        int errCount = 0, warnCount = 0, opCount = 0;
+
+        Action<int, string, string, string> addErr = (idx, code, msg, extra) =>
+        {
+            if (errCount++ > 0) errors.Append(",");
+            errors.Append("{\"op_index\":" + idx + ",\"code\":\"" + JsonEscape(code) +
+                          "\",\"message\":\"" + JsonEscape(msg) + "\"" +
+                          (string.IsNullOrEmpty(extra) ? "" : "," + extra) + "}");
+        };
+        Action<int, string, string> addWarn = (idx, code, msg) =>
+        {
+            if (warnCount++ > 0) warnings.Append(",");
+            warnings.Append("{\"op_index\":" + idx + ",\"code\":\"" + JsonEscape(code) +
+                            "\",\"message\":\"" + JsonEscape(msg) + "\"}");
+        };
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(body))
+                return ErrorJson("bad_body", "validate_ops requires a JSON body: {\"ops\":[...]}");
+
+            using (var doc = System.Text.Json.JsonDocument.Parse(body))
+            {
+                var root = doc.RootElement;
+                System.Text.Json.JsonElement opsEl;
+                if (!root.TryGetProperty("ops", out opsEl) ||
+                    opsEl.ValueKind != System.Text.Json.JsonValueKind.Array)
+                    return ErrorJson("bad_body", "body must carry an \"ops\" array");
+
+                bool strict = false;
+                System.Text.Json.JsonElement strictEl;
+                if (root.TryGetProperty("strict", out strictEl) &&
+                    strictEl.ValueKind == System.Text.Json.JsonValueKind.True) strict = true;
+
+                // Tier 2 state: the hypothetical model this batch would build.
+                var created = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var deleted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                // PRE-PASS: every path this batch creates, regardless of position.
+                // The sequential `created` set above is what decides validity (a
+                // forward reference IS an error). This set exists only to make the
+                // error ACTIONABLE: the reversed-order mistake is by definition a
+                // forward reference, so at the point it is caught the sequential
+                // set is still empty and could not name the culprit.
+                var willCreate = new List<string>();
+                foreach (var pre in opsEl.EnumerateArray())
+                {
+                    string pv = JsonStr(pre, "op");
+                    if (pv == null || !pv.StartsWith("create", StringComparison.Ordinal)) continue;
+                    string pn = JsonStr(pre, "name");
+                    if (string.IsNullOrEmpty(pn)) continue;
+                    string pp = ParentKey(pre);
+                    willCreate.Add(string.IsNullOrEmpty(pp) ? pn : pp.TrimEnd('/') + "/" + pn);
+                }
+
+                int idx = -1;
+                foreach (var op in opsEl.EnumerateArray())
+                {
+                    idx++; opCount++;
+                    string verb = JsonStr(op, "op");
+                    if (string.IsNullOrEmpty(verb))
+                    {
+                        addErr(idx, "missing_op", "op object has no \"op\" field", null);
+                        continue;
+                    }
+                    string path = JsonStr(op, "path");
+                    string name = JsonStr(op, "name");
+                    string typeName = TypeKey(op);
+                    string value = JsonStr(op, "value");
+
+                    switch (verb)
+                    {
+                        case "set_property":
+                        case "bind":
+                        case "attach_expression":
+                            ValidateOnNode(idx, verb, path, name, value, created, deleted,
+                                           willCreate, addErr, addWarn);
+                            break;
+
+                        case "delete":
+                            {
+                                if (string.IsNullOrEmpty(path))
+                                { addErr(idx, "bad_op", verb + " requires \"path\"", null); break; }
+                                if (deleted.Contains(path))
+                                { addErr(idx, "already_deleted", "op deletes '" + path + "' twice in this batch", null); break; }
+                                if (ResolveNode(path) == null && !created.ContainsKey(path))
+                                    addErr(idx, "unresolved_reference",
+                                           "no node at '" + path + "'" + NearestHint(path, willCreate), null);
+                                deleted.Add(path);
+                                created.Remove(path);
+                            }
+                            break;
+
+                        case "move":
+                        case "reorder":
+                        case "wire_event":
+                            {
+                                if (string.IsNullOrEmpty(path))
+                                { addErr(idx, "bad_op", verb + " requires \"path\"", null); break; }
+                                if (deleted.Contains(path))
+                                { addErr(idx, "modifies_deleted_node", verb + " targets '" + path + "', deleted earlier in this batch", null); break; }
+                                if (ResolveNode(path) == null && !created.ContainsKey(path))
+                                    addErr(idx, "unresolved_reference",
+                                           "no node at '" + path + "'" + NearestHint(path, willCreate), null);
+                            }
+                            break;
+
+                        case "create_node":
+                        case "create_widget":
+                        case "create_variable":
+                        case "create_folder":
+                        case "create_object":
+                        case "create_type":
+                        case "create_alias":
+                            {
+                                if (string.IsNullOrEmpty(name))
+                                { addErr(idx, "bad_op", verb + " requires \"name\"", null); break; }
+                                string parentPath = ParentKey(op);
+                                string newPath = string.IsNullOrEmpty(parentPath)
+                                    ? name : parentPath.TrimEnd('/') + "/" + name;
+
+                                if (created.ContainsKey(newPath))
+                                { addErr(idx, "duplicate_create", "'" + newPath + "' is created twice in this batch", null); break; }
+                                if (!string.IsNullOrEmpty(parentPath))
+                                {
+                                    if (deleted.Contains(parentPath))
+                                        addErr(idx, "modifies_deleted_node",
+                                               "parent '" + parentPath + "' is deleted earlier in this batch", null);
+                                    else if (ResolveNode(parentPath) == null && !created.ContainsKey(parentPath))
+                                        addErr(idx, "unresolved_parent",
+                                               "no parent node at '" + parentPath + "'" + NearestHint(parentPath, willCreate), null);
+                                }
+                                if (ResolveNode(newPath) != null)
+                                    addWarn(idx, "already_exists",
+                                            "'" + newPath + "' already exists in the live model; the create may collide");
+                                created[newPath] = typeName ?? "";
+                                deleted.Remove(newPath);
+                            }
+                            break;
+
+                        default:
+                            addWarn(idx, "unknown_op",
+                                    "op '" + verb + "' is not validated by this bridge; it will be applied unchecked");
+                            break;
+                    }
+                }
+
+                if (strict && warnCount > 0)
+                {
+                    // strict: fold the warnings into errors so the batch refuses.
+                    if (errCount > 0) errors.Append(",");
+                    errors.Append(warnings);
+                    errCount += warnCount;
+                }
+
+                bool ok = errCount == 0;
+                return "{\"ok\":" + Bool(ok) + ",\"op_count\":" + opCount +
+                       ",\"strict\":" + Bool(strict) +
+                       ",\"errors\":[" + errors + "],\"warnings\":[" + warnings + "]}";
+            }
+        }
+        catch (System.Text.Json.JsonException jx)
+        {
+            return ErrorJson("bad_json", "could not parse the ops body: " + jx.Message);
+        }
+        catch (Exception ex)
+        {
+            return ErrorJson("internal", ExcMsg(ex));
+        }
+    }
+
+    // set_property / bind / attach_expression share one shape: they target a
+    // property `name` on an existing-or-hypothetical node `path`.
+    private void ValidateOnNode(
+        int idx, string verb, string path, string name, string value,
+        Dictionary<string, string> created, HashSet<string> deleted,
+        List<string> willCreate,
+        Action<int, string, string, string> addErr,
+        Action<int, string, string> addWarn)
+    {
+        if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(name))
+        {
+            addErr(idx, "bad_op", verb + " requires \"path\" and \"name\"", null);
+            return;
+        }
+        if (deleted.Contains(path))
+        {
+            addErr(idx, "modifies_deleted_node",
+                   verb + " targets '" + path + "', deleted earlier in this batch", null);
+            return;
+        }
+
+        var node = ResolveNode(path);
+        if (node == null)
+        {
+            string hypoType;
+            if (!created.TryGetValue(path, out hypoType))
+            {
+                addErr(idx, "unresolved_reference",
+                       "no node at '" + path + "'" + NearestHint(path, willCreate), null);
+                return;
+            }
+            // HYPOTHETICAL node: it does not exist yet, so the live-instance
+            // guard cannot see it. Fall back to TYPE-level reflection off the
+            // declared type - the same property set describe_type reports.
+            if (string.IsNullOrEmpty(hypoType))
+            {
+                addWarn(idx, "unverifiable_property",
+                        "'" + path + "' is created earlier in this batch without a declared "
+                        + "type, so '" + name + "' cannot be checked until apply");
+                return;
+            }
+            var clr = ResolveWidgetClrType(hypoType);
+            if (clr == null)
+            {
+                addWarn(idx, "unverifiable_property",
+                        "type '" + hypoType + "' does not resolve to a CLR type; '" + name +
+                        "' cannot be checked until apply");
+                return;
+            }
+            bool declared = clr.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                               .Where(IsLegendProp).Any(p => p.Name == name);
+            if (!declared)
+            {
+                var valid = clr.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                               .Where(IsLegendProp).Select(p => p.Name)
+                               .GroupBy(x => x).Select(g => g.Key).OrderBy(x => x).ToList();
+                var sugg = SuggestPropertyName(name, valid);
+                var extra = new StringBuilder();
+                extra.Append("\"valid_properties\":[");
+                for (int i = 0; i < valid.Count; i++)
+                {
+                    if (i > 0) extra.Append(",");
+                    extra.Append("\"" + JsonEscape(valid[i]) + "\"");
+                }
+                extra.Append("]");
+                if (sugg != null)
+                {
+                    extra.Append(",\"did_you_mean\":\"" + JsonEscape(sugg) + "\"");
+                }
+                addErr(idx, "unknown_property",
+                       hypoType + " has no settable property '" + name + "'" +
+                       (sugg != null ? " (did you mean " + sugg + "?)" : ""), extra.ToString());
+            }
+            return;   // value coercion needs a live variable; deferred to apply
+        }
+
+        // LIVE node: run the same guards the write path runs.
+        var gate = DeclaredPropertyGuard(node, name);
+        if (gate != null)
+        {
+            // DeclaredPropertyGuard hands back a whole {"error":{...}} object.
+            // Unwrap its inner fields so the report stays one flat shape.
+            addErr(idx, "unknown_property",
+                   node.GetType().Name + " has no settable property '" + name + "'",
+                   "\"guard\":" + gate);
+            return;
+        }
+        var arrGate = DeclaredArrayGuard(node, name);
+        if (arrGate != null)
+        {
+            // Also a whole {"error":{...}} object - carry it structurally rather
+            // than escaping JSON into the message field.
+            addErr(idx, "unsupported_array_write",
+                   "property '" + name + "' on " + node.GetType().Name +
+                   " is array-typed; array writes are not supported via set_property",
+                   "\"guard\":" + arrGate);
+            return;
+        }
+        if (verb == "set_property" && value != null)
+        {
+            var v = node.GetVariable(name);
+            if (v != null)
+            {
+                var bad = CoerceCheck(v, value);
+                if (bad != null) addErr(idx, "bad_value", bad, null);
+            }
+            // A declared-but-unmaterialized property has no IUAVariable yet, so
+            // the value cannot be type-checked here; the write materializes it.
+        }
+    }
+
+    // Best-effort "did you mean this path" for an unresolved reference, drawn from
+    // every path the batch creates ANYWHERE in the list (see the pre-pass): the
+    // usual cause is an op-ordering mistake, and naming the later create is what
+    // makes the error fixable rather than just true.
+    private static string NearestHint(string path, List<string> willCreate)
+    {
+        if (willCreate == null || willCreate.Count == 0) return "";
+        // Exact match first: the path IS created, just too late.
+        foreach (var c in willCreate)
+        {
+            if (string.Equals(c, path, StringComparison.OrdinalIgnoreCase))
+                return " (this batch creates '" + c + "' at a LATER op - is the op order wrong?)";
+        }
+        var hit = SuggestPropertyName(path, willCreate);
+        if (hit != null)
+            return " (this batch creates '" + hit + "' - did you mean that, or is the op order wrong?)";
+        return "";
+    }
+
+    // Same story for the TYPE field: create_widget says "widget_type",
+    // create_object "object_type", create_type "base_type". A missed type here is
+    // softer than a missed parent - the node is still tracked as created, but the
+    // hypothetical property check downgrades to an `unverifiable_property`
+    // warning instead of validating.
+    private static string TypeKey(System.Text.Json.JsonElement op)
+    {
+        foreach (var key in new[] { "type", "widget_type", "object_type", "base_type" })
+        {
+            var v = JsonStr(op, key);
+            if (!string.IsNullOrEmpty(v)) return v;
+        }
+        return null;
+    }
+
+    // Which op field names the PARENT depends on the noun, because each create
+    // op mirrors its per-noun tool's own vocabulary: create_widget takes
+    // "screen", create_folder/object/type/variable take "parent", create_alias
+    // takes "parent_path". Checked in that order, with "path" last as a
+    // fallback. Getting this wrong is silent: the validator computes the wrong
+    // child path, so create-tracking misses and Tier 2 stops working while every
+    // report still looks clean (caught by the live gate 2026-07-25).
+    private static string ParentKey(System.Text.Json.JsonElement op)
+    {
+        foreach (var key in new[] { "parent", "screen", "parent_path", "path" })
+        {
+            var v = JsonStr(op, key);
+            if (!string.IsNullOrEmpty(v)) return v;
+        }
+        return null;
+    }
+
+    // Read a string field off a JSON object, whatever its scalar kind.
+    private static string JsonStr(System.Text.Json.JsonElement obj, string key)
+    {
+        System.Text.Json.JsonElement el;
+        if (!obj.TryGetProperty(key, out el)) return null;
+        switch (el.ValueKind)
+        {
+            case System.Text.Json.JsonValueKind.String: return el.GetString();
+            case System.Text.Json.JsonValueKind.Number: return el.GetRawText();
+            case System.Text.Json.JsonValueKind.True: return "true";
+            case System.Text.Json.JsonValueKind.False: return "false";
+            default: return null;
+        }
+    }
+
+    // ---- U16: check-only twins of the coercion path -------------------------
+
+    // The VALUE-VALIDITY half of CoerceAssign, with every `v.Value = ...` write
+    // removed. Returns the same error strings CoerceAssign would, or null when
+    // the value would assign cleanly.
+    //
+    // Kept as a separate method rather than a flag on CoerceAssign: the write
+    // path is load-bearing and crash-adjacent (an invalid enum assign asserts
+    // inside the native layer), so it is not worth threading a "don't write"
+    // branch through it. The arms MUST stay in sync - if you add a datatype to
+    // CoerceAssign, add it here.
+    //
+    // Arms with no validation to do (Boolean, String, LocalizedText) return null
+    // because CoerceAssign accepts anything for them: Boolean maps any string to
+    // a bool rather than rejecting, so a validator that "failed" on "yes" would
+    // be lying about what the write would do.
+    private string CoerceCheck(IUAVariable v, string raw)
+    {
+        string dt = DataTypeName(v);
+        if (IsArrayVariable(v))
+            return "unsupported_array_write: property is array-typed (" + dt +
+                   "[]); scalar writes to array UA variables are not supported" +
+                   " (they can crash Studio)";
+        switch (dt)
+        {
+            case "Boolean":
+            case "LocalizedText":
+            case "String":
+                return null;   // CoerceAssign accepts any string for these
+            case "Int16": case "Int32": case "Int64":
+            case "UInt16": case "UInt32": case "UInt64": case "Byte": case "SByte":
+                {
+                    long iv;
+                    if (!long.TryParse(raw, System.Globalization.NumberStyles.Integer,
+                                       System.Globalization.CultureInfo.InvariantCulture, out iv))
+                        return "value must be an integer for " + dt + ": " + raw;
+                    return null;
+                }
+            case "Float": case "Double": case "Size":
+                {
+                    double dv;
+                    if (!double.TryParse(raw, System.Globalization.NumberStyles.Float,
+                                         System.Globalization.CultureInfo.InvariantCulture, out dv))
+                        return "value must be a number for " + dt + ": " + raw;
+                    return null;
+                }
+            case "NodeId":
+                return ResolveNode(raw) == null
+                    ? "NodeId value must be a resolvable node path: " + raw : null;
+            case "Color":
+                return CheckColor(raw);
+            default:
+                return CheckEnumOrRaw(dt, raw);
+        }
+    }
+
+    // Color parse-check, mirroring CoerceAssign's Color arm without the write.
+    private static string CheckColor(string raw)
+    {
+        string s = (raw ?? "").Trim();
+        uint argb;
+        if (s.StartsWith("#"))
+        {
+            string hex = s.Substring(1);
+            if (hex.Length == 6) hex = "FF" + hex;
+            if (!uint.TryParse(hex, System.Globalization.NumberStyles.HexNumber,
+                               System.Globalization.CultureInfo.InvariantCulture, out argb))
+                return "Color must be #RRGGBB / #AARRGGBB hex or a UInt32 decimal: " + raw;
+            return null;
+        }
+        return uint.TryParse(s, out argb)
+            ? null : "Color must be #RRGGBB / #AARRGGBB hex or a UInt32 decimal: " + raw;
+    }
+
+    // Enum check mirroring SetEnumOrRaw, minus the assign. Deliberately PERMISSIVE
+    // for a datatype we have no member list for: SetEnumOrRaw discovers those by
+    // attempting the write and catching the native assert, which a validator must
+    // not do (it would mutate). Reporting "valid" there and letting the real write
+    // surface the error beats false-rejecting a value that would have worked.
+    private static string CheckEnumOrRaw(string dt, string raw)
+    {
+        int ord;
+        if (int.TryParse(raw, out ord)) return null;
+        if (TryEnumOrdinal(dt, raw, out ord)) return null;
+        var known = KnownEnumMembers(dt);
+        if (known != null)
+            return "invalid value '" + raw + "' for enum " + dt + "; valid: " + string.Join(", ", known);
+        return null;
+    }
+
+    // Read the POST body that follows the headers. The accept loop does ONE 4KB
+    // read, which usually swallows the whole request - but an op batch can exceed
+    // that, so continue reading until Content-Length bytes are in hand. Decoded as
+    // UTF-8 (the header read is ASCII, which is fine for headers and wrong for a
+    // body carrying non-ASCII property values).
+    private static string ReadRequestBody(NetworkStream stream, byte[] first, int firstLen, string head)
+    {
+        try
+        {
+            int sep = head.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+            int headerLen = sep >= 0 ? sep + 4 : firstLen;
+            int contentLength = 0;
+            foreach (var line in head.Split('\n'))
+            {
+                var t = line.Trim();
+                if (t.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                    int.TryParse(t.Substring("Content-Length:".Length).Trim(), out contentLength);
+            }
+            var ms = new System.IO.MemoryStream();
+            int already = Math.Max(0, firstLen - headerLen);
+            if (already > 0) ms.Write(first, headerLen, already);
+            var tmp = new byte[8192];
+            while (ms.Length < contentLength)
+            {
+                int got = stream.Read(tmp, 0, tmp.Length);
+                if (got <= 0) break;   // client closed early
+                ms.Write(tmp, 0, got);
+            }
+            return Encoding.UTF8.GetString(ms.ToArray());
+        }
+        catch (Exception)
+        {
+            return "";
+        }
+    }
+
     private string PropOkJson(string path, string name, string dt, string via, IUAVariable v)
     {
         return "{\"ok\":true,\"path\":\"" + JsonEscape(path) +
@@ -3057,3 +3562,4 @@ public class StudioMCPBridge : BaseNetLogic
                 .Replace("\r", "\\r").Replace("\n", "\\n").Replace("\t", "\\t");
     }
 }
+
