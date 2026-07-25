@@ -2519,18 +2519,31 @@ public class StudioMCPBridge : BaseNetLogic
 
     // Member names for the built-in enums we know (mirrors TryEnumOrdinal). Used to build
     // a helpful valid-list on an invalid enum value. Extend alongside TryEnumOrdinal.
+    // Listed in TRUE ordinal order (see TryEnumOrdinal) so the valid-list an
+    // invalid value shows isn't misleading about position.
     private static string[] KnownEnumMembers(string dt)
     {
         switch (dt)
         {
-            case "HorizontalAlignment": return new[] { "Left", "Center", "Right", "Stretch" };
-            case "VerticalAlignment":   return new[] { "Top", "Center", "Bottom", "Stretch" };
+            case "HorizontalAlignment": return new[] { "Left", "Right", "Center", "Stretch" };
+            case "VerticalAlignment":   return new[] { "Top", "Bottom", "Center", "Stretch" };
             default: return null;
         }
     }
 
     // Friendly member name -> ordinal for the built-in FTOptix.UI alignment enums.
     // Case-insensitive. Extend here as more enum properties are exercised.
+    //
+    // CRITICAL / REGRESSION-CITE: FTOptix.UI.{Horizontal,Vertical}Alignment do NOT
+    // use the WPF-standard {Left/Top=0, Center=1, Right/Bottom=2} order. Verified
+    // by reflecting FTOptix.UI.Net.dll (2026-07-25):
+    //   VerticalAlignment   Top=0  Bottom=1  Center=2  Stretch=3
+    //   HorizontalAlignment Left=0 Right=1   Center=2  Stretch=3
+    // i.e. the EXTREME member is 1 and Center is 2. An earlier map assumed the WPF
+    // order, so "Bottom" set ordinal 2 (=Center) and rendered centered — a live
+    // build burned ~14 tool calls reverse-engineering this. Do NOT "fix" Center
+    // back to 1; that reintroduces the swap. (Note the sibling Content*/Text*
+    // alignment enums DO use the standard Center=1 order — different enums.)
     private static bool TryEnumOrdinal(string dt, string name, out int ord)
     {
         ord = 0;
@@ -2538,12 +2551,12 @@ public class StudioMCPBridge : BaseNetLogic
         switch (key)
         {
             case "HorizontalAlignment.left":    ord = 0; return true;
-            case "HorizontalAlignment.center":  ord = 1; return true;
-            case "HorizontalAlignment.right":   ord = 2; return true;
+            case "HorizontalAlignment.right":   ord = 1; return true;
+            case "HorizontalAlignment.center":  ord = 2; return true;
             case "HorizontalAlignment.stretch": ord = 3; return true;
             case "VerticalAlignment.top":       ord = 0; return true;
-            case "VerticalAlignment.center":    ord = 1; return true;
-            case "VerticalAlignment.bottom":    ord = 2; return true;
+            case "VerticalAlignment.bottom":    ord = 1; return true;
+            case "VerticalAlignment.center":    ord = 2; return true;
             case "VerticalAlignment.stretch":   ord = 3; return true;
             default: return false;
         }
