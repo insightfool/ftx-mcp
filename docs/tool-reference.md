@@ -57,30 +57,37 @@ with the valid-property list rather than crashing Studio.
 
 ## Verify (rendered canvas)
 
-The 10 read/interact CDP primitives below are consolidated into two
-discriminator tools — `optix_observe(mode=…)` for reads and
-`optix_interact(action=…)` for actions — so an agent sees ~4 CDP tools
-instead of 12. The originals stay registered as **deprecated aliases** that
-delegate to the same functions; set `FTXMCP_LEGACY_TOOLS=0` to expose the
-consolidated surface only (default keeps both). `optix_cdp_sweep` /
-`optix_cdp_restart` are batch/lifecycle tools kept as-is.
+The 10 read/interact CDP primitives are consolidated into two discriminator
+tools — `optix_observe(mode=…)` for reads and `optix_interact(action=…)` for
+actions. **The default surface is consolidated-only**: the 10 deprecated
+`optix_cdp_*` aliases are OFF by default and are only registered when
+`FTXMCP_LEGACY_TOOLS=1` (an opt-in escape hatch for existing configs; the
+aliases delegate to the same functions and carry a deprecation marker).
+`optix_cdp_sweep` / `optix_cdp_restart` are NOT aliases — they are
+batch/lifecycle tools kept as-is and always registered.
 
 | Tool | What it does |
 |---|---|
 | `optix_observe` | Read-side capture: `mode` in `screenshot` / `ocr` / `read_text` / `find_text` / `diff` — consolidates the five read CDP tools |
 | `optix_interact` | Action: `action` in `click` / `fill` / `type` / `key` / `navigate` — consolidates the five interact CDP tools |
+| `optix_cdp_sweep` | Walk a route map in one session, capture per screen + OCR text manifest — baseline builder |
+| `optix_cdp_restart` | Recover the verify browser |
+| `optix_routes_save` / `_get` / `_list` | Bank/read/list navigation routes files server-side under `<project>/dev/` — the CREATE/read half of the routes-banking loop consumed by `optix_observe`/`optix_interact`(navigate) / `optix_cdp_sweep` |
+
+The rows below are the **deprecated aliases** — absent by default, restored
+only under `FTXMCP_LEGACY_TOOLS=1`. Prefer `optix_observe` / `optix_interact`.
+
+| Tool (deprecated alias) | What it does |
+|---|---|
 | `optix_cdp_screenshot` | Screenshot the running HMI (auto-targets it); `fresh=true` forces a reload when a stale frame is suspected; `region=[x,y,w,h]` crops (<=1.0 = viewport fractions, >1 = pixels); `return_image=true` returns typed MCP image content inline |
 | `optix_cdp_click` | Click at coordinates — reaches the Optix canvas where synthetic clicks don't |
 | `optix_cdp_fill` | Set a field in one call: click + select-all + type + Enter |
 | `optix_cdp_type` / `optix_cdp_key` | Keyboard primitives (mid-entry screenshots, arrow-stepping, Escape) |
 | `optix_cdp_ocr` | Text read-back fallback when the client has no vision |
 | `optix_cdp_read_text` | OCR a region (or the full frame) — the zero-vision-token "does it say X" check (needs tesseract) |
-| `optix_cdp_find_text` | Locate rendered text: word boxes + clickable centers, feeds `optix_cdp_click` and route building (needs tesseract) |
-| `optix_routes_save` / `_get` / `_list` | Bank/read/list navigation routes files server-side under `<project>/dev/` — the CREATE/read half of the routes-banking loop consumed by `optix_cdp_navigate` / `optix_cdp_sweep` |
+| `optix_cdp_find_text` | Locate rendered text: word boxes + clickable centers, feeds a click and route building (needs tesseract) |
 | `optix_cdp_navigate` | Replay a banked route from a routes file — zero-screenshot navigation; `expect_text` steps OCR-verify arrival |
-| `optix_cdp_sweep` | Walk a route map in one session, capture per screen + OCR text manifest — baseline builder |
 | `optix_cdp_diff` | Compare two sweep dirs: pixel gate + text-level delta per screen, pure text output |
-| `optix_cdp_restart` | Recover the verify browser |
 
 ## HTTP API
 

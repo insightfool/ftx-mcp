@@ -10,8 +10,10 @@ discriminator tools. These tests pin:
   2. the screenshot return_image List path (json + typed image) is preserved
      through optix_observe;
   3. an invalid mode/action returns a structured valid-vocab error (no raise);
-  4. FTXMCP_LEGACY_TOOLS=0 suppresses the 10 deprecated aliases while keeping
-     the consolidated tools + the kept-as-is sweep/restart.
+  4. the FTXMCP_LEGACY_TOOLS gate matrix: unset -> consolidated-only (the 10
+     deprecated aliases suppressed), "0" -> same as unset, "1" -> aliases
+     restored with the deprecation marker; the kept-as-is sweep/restart and
+     the consolidated tools survive every setting.
 """
 from __future__ import annotations
 
@@ -301,15 +303,20 @@ def test_interact_missing_required_param_returns_structured_error(
 
 # ---- FTXMCP_LEGACY_TOOLS gate -------------------------------------------
 
-def test_default_gate_registers_consolidated_and_aliases(cfg):
+def test_default_gate_registers_consolidated_not_aliases(cfg):
+    """DEFAULT (FTXMCP_LEGACY_TOOLS unset) is consolidated-only: optix_observe
+    / optix_interact are registered, the always-on sweep/restart survive, and
+    the 10 deprecated optix_cdp_* aliases are ABSENT."""
     mcp = make_mcp(cfg)
     names = {t.name for t in mcp._tool_manager.list_tools()}
     assert {"optix_observe", "optix_interact"} <= names
-    assert set(_CDP_ALIASES) <= names  # aliases kept by default
     assert {"optix_cdp_sweep", "optix_cdp_restart"} <= names
+    assert names.isdisjoint(_CDP_ALIASES)  # aliases OFF by default
 
 
 def test_gate_off_suppresses_aliases_keeps_consolidated(cfg, monkeypatch):
+    """FTXMCP_LEGACY_TOOLS=0 is not "1" so it matches the default: aliases
+    suppressed, consolidated + sweep/restart kept."""
     monkeypatch.setenv("FTXMCP_LEGACY_TOOLS", "0")
     mcp = make_mcp(cfg)
     names = {t.name for t in mcp._tool_manager.list_tools()}
@@ -321,7 +328,21 @@ def test_gate_off_suppresses_aliases_keeps_consolidated(cfg, monkeypatch):
     assert names.isdisjoint(_CDP_ALIASES)
 
 
-def test_deprecated_aliases_carry_deprecation_marker(cfg):
+def test_gate_on_restores_deprecated_aliases(cfg, monkeypatch):
+    """FTXMCP_LEGACY_TOOLS=1 is the opt-in escape hatch: it RESTORES the 10
+    deprecated aliases alongside the consolidated + sweep/restart tools."""
+    monkeypatch.setenv("FTXMCP_LEGACY_TOOLS", "1")
+    mcp = make_mcp(cfg)
+    names = {t.name for t in mcp._tool_manager.list_tools()}
+    assert {"optix_observe", "optix_interact"} <= names
+    assert set(_CDP_ALIASES) <= names  # aliases restored under the escape hatch
+    assert {"optix_cdp_sweep", "optix_cdp_restart"} <= names
+
+
+def test_deprecated_aliases_carry_deprecation_marker(cfg, monkeypatch):
+    """When restored via FTXMCP_LEGACY_TOOLS=1 the aliases carry the
+    deprecation prefix (markers only exist when the aliases are registered)."""
+    monkeypatch.setenv("FTXMCP_LEGACY_TOOLS", "1")
     mcp = make_mcp(cfg)
     by_name = {t.name: t for t in mcp._tool_manager.list_tools()}
     for alias in _CDP_ALIASES:

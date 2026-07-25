@@ -77,23 +77,16 @@ EXPECTED_TOOLS = {
     "optix_runtime_stop",
     "optix_runtime_status",
     "optix_services_status",
-    "optix_cdp_click",
-    "optix_cdp_fill",
-    "optix_cdp_type",
-    "optix_cdp_key",
-    "optix_cdp_screenshot",
-    "optix_cdp_ocr",
-    "optix_cdp_read_text",
-    "optix_cdp_find_text",
     "optix_routes_save",
     "optix_routes_get",
     "optix_routes_list",
-    "optix_cdp_navigate",
     "optix_cdp_sweep",
-    "optix_cdp_diff",
     "optix_cdp_restart",
-    # U14 consolidated CDP surface (the 12 optix_cdp_* aliases above stay
-    # registered under the default FTXMCP_LEGACY_TOOLS gate).
+    # U14 consolidation: the DEFAULT surface is consolidated-only. The 10
+    # optix_cdp_* aliases (screenshot/ocr/read_text/find_text/diff/click/
+    # fill/type/key/navigate) are OFF by default and only registered when
+    # FTXMCP_LEGACY_TOOLS=1. optix_cdp_sweep / optix_cdp_restart are NOT
+    # aliases and stay always-registered.
     "optix_observe",
     "optix_interact",
 }
@@ -243,11 +236,14 @@ def test_shellout_tools_are_offloaded_async(cfg: core.Config) -> None:
     needless thread hop)."""
     mcp = make_mcp(cfg)
     by_name = {t.name: t for t in _list_tools(mcp)}
+    # Only tools present in the DEFAULT (consolidated-only) surface. The 10
+    # optix_cdp_* aliases are off by default; the consolidated optix_observe /
+    # optix_interact carry the same multi-second CDP/tesseract shell-out paths
+    # and MUST be offloaded, along with the always-registered sweep/restart.
     for n in ("optix_emulator_status", "optix_run_emulator", "optix_restart_emulator",
-              "optix_cdp_screenshot", "optix_cdp_click", "optix_studio_version",
-              "optix_doctor", "optix_services_status", "optix_save",
-              "optix_cdp_read_text", "optix_cdp_find_text", "optix_cdp_navigate",
-              "optix_cdp_sweep", "optix_cdp_diff"):
+              "optix_studio_version", "optix_doctor", "optix_services_status",
+              "optix_save", "optix_cdp_sweep", "optix_cdp_restart",
+              "optix_observe", "optix_interact"):
         assert by_name[n].is_async is True, f"{n} must be offloaded (async)"
     for n in ("optix_health", "optix_list_projects", "optix_describe_node",
               "optix_bridge_set_property", "optix_get_project_map",
@@ -350,7 +346,7 @@ def test_deploy_family_hidden_by_default(cfg: core.Config) -> None:
     assert not (names & DEPLOY_FAMILY), names & DEPLOY_FAMILY
     # the emulator-first surface is intact
     for keep in ("optix_run_emulator", "optix_restart_emulator",
-                 "optix_bridge_create_widget", "optix_cdp_screenshot",
+                 "optix_bridge_create_widget", "optix_observe",
                  "optix_get_project_map"):
         assert keep in names
 
@@ -383,8 +379,8 @@ def test_cdp_screenshot_default_returns_dict_with_hint(
 
     monkeypatch.setattr(core, "cdp_screenshot_runtime", fake_capture)
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_cdp_screenshot")
-    out = _tool_fn(tool)(save_path=str(shot))
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_observe")
+    out = _tool_fn(tool)(mode="screenshot", save_path=str(shot))
     assert isinstance(out, dict)
     assert out["state"] == "succeeded"
     assert "hint" in out and "file tool" in out["hint"]
@@ -409,8 +405,8 @@ def test_cdp_screenshot_return_image_yields_typed_image_content(
 
     monkeypatch.setattr(core, "cdp_screenshot_runtime", fake_capture)
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_cdp_screenshot")
-    out = _tool_fn(tool)(save_path=str(shot), return_image=True)
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_observe")
+    out = _tool_fn(tool)(mode="screenshot", save_path=str(shot), return_image=True)
     assert isinstance(out, list) and len(out) == 2
     meta = _json.loads(out[0])
     assert meta["state"] == "succeeded" and meta["path"] == str(shot)
@@ -430,8 +426,8 @@ def test_cdp_screenshot_return_image_failure_stays_dict(
 
     monkeypatch.setattr(core, "cdp_screenshot_runtime", fake_capture)
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_cdp_screenshot")
-    out = _tool_fn(tool)(return_image=True)
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_observe")
+    out = _tool_fn(tool)(mode="screenshot", return_image=True)
     assert isinstance(out, dict)
     assert out["state"] == "failed"
 
@@ -453,8 +449,8 @@ def test_cdp_screenshot_region_forwarded_to_core(
 
     monkeypatch.setattr(core, "cdp_screenshot_runtime", fake_capture)
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_cdp_screenshot")
-    out = _tool_fn(tool)(save_path=str(shot), region=[0.1, 0.1, 0.2, 0.2])
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_observe")
+    out = _tool_fn(tool)(mode="screenshot", save_path=str(shot), region=[0.1, 0.1, 0.2, 0.2])
     assert seen["region"] == [0.1, 0.1, 0.2, 0.2]
     assert out["region"] == [10.0, 10.0, 20.0, 20.0]
 
@@ -478,8 +474,8 @@ def test_cdp_screenshot_region_composes_with_return_image(
 
     monkeypatch.setattr(core, "cdp_screenshot_runtime", fake_capture)
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_cdp_screenshot")
-    out = _tool_fn(tool)(save_path=str(shot), region=[0.0, 0.0, 0.1, 0.1], return_image=True)
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_observe")
+    out = _tool_fn(tool)(mode="screenshot", save_path=str(shot), region=[0.0, 0.0, 0.1, 0.1], return_image=True)
     assert isinstance(out, list) and len(out) == 2
     meta = _json.loads(out[0])
     assert meta["state"] == "succeeded" and meta["region"] == [5.0, 5.0, 15.0, 15.0]
@@ -496,8 +492,8 @@ def test_cdp_screenshot_bad_region_returns_dict_not_raise(
 
     monkeypatch.setattr(core, "cdp_screenshot_runtime", fake_capture)
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_cdp_screenshot")
-    out = _tool_fn(tool)(region=[1, 2, 3])
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_observe")
+    out = _tool_fn(tool)(mode="screenshot", region=[1, 2, 3])
     assert isinstance(out, dict)
     assert out["state"] == "failed" and out["error"] == "bad_region"
 
@@ -515,8 +511,8 @@ def test_cdp_read_text_tool_registered_and_forwards_to_core(
 
     monkeypatch.setattr(core, "cdp_read_text_runtime", fake_read_text)
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_cdp_read_text")
-    out = _tool_fn(tool)(region=[0.0, 0.0, 0.5, 0.5], psm=7)
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_observe")
+    out = _tool_fn(tool)(mode="read_text", region=[0.0, 0.0, 0.5, 0.5], psm=7)
     assert out["text"] == "SP-101"
     assert seen == {"region": [0.0, 0.0, 0.5, 0.5], "psm": 7}
 
@@ -528,8 +524,8 @@ def test_cdp_read_text_tool_degrades_on_missing_tesseract(
         "state": "failed", "text": None, "error": "tesseract_not_installed",
         "hint": "install tesseract"})
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_cdp_read_text")
-    out = _tool_fn(tool)()
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_observe")
+    out = _tool_fn(tool)(mode="read_text")
     assert out["state"] == "failed" and out["error"] == "tesseract_not_installed"
 
 
@@ -547,8 +543,8 @@ def test_cdp_find_text_tool_registered_and_forwards_to_core(
 
     monkeypatch.setattr(core, "cdp_find_text_runtime", fake_find_text)
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_cdp_find_text")
-    out = _tool_fn(tool)(text="Start")
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_observe")
+    out = _tool_fn(tool)(mode="find_text", text="Start")
     assert out["found"] is True and seen["text"] == "Start"
     assert out["matches"][0]["center_px"] == [2.5, 4.0]
 
@@ -560,8 +556,8 @@ def test_cdp_find_text_tool_no_match_is_not_an_error(
         "state": "succeeded", "found": False, "matches": [],
         "viewport": {"w": 1000, "h": 800}})
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_cdp_find_text")
-    out = _tool_fn(tool)(text="Nonexistent")
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_observe")
+    out = _tool_fn(tool)(mode="find_text", text="Nonexistent")
     assert out["state"] == "succeeded" and out["found"] is False
 
 
@@ -705,8 +701,8 @@ def test_cdp_diff_tool_registered_and_forwards_to_core(
 
     monkeypatch.setattr(core, "cdp_diff_runtime", fake_diff)
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_cdp_diff")
-    out = _tool_fn(tool)(dir_a="dev/before", dir_b="dev/after", threshold=5.0)
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_observe")
+    out = _tool_fn(tool)(mode="diff", dir_a="dev/before", dir_b="dev/after", threshold=5.0)
     assert out["state"] == "succeeded"
     assert seen == {"dir_a": "dev/before", "dir_b": "dev/after", "threshold": 5.0}
 
@@ -717,8 +713,8 @@ def test_cdp_diff_tool_manifest_not_found_surfaces_as_dict(
     monkeypatch.setattr(core, "cdp_diff_runtime", lambda dir_a, dir_b, threshold=2.0: {
         "state": "failed", "error": "manifest_not_found", "dir": dir_a})
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_cdp_diff")
-    out = _tool_fn(tool)(dir_a="missing", dir_b="also_missing")
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_observe")
+    out = _tool_fn(tool)(mode="diff", dir_a="missing", dir_b="also_missing")
     assert out["state"] == "failed" and out["error"] == "manifest_not_found"
 
 
@@ -771,11 +767,12 @@ def test_with_project_tool_count_and_annotations_unchanged(cfg: core.Config) -> 
     ToolAnnotations did (spot-check one of each class). Tool count grows as
     new tools land (69: 68 after the U15 schema tools + optix_active_target;
     71 after the U14 consolidated optix_observe + optix_interact land alongside
-    the 12 optix_cdp_* aliases kept under the default FTXMCP_LEGACY_TOOLS gate;
-    72 after U16's optix_bridge_edit)."""
+    the 12 optix_cdp_* aliases; 72 after U16's optix_bridge_edit). The default
+    surface is now consolidated-only: the 10 deprecated optix_cdp_* aliases are
+    off unless FTXMCP_LEGACY_TOOLS=1, so 72 - 10 = 62 by default."""
     mcp = make_mcp(cfg)
     by_name = {t.name: t for t in _list_tools(mcp)}
-    assert len(by_name) == 72
+    assert len(by_name) == 62
     assert by_name["optix_list_screens"].annotations.readOnlyHint is True
     write = by_name["optix_bridge_set_property"].annotations
     assert write.readOnlyHint is False and write.destructiveHint is False
