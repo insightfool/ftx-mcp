@@ -38,6 +38,15 @@ inside a packaged app like the Store build of Claude Desktop, whose
 If you downloaded a ZIP instead of cloning, run
 `Get-ChildItem -Recurse | Unblock-File` first.
 
+If `setup.ps1` (or any `bootstrap\*.ps1`) fails to run at all with a script-
+execution / "running scripts is disabled" error, your machine's execution
+policy is blocking unsigned scripts. Unblock them for the current window only —
+no admin, no persistent policy change — then re-run:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
 ```powershell
 git clone https://github.com/asqi-carter/ftx-mcp.git
 cd ftx-mcp
