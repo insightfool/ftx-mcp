@@ -2508,7 +2508,14 @@ public class StudioMCPBridge : BaseNetLogic
         {
             Type cached;
             if (_enumTypeCache.TryGetValue(dt, out cached)) return cached;
-            Type found = null;
+            // Optix names some enum DATATYPES with an "Enum" suffix (FontWeightEnum)
+            // while the .NET enum TYPE is bare (FTOptix.UI.FontWeight); others match
+            // exactly (VerticalAlignment). Accept the datatype name AND the
+            // suffix-stripped form. Prefer an exact match if both a "FooEnum" and a
+            // "Foo" enum exist.
+            string stripped = dt.EndsWith("Enum", StringComparison.Ordinal) && dt.Length > 4
+                ? dt.Substring(0, dt.Length - 4) : null;
+            Type exact = null, alt = null;
             foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
             {
                 Type[] types;
@@ -2516,9 +2523,14 @@ public class StudioMCPBridge : BaseNetLogic
                 catch (ReflectionTypeLoadException e) { types = e.Types.Where(x => x != null).ToArray(); }
                 catch { continue; }
                 foreach (var cand in types)
-                    if (cand != null && cand.IsEnum && cand.Name == dt) { found = cand; break; }
-                if (found != null) break;
+                {
+                    if (cand == null || !cand.IsEnum) continue;
+                    if (cand.Name == dt) { exact = cand; break; }
+                    if (stripped != null && alt == null && cand.Name == stripped) alt = cand;
+                }
+                if (exact != null) break;
             }
+            Type found = exact ?? alt;
             _enumTypeCache[dt] = found;
             return found;
         }
