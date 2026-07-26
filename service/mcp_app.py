@@ -2520,6 +2520,15 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         else:
             mcp._tool_manager._tools.pop(_alias, None)
 
+    # FTXMCP_SKILLS=0 drops the skill-catalog tools entirely (optix_list_skills /
+    # optix_get_skill), forcing a self-evident-tools-only surface. Default keeps
+    # them. This is the A/B lever for "do the tools alone suffice?" — and it
+    # removes the reflexive skill-pull the agent does even when the instructions
+    # say skills are reactive reference (observed pulling 6 skills unprompted).
+    if os.environ.get("FTXMCP_SKILLS") == "0":
+        for _sk in ("optix_list_skills", "optix_get_skill"):
+            mcp._tool_manager._tools.pop(_sk, None)
+
     # Offload the tools that shell out to Studio / PowerShell / Chrome-CDP onto a
     # worker thread. The official FastMCP runs a sync `def` tool fn DIRECTLY on the
     # event loop (Tool.run -> FuncMetadata.call_fn_with_arg_validation), so a slow

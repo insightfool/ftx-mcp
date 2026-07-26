@@ -111,6 +111,22 @@ def test_mcp_registers_every_spec_tool(cfg: core.Config) -> None:
     assert not extra, f"unexpected MCP tools (update EXPECTED_TOOLS or SPEC): {extra}"
 
 
+def test_skill_tools_present_by_default(cfg: core.Config, monkeypatch) -> None:
+    monkeypatch.delenv("FTXMCP_SKILLS", raising=False)
+    names = {t.name for t in _list_tools(make_mcp(cfg))}
+    assert "optix_list_skills" in names and "optix_get_skill" in names
+
+
+def test_ftxmcp_skills_0_drops_skill_tools(cfg: core.Config, monkeypatch) -> None:
+    """FTXMCP_SKILLS=0 removes the skill catalog tools entirely (the self-
+    evident-tools-only A/B surface) while leaving authoring tools intact."""
+    monkeypatch.setenv("FTXMCP_SKILLS", "0")
+    names = {t.name for t in _list_tools(make_mcp(cfg))}
+    assert "optix_list_skills" not in names
+    assert "optix_get_skill" not in names
+    assert "optix_bridge_edit" in names  # authoring surface unaffected
+
+
 def test_mcp_tool_descriptions_carry_use_when_guidance(cfg: core.Config) -> None:
     """Each tool docstring must include the 'Use this when' / 'Do NOT use'
     framing — it is a shipped UX surface for LLM-side MCP clients."""
