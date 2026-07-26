@@ -37,9 +37,7 @@ EXPECTED_TOOLS = {
     "optix_describe_node",
     "optix_list_ui_types",
     "optix_describe_type",
-    "optix_schema_dump",
-    "optix_schema_list",
-    "optix_schema_diff",
+    "optix_schema",  # U17: consolidated optix_schema_dump/_list/_diff
     "optix_bridge_edit",
     "optix_bridge_create_widget",
     "optix_bridge_add_label",
@@ -77,9 +75,7 @@ EXPECTED_TOOLS = {
     "optix_runtime_stop",
     "optix_runtime_status",
     "optix_services_status",
-    "optix_routes_save",
-    "optix_routes_get",
-    "optix_routes_list",
+    "optix_routes",  # U17: consolidated optix_routes_save/_get/_list
     "optix_cdp_sweep",
     "optix_cdp_restart",
     # U14 consolidation: the DEFAULT surface is consolidated-only. The 10
@@ -155,8 +151,7 @@ def test_mcp_tools_carry_readonly_destructive_annotations(cfg: core.Config) -> N
             "optix_bridge_validate_expression",
             "optix_emulator_status", "optix_runtime_log_tail",
             "optix_get_project_map", "optix_list_skills", "optix_get_skill",
-            "optix_routes_get", "optix_routes_list",
-            "optix_schema_dump", "optix_schema_list", "optix_schema_diff",
+            "optix_schema",  # U17: consolidated, all 3 actions were read-only
             "optix_active_target",
             # U14 consolidated read-side capture
             "optix_observe"}
@@ -263,7 +258,7 @@ def test_shellout_tools_are_offloaded_async(cfg: core.Config) -> None:
         assert by_name[n].is_async is True, f"{n} must be offloaded (async)"
     for n in ("optix_health", "optix_list_projects", "optix_describe_node",
               "optix_bridge_set_property", "optix_get_project_map",
-              "optix_routes_save", "optix_routes_get", "optix_routes_list"):
+              "optix_routes"):
         assert by_name[n].is_async is False, f"{n} should stay sync"
 
 
@@ -577,12 +572,14 @@ def test_cdp_find_text_tool_no_match_is_not_an_error(
     assert out["state"] == "succeeded" and out["found"] is False
 
 
-# ---- optix_routes_save / optix_routes_get / optix_routes_list (S7) ------
+# ---- optix_routes(action="save"|"get"|"list") (S7, consolidated U17) ----
 #
 # Motivation: a field test needed to CREATE a routes file server-side and
 # had no tool for it, so the model reached for host folder access. These
 # tests pin the tool-layer forwarding contract; core.py's test_cdp.py tests
-# cover the save->navigate round-trip and validation behavior.
+# cover the save->navigate round-trip and validation behavior. U17 folded
+# the formerly-separate optix_routes_save/_get/_list tools into one
+# action-discriminated optix_routes tool (clean replace, no aliases).
 
 def test_routes_save_tool_registered_and_forwards_to_core(
     cfg: core.Config, monkeypatch
@@ -596,8 +593,9 @@ def test_routes_save_tool_registered_and_forwards_to_core(
 
     monkeypatch.setattr(core, "routes_save", fake_save)
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_routes_save")
-    out = _tool_fn(tool)(project="Alpha", routes={"home": {"steps": [{"click": [0, 0]}]}})
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_routes")
+    out = _tool_fn(tool)(action="save", project="Alpha",
+                         routes={"home": {"steps": [{"click": [0, 0]}]}})
     assert out["state"] == "succeeded" and out["path"] == "/p/dev/ftx_ui_map.json"
     assert seen == {"project": "Alpha",
                     "routes": {"home": {"steps": [{"click": [0, 0]}]}},
@@ -609,8 +607,8 @@ def test_routes_save_tool_custom_name_forwarded(cfg: core.Config, monkeypatch) -
     monkeypatch.setattr(core, "routes_save", lambda cfg_, project, routes, name="ftx_ui_map": (
         seen.update(name=name) or {"state": "succeeded", "path": "p", "routes": [], "bytes": 2}))
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_routes_save")
-    _tool_fn(tool)(project="Alpha", routes={}, name="custom")
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_routes")
+    _tool_fn(tool)(action="save", project="Alpha", routes={}, name="custom")
     assert seen["name"] == "custom"
 
 
@@ -618,9 +616,18 @@ def test_routes_save_tool_surfaces_bad_name_as_dict(cfg: core.Config, monkeypatc
     monkeypatch.setattr(core, "routes_save", lambda cfg_, project, routes, name="ftx_ui_map": {
         "state": "failed", "error": "bad_name", "name": name})
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_routes_save")
-    out = _tool_fn(tool)(project="Alpha", routes={}, name="../escape")
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_routes")
+    out = _tool_fn(tool)(action="save", project="Alpha", routes={}, name="../escape")
     assert out["state"] == "failed" and out["error"] == "bad_name"
+
+
+def test_routes_save_tool_missing_routes_is_structured_error(
+    cfg: core.Config,
+) -> None:
+    mcp = make_mcp(cfg)
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_routes")
+    out = _tool_fn(tool)(action="save", project="Alpha")
+    assert out["error"] == "missing_param"
 
 
 def test_routes_get_tool_registered_and_forwards_to_core(
@@ -635,8 +642,8 @@ def test_routes_get_tool_registered_and_forwards_to_core(
 
     monkeypatch.setattr(core, "routes_get", fake_get)
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_routes_get")
-    out = _tool_fn(tool)(project="Alpha")
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_routes")
+    out = _tool_fn(tool)(action="get", project="Alpha")
     assert out["state"] == "succeeded"
     assert out["routes"]["routes"]["home"] == {"steps": []}
     assert seen == {"project": "Alpha", "name": "ftx_ui_map"}
@@ -646,8 +653,8 @@ def test_routes_get_tool_not_found_surfaces_as_dict(cfg: core.Config, monkeypatc
     monkeypatch.setattr(core, "routes_get", lambda cfg_, project, name="ftx_ui_map": {
         "state": "failed", "error": "routes_file_not_found", "path": "/p/dev/missing.json"})
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_routes_get")
-    out = _tool_fn(tool)(project="Alpha", name="missing")
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_routes")
+    out = _tool_fn(tool)(action="get", project="Alpha", name="missing")
     assert out["state"] == "failed" and out["error"] == "routes_file_not_found"
 
 
@@ -664,11 +671,19 @@ def test_routes_list_tool_registered_and_forwards_to_core(
 
     monkeypatch.setattr(core, "routes_list", fake_list)
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_routes_list")
-    out = _tool_fn(tool)(project="Alpha")
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_routes")
+    out = _tool_fn(tool)(action="list", project="Alpha")
     assert out["state"] == "succeeded"
     assert out["count"] == 1 and out["skipped"] == 1
     assert seen == {"project": "Alpha"}
+
+
+def test_routes_tool_bad_action_is_structured_error(cfg: core.Config) -> None:
+    mcp = make_mcp(cfg)
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_routes")
+    out = _tool_fn(tool)(action="delete", project="Alpha")
+    assert out["error"] == "bad_action"
+    assert "valid_actions" in out
 
 
 # ---- optix_cdp_sweep / optix_cdp_diff (S6) -------------------------------
@@ -785,10 +800,13 @@ def test_with_project_tool_count_and_annotations_unchanged(cfg: core.Config) -> 
     71 after the U14 consolidated optix_observe + optix_interact land alongside
     the 12 optix_cdp_* aliases; 72 after U16's optix_bridge_edit). The default
     surface is now consolidated-only: the 10 deprecated optix_cdp_* aliases are
-    off unless FTXMCP_LEGACY_TOOLS=1, so 72 - 10 = 62 by default."""
+    off unless FTXMCP_LEGACY_TOOLS=1, so 72 - 10 = 62 by default. U17 folds the
+    3-tool optix_schema_dump/_list/_diff family into optix_schema and the
+    3-tool optix_routes_save/_get/_list family into optix_routes (clean
+    replace, no aliases): 62 - 4 = 58."""
     mcp = make_mcp(cfg)
     by_name = {t.name: t for t in _list_tools(mcp)}
-    assert len(by_name) == 62
+    assert len(by_name) == 58
     assert by_name["optix_list_screens"].annotations.readOnlyHint is True
     write = by_name["optix_bridge_set_property"].annotations
     assert write.readOnlyHint is False and write.destructiveHint is False

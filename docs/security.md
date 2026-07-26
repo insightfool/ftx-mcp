@@ -42,7 +42,7 @@ fields:
 - `optix_observe(mode="ocr")` / `optix_observe(mode="read_text")` → `text` (confidence fields stay numeric)
 
 Structural, machine-consumed returns are deliberately **not** wrapped —
-`optix_routes_get` (a parsed dict re-consumed by navigate/sweep), `cdp_sweep`
+`optix_routes(action="get")` (a parsed dict re-consumed by navigate/sweep), `cdp_sweep`
 manifests (exact-list diffing), and server-shipped `optix_get_skill` content
 (trusted, ships with the distribution).
 

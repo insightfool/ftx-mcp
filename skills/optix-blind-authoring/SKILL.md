@@ -83,9 +83,9 @@ another component batch rather than growing one call unbounded.
 
 ## The per-project UI cache
 
-Bank the cache with `optix_routes_save` (project, routes payload) -- the
+Bank the cache with `optix_routes(action="save")` (project, routes payload) -- the
 service writes `dev/ftx_ui_map.json` itself; read it back with
-`optix_routes_get`. NEVER ask for host folder access or write the file with
+`optix_routes(action="get")`. NEVER ask for host folder access or write the file with
 client-side tools (the service filesystem is not reachable from sandboxed
 clients). The cache holds:
 
@@ -107,7 +107,7 @@ clients). The cache holds:
    whole batch of structural edits for the build, not each component in it —
    restart the emulator ONCE at the end and spend the one screenshot then,
    not per widget (see `optix-verify-loop`).
-5. **Bank anything newly discovered** back via `optix_routes_save` before
+5. **Bank anything newly discovered** back via `optix_routes(action="save")` before
    moving on — extra top-level keys (structure maps, notes) are preserved
    alongside `routes`, so one file carries the whole cache. The next
    session starts ahead.

@@ -18,7 +18,7 @@ project open in Studio.
 | `optix_find` / `optix_read_file` | Search / read project files |
 | `optix_describe_node` | Live node: children, properties, values |
 | `optix_list_ui_types` / `optix_describe_type` | Widget catalog + per-type property legend (consult before setting); `type_names=[...]` batches a survey into one call |
-| `optix_schema_dump` / `optix_schema_list` / `optix_schema_diff` | Cache the full type-schema dump per Studio version (offline), list cached versions, diff two versions (upgrade intelligence) |
+| `optix_schema` (`action="dump"`/`"list"`/`"diff"`) | Cache the full type-schema dump per Studio version (offline), list cached versions, diff two versions (upgrade intelligence) |
 | `optix_bridge_status` / `optix_studio_version` / `optix_services_status` | Component status |
 | `optix_list_skills` / `optix_get_skill` | Bundled authoring playbooks — catalog + on-demand full content (served by the server itself, version-locked to the tools) |
 
@@ -72,7 +72,7 @@ batch/lifecycle tools kept as-is and always registered.
 | `optix_interact` | Action: `action` in `click` / `fill` / `type` / `key` / `navigate` — consolidates the five interact CDP tools |
 | `optix_cdp_sweep` | Walk a route map in one session, capture per screen + OCR text manifest — baseline builder |
 | `optix_cdp_restart` | Recover the verify browser |
-| `optix_routes_save` / `_get` / `_list` | Bank/read/list navigation routes files server-side under `<project>/dev/` — the CREATE/read half of the routes-banking loop consumed by `optix_observe`/`optix_interact`(navigate) / `optix_cdp_sweep` |
+| `optix_routes` (`action="save"`/`"get"`/`"list"`) | Bank/read/list navigation routes files server-side under `<project>/dev/` — the CREATE/read half of the routes-banking loop consumed by `optix_observe`/`optix_interact`(navigate) / `optix_cdp_sweep` |
 
 The rows below are the **deprecated aliases** — absent by default, restored
 only under `FTXMCP_LEGACY_TOOLS=1`. Prefer `optix_observe` / `optix_interact`.

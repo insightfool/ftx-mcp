@@ -275,15 +275,27 @@ DEFAULT_SCOPE_RULES: tuple[ScopeRule, ...] = (
 # interacts with the rendered canvas (no runtime push); deploy = pushes to
 # the runtime or controls its lifecycle. Deploy tier is EXACTLY
 # {optix_deploy, optix_deploy_updatesvc, optix_runtime_start,
-# optix_runtime_stop}. Includes the deploy-family tools that are popped from
-# the registry when enable_deploy=False (harmless: a popped tool never
+# optix_runtime_stop}.
+#
+# U17 tool-count consolidation note: optix_schema_dump/_list/_diff (all
+# "read") merged into one optix_schema tool (action=) — unambiguous "read".
+# optix_routes_save ("author") + optix_routes_get/_list ("read") merged into
+# one optix_routes tool (action=) — assigned "author", the tier of its most-
+# privileged action; this tightens the get/list actions from "read" to
+# "author" (a bare read-scoped token can no longer call
+# optix_routes(action="get"/"list")). Deliberate: this family is low-traffic
+# internal plumbing with no observed need for read/write scope separation,
+# so a single static per-tool scope was preferred over threading
+# action-aware resolution through _required_tool_scope. Includes the
+# deploy-family tools that are popped from the registry when
+# enable_deploy=False (harmless: a popped tool never
 # dispatches) so the table describes the enable_deploy=True superset.
 TOOL_SCOPES: dict[str, str] = {
     # ---- health (3): liveness/status probes ----
     "optix_health": "health",
     "optix_runtime_status": "health",
     "optix_services_status": "health",
-    # ---- read (27): read-only introspection ----
+    # ---- read (25): read-only introspection ----
     "optix_doctor": "read",
     "optix_list_skills": "read",
     "optix_get_skill": "read",
@@ -296,9 +308,7 @@ TOOL_SCOPES: dict[str, str] = {
     "optix_describe_node": "read",
     "optix_list_ui_types": "read",
     "optix_describe_type": "read",
-    "optix_schema_dump": "read",
-    "optix_schema_list": "read",
-    "optix_schema_diff": "read",
+    "optix_schema": "read",  # U17: consolidated schema_dump/_list/_diff
     "optix_bridge_validate_expression": "read",
     "optix_emulator_status": "read",
     "optix_active_target": "read",
@@ -309,8 +319,6 @@ TOOL_SCOPES: dict[str, str] = {
     "optix_cdp_ocr": "read",
     "optix_cdp_read_text": "read",
     "optix_cdp_find_text": "read",
-    "optix_routes_get": "read",
-    "optix_routes_list": "read",
     "optix_cdp_diff": "read",
     "optix_observe": "read",  # U14 consolidated read-side CDP capture
     # ---- author (36): mutates project / previews / drives canvas ----
@@ -341,7 +349,7 @@ TOOL_SCOPES: dict[str, str] = {
     "optix_add_widget": "author",
     "optix_add_model_variable": "author",
     "optix_set_property": "author",
-    "optix_routes_save": "author",
+    "optix_routes": "author",  # U17: consolidated routes_save/_get/_list
     "optix_cdp_restart": "author",
     "optix_bridge_move_node": "author",
     "optix_bridge_convert_to_type": "author",

@@ -179,15 +179,17 @@ def _call_tool(mcp, name, **kwargs):
 
 
 def test_new_tools_are_in_tool_scopes() -> None:
-    for name in ("optix_schema_dump", "optix_schema_list", "optix_schema_diff"):
-        assert auth.TOOL_SCOPES[name] == "read"
+    # U17: optix_schema_dump/_list/_diff consolidated into one optix_schema
+    # tool (action="dump"|"list"|"diff"); all three were "read", so the
+    # merged tool keeps a single unambiguous "read" scope.
+    assert auth.TOOL_SCOPES["optix_schema"] == "read"
 
 
 def test_tool_schema_list(cfg: core.Config) -> None:
     optix_schema.cache_dump(cfg, _dump_a())
     optix_schema.cache_dump(cfg, _dump_b())
     mcp = make_mcp(cfg)
-    out = _call_tool(mcp, "optix_schema_list")
+    out = _call_tool(mcp, "optix_schema", action="list")
     assert out == {"versions": sorted([STUDIO_A, STUDIO_B])}
 
 
@@ -195,7 +197,8 @@ def test_tool_schema_diff_both_cached(cfg: core.Config) -> None:
     optix_schema.cache_dump(cfg, _dump_a())
     optix_schema.cache_dump(cfg, _dump_b())
     mcp = make_mcp(cfg)
-    out = _call_tool(mcp, "optix_schema_diff", version_a=STUDIO_A, version_b=STUDIO_B)
+    out = _call_tool(mcp, "optix_schema", action="diff",
+                     version_a=STUDIO_A, version_b=STUDIO_B)
     assert out["added_types"] == ["NewWidget"]
     assert out["removed_types"] == ["OldWidget"]
     assert out["summary"]["changed_types"] == 1
@@ -205,10 +208,26 @@ def test_tool_schema_diff_both_cached(cfg: core.Config) -> None:
 def test_tool_schema_diff_one_missing(cfg: core.Config) -> None:
     optix_schema.cache_dump(cfg, _dump_a())
     mcp = make_mcp(cfg)
-    out = _call_tool(mcp, "optix_schema_diff", version_a=STUDIO_A, version_b=STUDIO_B)
+    out = _call_tool(mcp, "optix_schema", action="diff",
+                     version_a=STUDIO_A, version_b=STUDIO_B)
     assert out["error"] == "version_not_cached"
     assert out["missing"] == [STUDIO_B]
     assert out["available"] == [STUDIO_A]
+
+
+def test_tool_schema_diff_missing_version_param_is_structured_error(
+    cfg: core.Config,
+) -> None:
+    mcp = make_mcp(cfg)
+    out = _call_tool(mcp, "optix_schema", action="diff", version_a=STUDIO_A)
+    assert out["error"] == "missing_param"
+
+
+def test_tool_schema_bad_action_is_structured_error(cfg: core.Config) -> None:
+    mcp = make_mcp(cfg)
+    out = _call_tool(mcp, "optix_schema", action="dumpster")
+    assert out["error"] == "bad_action"
+    assert "valid_actions" in out
 
 
 def test_tool_schema_dump_bridge_unavailable(cfg: core.Config, monkeypatch) -> None:
@@ -218,7 +237,7 @@ def test_tool_schema_dump_bridge_unavailable(cfg: core.Config, monkeypatch) -> N
     monkeypatch.setattr(optix_schema, "ensure_dump", boom)
     monkeypatch.setattr(core, "default_project", lambda c: "Proj")
     mcp = make_mcp(cfg)
-    out = _call_tool(mcp, "optix_schema_dump")
+    out = _call_tool(mcp, "optix_schema", action="dump")
     assert out["error"] == "bridge_unavailable"
     assert "endpoint" in out["hint"]
 
@@ -229,7 +248,7 @@ def test_tool_schema_dump_success(cfg: core.Config, monkeypatch) -> None:
                         lambda c, p, refresh=False, get_json=None: dump)
     monkeypatch.setattr(core, "default_project", lambda c: "Proj")
     mcp = make_mcp(cfg)
-    out = _call_tool(mcp, "optix_schema_dump")
+    out = _call_tool(mcp, "optix_schema", action="dump")
     assert out["studio_version"] == STUDIO_A
     assert out["type_count"] == 2
     assert out["property_count"] == 4

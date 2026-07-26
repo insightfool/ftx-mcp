@@ -11,7 +11,7 @@ diff -> read TEXT deltas. Images are only opened as a last resort.
 
 ## 1. Bank routes (once per project)
 
-Build a routes file with `optix_routes_save` (one route per screen you
+Build a routes file with `optix_routes(action="save")` (one route per screen you
 care about) -- the service owns the file; never ask for host folder access. Use `optix_observe(mode="find_text", text=...)` on visible labels to get
 clickable centers, then store NORMALIZED coords (0..1) so routes survive
 window-size changes. Give important steps an `expect_text` so a broken route

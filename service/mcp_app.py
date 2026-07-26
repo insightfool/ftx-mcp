@@ -106,7 +106,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             "optix_cdp_screenshot (verify). optix_doctor if something seems "
             "broken.\n"
             "FILES: service filesystem is unreachable from sandboxed clients "
-            "-- no host folder access; use optix_routes_save, "
+            "-- no host folder access; use optix_routes(action=\"save\"), "
             "return_image=true, sweep/diff text."
         ),
     )
@@ -541,69 +541,96 @@ def make_mcp(cfg: core.Config) -> FastMCP:
                     "message": "pass type_name or type_names"}
         return core.describe_type(cfg, project, type_name)
 
-    @mcp.tool(annotations=_RO)
-    @_with_project
-    def optix_schema_dump(project: str | None = None) -> dict:
-        """Fetch + cache the FULL type-schema dump for the running Studio version.
+    # ---- consolidated schema surface -----------------------------------
+    # optix_schema collapses optix_schema_dump / _list / _diff into one
+    # action-discriminated tool (same rationale as the U14 CDP consolidation:
+    # fewer tools registered = fewer ToolSearch deferral round-trips). This
+    # family is low-traffic internal plumbing (not the heavily-used CDP one),
+    # so there is a CLEAN REPLACE — no deprecated per-action aliases. All
+    # three actions were already _RO (read-only), so the merge is
+    # annotation-uniform; no semantic split to reconcile.
+    _SCHEMA_ACTIONS = ("dump", "list", "diff")
 
-        Enumerates the whole builtin type catalog into an offline cache keyed by
-        Studio version, then returns a compact SUMMARY (never the full dump —
-        it's large). Powers offline reads and cross-version diffing
-        (optix_schema_diff). Requires Studio open + bridge + the bridge's
-        /bridge/schema/dump endpoint; missing any returns `bridge_unavailable`.
+    @mcp.tool(annotations=_RO, name="optix_schema")
+    def _optix_schema_tool(
+        action: Literal["dump", "list", "diff"],
+        project: str | None = None,
+        version_a: str | None = None,
+        version_b: str | None = None,
+    ) -> dict:
+        """Studio type-schema operations — ONE tool, pick an `action`.
+        Consolidates the optix_schema_dump / _list / _diff family (each
+        formerly its own tool); replaced cleanly, no deprecated aliases.
+
+        action:
+          - "dump" — fetch + cache the FULL type-schema dump for the running
+            Studio version. Enumerates the whole builtin type catalog into an
+            offline cache keyed by Studio version, then returns a compact
+            SUMMARY (never the full dump — it's large). Powers offline reads
+            and cross-version diffing (action="diff"). Requires Studio open +
+            bridge + the bridge's /bridge/schema/dump endpoint; missing any
+            returns `bridge_unavailable`. Uses `project` (omit for the
+            bridge's served project).
+          - "list" — list the Studio versions whose schema dumps are cached
+            on disk. Pure offline read — no Studio required. Feed any two of
+            these to action="diff". Ignores `project`/`version_a`/`version_b`.
+          - "diff" — diff two cached schema dumps (upgrade intelligence,
+            offline). Requires `version_a` (the older/from version) and
+            `version_b` (the newer/to version); `changed_types` maps a type
+            to its added/removed/changed properties (a changed prop = same
+            name, different datatype or settable). Both versions must be
+            cached (action="dump" on each box, or action="list" to see what's
+            available); if either is missing, returns
+            error='version_not_cached' with `missing`/`available`.
+
+        An unknown `action`, or "diff" missing a required version, returns a
+        structured error rather than raising.
 
         Use this when:
           - you want to snapshot the current Studio version's schema for
-            offline use or later cross-version comparison
+            offline use or later cross-version comparison ("dump")
+          - you want to know which schema snapshots are available to diff
+            ("list")
+          - the user asks what changed in the type schema between two Studio
+            versions — new types, dropped properties, datatype changes
+            ("diff")
 
         Do NOT use this when:
           - you only need one type's shape (optix_describe_type)
-          - Studio is closed (the bridge is down)
+          - Studio is closed and you need "dump" (the bridge is down) —
+            "list" and "diff" work fully offline regardless
+          - a version has not been dumped yet (run action="dump" there first,
+            then "diff")
         """
-        try:
-            dump = optix_schema.ensure_dump(cfg, project)
-        except core.BridgeUnavailable:
+        if action not in _SCHEMA_ACTIONS:
             return {
-                "error": "bridge_unavailable",
-                "hint": ("schema dump needs Studio open + the bridge armed + "
-                         "the /bridge/schema/dump endpoint (bridge build)"),
+                "error": "bad_action",
+                "message": (f"unknown action {action!r}; valid actions: "
+                            f"{', '.join(_SCHEMA_ACTIONS)}"),
+                "valid_actions": list(_SCHEMA_ACTIONS),
             }
-        path = optix_schema.cache_path(cfg, dump.get("studio_version", ""))
-        return optix_schema.dump_summary(dump, path)
-
-    @mcp.tool(annotations=_RO)
-    def optix_schema_list() -> dict:
-        """List the Studio versions whose schema dumps are cached on disk.
-
-        Pure offline read — no Studio required. Feed any two of these to
-        optix_schema_diff.
-
-        Use this when:
-          - you want to know which schema snapshots are available to diff
-
-        Do NOT use this when:
-          - you want the shape of a live type (use optix_describe_type)
-        """
-        return {"versions": optix_schema.list_cached(cfg)}
-
-    @mcp.tool(annotations=_RO)
-    def optix_schema_diff(version_a: str, version_b: str) -> dict:
-        """Diff two cached schema dumps (upgrade intelligence, offline).
-
-        `version_a` is the older/from version, `version_b` the newer/to.
-        `changed_types` maps a type to its added/removed/changed properties (a
-        changed prop = same name, different datatype or settable). Both
-        versions must be cached (optix_schema_dump on each box, or
-        optix_schema_list to see what's available); if either is missing,
-        returns error='version_not_cached' with `missing`/`available`.
-
-        Use this when:
-          - the user asks what changed in the type schema between two Studio
-            versions (new types, dropped properties, datatype changes)
-
-        Do NOT use this when:
-          - a version has not been dumped yet (run optix_schema_dump there)
-        """
+        if action == "list":
+            return {"versions": optix_schema.list_cached(cfg)}
+        if action == "dump":
+            proj = _resolve_project(project)
+            if not proj:
+                return _NO_PROJECT
+            try:
+                dump = optix_schema.ensure_dump(cfg, proj)
+            except core.BridgeUnavailable:
+                return {
+                    "error": "bridge_unavailable",
+                    "hint": ("schema dump needs Studio open + the bridge armed + "
+                             "the /bridge/schema/dump endpoint (bridge build)"),
+                }
+            path = optix_schema.cache_path(cfg, dump.get("studio_version", ""))
+            return optix_schema.dump_summary(dump, path)
+        # action == "diff"
+        if not version_a or not version_b:
+            return {
+                "error": "missing_param",
+                "message": "action 'diff' requires version_a and version_b",
+            }
         a = optix_schema.load_dump(cfg, version_a)
         b = optix_schema.load_dump(cfg, version_b)
         missing = [v for v, d in ((version_a, a), (version_b, b)) if d is None]
@@ -1927,84 +1954,102 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     # needs local file access: optix_cdp_find_text (discover) ->
     # optix_routes_save (bank) -> optix_cdp_navigate/optix_cdp_sweep (replay).
 
-    @mcp.tool(annotations=_RW)
-    def optix_routes_save(
-        project: str, routes: dict, name: str = "ftx_ui_map",
+    # ---- consolidated routes surface -----------------------------------
+    # optix_routes collapses optix_routes_save / _get / _list into one
+    # action-discriminated tool (same rationale as optix_schema above: fewer
+    # registered tools = fewer ToolSearch deferral round-trips). Low-traffic
+    # internal plumbing, so a CLEAN REPLACE — no deprecated per-action
+    # aliases. Annotation note: "save" writes, "get"/"list" only read: the
+    # merged tool is annotated _RW (can write) rather than _RO, the same
+    # trade-off optix_bridge_edit makes for its most-privileged dispatched
+    # op. Scope note: TOOL_SCOPES["optix_routes"] = "author" (was "read" for
+    # get/list, "author" for save) — a deliberate tightening so a bare `read`
+    # token can no longer call action="get"/"list"; this family sees no
+    # meaningful read-only traffic separate from save, so the simpler single
+    # scope was preferred over threading action-aware scope resolution
+    # through _required_tool_scope.
+    _ROUTES_ACTIONS = ("save", "get", "list")
+
+    @mcp.tool(annotations=_RW, name="optix_routes")
+    def _optix_routes_tool(
+        action: Literal["save", "get", "list"],
+        project: str,
+        routes: dict | None = None,
+        name: str = "ftx_ui_map",
     ) -> dict:
-        """Save a navigation routes file server-side — the CREATE half of
-        the routes-banking loop for optix_cdp_navigate / optix_cdp_sweep.
+        """Routes-file CRUD — ONE tool, pick an `action`. Consolidates
+        optix_routes_save / _get / _list (each formerly its own tool);
+        replaced cleanly, no deprecated aliases.
 
-        Routes files live in the service — do NOT ask the user for host
-        folder access. `routes` accepts either the full versioned shape
-        (`{"version": 1, "routes": {"<name>": {"steps": [...]}}}`) or a bare
-        `{"<name>": {"steps": [...]}}` mapping — both normalize on disk. Each
-        route's `steps` is validated BEFORE anything is written: a malformed
-        step anywhere fails error='routes_invalid' naming the offending
-        route/step, rather than writing a partial file.
+        Routes files live in the SERVICE (a project's `dev/<name>.json`) —
+        do NOT ask the user for host folder access; these three actions are
+        the entire CRUD surface for them. `project` is required for every
+        action (no bridge-default fallback — routes files are project-scoped
+        by path, not by what Studio has open).
 
-        Saved at `<project>/dev/<name>.json` (default "ftx_ui_map"). `name` is
-        sanitized to `[a-zA-Z0-9._-]` — anything else fails error='bad_name'
-        before touching disk. Saving over an existing `name` REPLACES its
-        content wholesale (not a merge). `path` in the result is directly
-        usable as `routes_path`.
+        action:
+          - "save" — CREATE/REPLACE a routes file, the bank half of the
+            routes-banking loop for optix_interact(action="navigate") /
+            optix_cdp_sweep. Requires `routes`: either the full versioned
+            shape (`{"version": 1, "routes": {"<name>": {"steps": [...]}}}`)
+            or a bare `{"<name>": {"steps": [...]}}` mapping — both
+            normalize on disk. Each route's `steps` is validated BEFORE
+            anything is written: a malformed step anywhere fails
+            error='routes_invalid' naming the offending route/step, rather
+            than writing a partial file. Saved at `<project>/dev/<name>.json`
+            (default "ftx_ui_map"). `name` is sanitized to `[a-zA-Z0-9._-]` —
+            anything else fails error='bad_name' before touching disk.
+            Saving over an existing `name` REPLACES its content wholesale
+            (not a merge). `path` in the result is directly usable as
+            `routes_path`.
+          - "get" — read back a routes file saved via "save". A bad `name`
+            fails error='bad_name' before touching disk (same sanitization
+            rule as "save"); a missing file fails 'routes_file_not_found'
+            (with `path`); malformed JSON fails 'routes_file_invalid'. Never
+            raises for a missing/bad file. Ignores `routes`.
+          - "list" — list every routes file saved under the project's
+            `dev/` — what's already banked, before you navigate/sweep or
+            save more. Only files parsing as a valid routes file (JSON
+            object with a dict "routes" key) are listed; anything else under
+            dev/*.json is skipped silently and counted in `skipped` — one
+            bad file never hides the rest. No dev/ directory yet is not an
+            error (files=[], count=0). Ignores `routes`/`name`.
+
+        An unknown `action` returns a structured error rather than raising.
 
         Use this when:
           - you've discovered a click sequence (via optix_observe
             find_text/screenshot) and want to bank it for cheap replay
+            ("save")
+          - inspecting what routes/steps a banked file actually contains,
+            e.g. before editing it via "save" ("get")
+          - you don't remember what routes files (or route names) already
+            exist before saving a new one or navigating ("list")
 
         Do NOT use this when:
           - the routes file already has the route you need — just
-            optix_cdp_navigate by name, no need to re-save
-          - you only want to read what's banked (optix_routes_get /
-            optix_routes_list)
+            optix_interact(action="navigate") by name, no need to re-save
+          - you only want to replay a route (optix_interact reads the file
+            directly)
+          - you don't know the file's `name` yet ("list" first, then "get")
         """
-        return core.routes_save(cfg, project, routes, name=name)
-
-    @mcp.tool(annotations=_RO)
-    def optix_routes_get(project: str, name: str = "ftx_ui_map") -> dict:
-        """Read back a routes file saved with optix_routes_save.
-
-        Routes files live in the service (not visible to client-side file
-        tools) — do NOT ask the user for host folder access.
-
-        Looks at `<project>/dev/<name>.json`. A bad `name` fails
-        error='bad_name' before touching disk (see optix_routes_save for the
-        sanitization rule); a missing file fails 'routes_file_not_found'
-        (with `path`); malformed JSON fails 'routes_file_invalid'. Never
-        raises for a missing/bad file.
-
-        Use this when:
-          - inspecting what routes/steps a banked file actually contains,
-            e.g. before editing it via optix_routes_save
-
-        Do NOT use this when:
-          - you just want to replay a route (optix_cdp_navigate reads the
-            file directly)
-          - you don't know the file's `name` (optix_routes_list first)
-        """
-        return core.routes_get(cfg, project, name=name)
-
-    @mcp.tool(annotations=_RO)
-    def optix_routes_list(project: str) -> dict:
-        """List every routes file saved under a project's `dev/` — what's
-        already banked, before you navigate/sweep or save more.
-
-        Routes files live in the service (not visible to client-side file
-        tools) — do NOT ask the user for host folder access.
-
-        Only files parsing as a valid routes file (JSON object with a dict
-        "routes" key) are listed; anything else under dev/*.json is skipped
-        silently and counted in `skipped` — one bad file never hides the
-        rest. No dev/ directory yet is not an error (files=[], count=0).
-
-        Use this when:
-          - you don't remember what routes files (or route names) already
-            exist before saving a new one or navigating
-
-        Do NOT use this when:
-          - you already know the exact `name` (optix_routes_get is more
-            direct) or route (optix_cdp_navigate reads the file itself)
-        """
+        if action not in _ROUTES_ACTIONS:
+            return {
+                "error": "bad_action",
+                "message": (f"unknown action {action!r}; valid actions: "
+                            f"{', '.join(_ROUTES_ACTIONS)}"),
+                "valid_actions": list(_ROUTES_ACTIONS),
+            }
+        if action == "save":
+            if routes is None:
+                return {
+                    "error": "missing_param",
+                    "message": "action 'save' requires routes",
+                }
+            return core.routes_save(cfg, project, routes, name=name)
+        if action == "get":
+            return core.routes_get(cfg, project, name=name)
+        # action == "list"
         return core.routes_list(cfg, project)
 
     @mcp.tool(annotations=_RW_DESTRUCTIVE)
@@ -2022,7 +2067,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         optix_cdp_screenshot's `region` — portable across window sizes.
         Convention: bank routes at `dev/ftx_ui_map.json` (see the
         optix-blind-authoring skill). `routes_path` accepts the `path`
-        returned by optix_routes_save directly.
+        returned by optix_routes(action="save") directly.
 
         Routes files live in the service (not visible to client-side file
         tools) — do NOT ask the user for host folder access.
@@ -2066,7 +2111,8 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         session — builds the visual baseline optix_cdp_diff compares against.
 
         Loads routes_path exactly like optix_cdp_navigate (same format;
-        `routes_path` accepts the `path` from optix_routes_save directly).
+        `routes_path` accepts the `path` from optix_routes(action="save")
+        directly).
         Routes files live in the service — do NOT ask the user for host
         folder access.
 
