@@ -34,15 +34,3 @@ to revert on disk afterward.
 Omit `navigate_url` entirely to shoot the CURRENT tab state. Passing a URL
 navigates first — which resets transient UI state (open dropdowns, dialog
 overlays, unsaved form fields) before the capture.
-
-## VerticalAlignment/HorizontalAlignment=Bottom/Right renders CENTERED
-
-FTOptix.UI's `VerticalAlignment` and `HorizontalAlignment` enums are ordered
-`Top/Left=0, Bottom/Right=1, Center=2, Stretch=3` — the EXTREME member is 1,
-Center is 2 (NOT the WPF `Center=1` order). A bridge built before the
-2026-07-25 ordinal fix mapped `Bottom`→2, so it silently set Center and
-rendered centered. If an edge-anchor won't stick: rebuild+redeploy the bridge
-(the fix is in `TryEnumOrdinal`), or as a stopgap on an old bridge pass the
-numeric ordinal directly — `VerticalAlignment: "1"` for bottom, `"2"` for
-center. (The sibling `ContentVerticalAlignment`/`TextVerticalAlignment` enums
-DO use `Center=1` — different enums, unaffected.)
