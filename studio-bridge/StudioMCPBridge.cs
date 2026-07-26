@@ -2495,19 +2495,62 @@ public class StudioMCPBridge : BaseNetLogic
     // that asserts on an empty localeId. Prefer the integer ordinal (raw is a number,
     // or a resolvable friendly member name for the built-in alignment enums); only
     // fall back to the string assign for a genuinely non-enum exotic datatype.
+    // dt (browse-name) -> the actual FTOptix .NET enum Type, resolved by reflection
+    // and cached (misses cached as null). The scan is over already-loaded assemblies,
+    // so at model-write time the FTOptix.UI enums are present.
+    private static readonly Dictionary<string, Type> _enumTypeCache =
+        new Dictionary<string, Type>();
+
+    private static Type ResolveEnumType(string dt)
+    {
+        if (string.IsNullOrEmpty(dt)) return null;
+        lock (_enumTypeCache)
+        {
+            Type cached;
+            if (_enumTypeCache.TryGetValue(dt, out cached)) return cached;
+            Type found = null;
+            foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                Type[] types;
+                try { types = a.GetTypes(); }
+                catch (ReflectionTypeLoadException e) { types = e.Types.Where(x => x != null).ToArray(); }
+                catch { continue; }
+                foreach (var cand in types)
+                    if (cand != null && cand.IsEnum && cand.Name == dt) { found = cand; break; }
+                if (found != null) break;
+            }
+            _enumTypeCache[dt] = found;
+            return found;
+        }
+    }
+
     private static string SetEnumOrRaw(IUAVariable v, string dt, string raw)
     {
         int ord;
         if (int.TryParse(raw, out ord)) { v.Value = ord; return null; }
+        // GENERIC: reflect the property's real enum type and parse the friendly
+        // name from its own metadata. Handles every enum (FontWeight,
+        // TextHorizontalAlignment, alignment, ...) correctly — no hardcoded
+        // per-enum map to maintain or get wrong. Case-insensitive. An invalid
+        // name gets a valid-member list straight from the enum.
+        var et = ResolveEnumType(dt);
+        if (et != null)
+        {
+            try { v.Value = Convert.ToInt32(Enum.Parse(et, raw, true)); return null; }
+            catch
+            {
+                return "invalid value '" + raw + "' for enum " + dt + "; valid: " +
+                       string.Join(", ", Enum.GetNames(et));
+            }
+        }
+        // Fallback for the built-in alignment enums if reflection can't resolve the
+        // type (redundant while FTOptix.UI is loaded, kept as belt-and-suspenders).
         if (TryEnumOrdinal(dt, raw, out ord)) { v.Value = ord; return null; }
-        // Neither an ordinal nor a known member name. A bare-string assign to an enum
-        // asserts (!localeId.empty) and leaks a cryptic native CoreException, so refuse
-        // with a clean, actionable error instead of falling through to it.
         var known = KnownEnumMembers(dt);
         if (known != null)
             return "invalid value '" + raw + "' for enum " + dt + "; valid: " + string.Join(", ", known);
-        // Genuinely exotic (non-enum) datatype: attempt the string assign, but catch the
-        // native assert so an enum we don't have a member list for still gets a clean message.
+        // Genuinely non-enum datatype: attempt the string assign, catching the
+        // native assert so we still return a clean message.
         try { v.Value = raw; return null; }
         catch (Exception ex)
         {
