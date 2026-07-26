@@ -20,13 +20,14 @@ optix_bridge_edit(project, ops=[
   {"op": "set_property", "path": "UI/Screens/<S>/Card", "name": "BorderColor", "value": "#b3b3b3"},
   {"op": "set_property", "path": "UI/Screens/<S>/Card", "name": "BorderThickness", "value": "1"},
   {"op": "set_property", "path": "UI/Screens/<S>/Card", "name": "CornerRadius", "value": "8"},
-  {"op": "set_property", "path": "UI/Screens/<S>/Card", "name": "Opacity", "value": "0.9"},
+  {"op": "set_property", "path": "UI/Screens/<S>/Card", "name": "Opacity", "value": "90"},
 ])
 ```
 1. **Create:** `create_widget`, `widget_type="Rectangle"`.
 2. **Style** (Color props take `#RRGGBB` / `#AARRGGBB` / uint — the bridge
    coerces hex → UInt32 ARGB): `FillColor`, `BorderColor` +
-   `BorderThickness`, `CornerRadius`, `Opacity` (0–1), `Width`/`Height`, and
+   `BorderThickness`, `CornerRadius`, `Opacity` (**0–100**, default 100 — NOT a
+   0–1 fraction; `0.9` is ~invisible, use `90` for 90%), `Width`/`Height`, and
    `HorizontalAlignment`/`VerticalAlignment` for placement (see
    `optix-anchor-fill`) — fold any of these straight into the same ops list.
 
