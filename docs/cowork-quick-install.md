@@ -38,8 +38,8 @@ Claude Desktop / Cowork. If anything fails along the way,
    configured here, never added through Connectors → Add.) In Cowork its
    tools are namespaced `ftx-mcp__optix_*`.
 
-5. **Try it.** Ask Cowork to "run `optix_doctor`" — it should come back with
-   a plain-English health report.
+5. **Try it.** Ask Cowork to "run `optix_status` with action doctor" — it
+   should come back with a plain-English health report.
 
 The bundled authoring playbooks come along automatically — the server
 announces them at connect time and Claude fetches one on demand

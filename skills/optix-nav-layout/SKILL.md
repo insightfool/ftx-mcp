@@ -62,11 +62,15 @@ whole batch before applying, so no dry_run pre-flight is needed. Extend
 the same pattern (repeat the screen/title/item triple) for N screens instead
 of 2 — the batch scales linearly in ops, not in round trips.
 
-**Just tweaking one existing item?** The per-noun tools
-(`optix_bridge_set_property`, ...) are simpler than composing a batch for a
-single edit.
+**Just tweaking one existing item?** Call `optix_bridge_edit` with a one-op
+list — it handles a single edit fine, no need to compose a batch for it.
 
 ## Recipe (bridge tools; Studio open + bridge armed)
+
+The per-noun calls below require `FTXMCP_BRIDGE_PRIMITIVES=1` (gated off by
+default — see `docs/tool-reference.md`); on a default install express each
+step as a one-op `optix_bridge_edit` call instead (same op verb/fields shown
+in the batch above).
 
 1. **A loadable screen must be an Object TYPE, not an instance.** Create them under
    `UI/Screens`:
@@ -109,7 +113,7 @@ single edit.
    > the visual result.
 
 5. **Verify:**
-   `optix_restart_emulator(project)` →
+   `optix_emulator(action="restart", project=project)` →
    `optix_observe(mode="screenshot", project=project, save_path="<your session dir>/nav-verify.jpg")`.
    **Always pass `save_path`** and read the file — an inline base64 return makes some
    hosts try to *render* it ("visualize"), which stalls on a headless/sandboxed box.

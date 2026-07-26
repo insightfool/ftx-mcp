@@ -33,17 +33,17 @@ Studio to add the alarm, then this skill wires the UI to it.
    ```
    `bind`'s op fields are `path`/`name`/`source_path`/`mode` (not
    `target`/`variable`); `attach_expression`'s are `path`/`prop_name`/
-   `expression`/`sources`. Just one property to bind? The per-noun
-   `optix_bridge_bind_property` call is simpler than a one-item batch:
-   - **Visibility only:** `optix_bridge_bind_property(project, "UI/Screens/<S>/AlarmLight", "Visible", "Alarms/<AlarmName>/Active", mode="Read")`
-   - **Blink only:** `optix_bridge_bind_property(project, ".../AlarmLight", "Blink", "Alarms/<AlarmName>/Active", mode="Read")`
-   - **Color, 1:1** (no formula): `bind_property(".../AlarmLight", "FillColor", "Model/AlarmColor", mode="Read")`.
+   `expression`/`sources`. Just one property to bind? Call `optix_bridge_edit`
+   with a one-op list — it handles a single op fine, no need to compose a
+   one-item batch:
+   - **Visibility only:** `optix_bridge_edit(project, ops=[{"op": "bind", "path": "UI/Screens/<S>/AlarmLight", "name": "Visible", "source_path": "Alarms/<AlarmName>/Active", "mode": "Read"}])`
+   - **Blink only:** same op, `"name": "Blink"`.
+   - **Color, 1:1** (no formula): same op, `"name": "FillColor", "source_path": "Model/AlarmColor"`.
 
 ## Fault=red / ok=green (conditional color)
 
-A color that switches on the alarm Boolean — use `optix_bridge_attach_expression`
-on the indicator's `FillColor` (op verb `attach_expression`, shown in the batch
-above):
+A color that switches on the alarm Boolean — use the `attach_expression` op
+on the indicator's `FillColor` (shown in the batch above):
 `expression="if({0}, 0xFFFF0000, 0xFF00FF00)", sources="Alarms/<AlarmName>/Active"`
 (red when active, green otherwise). See the `optix-expression-converter` skill;
 verify at runtime since converters no-op silently.

@@ -26,7 +26,7 @@ from service.mcp_app import (
 def test_required_tool_scope_maps_the_four_tiers(cfg: core.Config) -> None:
     mcp = make_mcp(cfg)
     # health-tier liveness probe
-    assert _required_tool_scope(mcp, "optix_health") == "health"
+    assert _required_tool_scope(mcp, "optix_runtime_status") == "health"
     # read-only introspection
     assert _required_tool_scope(mcp, "optix_describe_node") == "read"
     # author-tier: mutate the Studio project (was `deploy` under the old

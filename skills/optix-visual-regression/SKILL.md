@@ -50,4 +50,4 @@ Read the result as text, `text_changed` FIRST:
 Pixel diff needs Pillow (`pip install ftx-mcp[visual]`); without it, diff
 degrades to text-only mode (still useful when OCR text exists). OCR
 manifests need tesseract - without it sweep still captures images but the
-cheap text loop is unavailable. `optix_doctor` reports both.
+cheap text loop is unavailable. `optix_status(action="doctor")` reports both.

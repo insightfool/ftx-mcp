@@ -20,8 +20,8 @@ optix_bridge_edit(project, ops=[
 ])
 ```
 (Alignment props are enums — pass the friendly name; the bridge coerces.)
-One edit only? `optix_bridge_set_property` per call is simpler than composing
-a two-item batch.
+One edit only? Call `optix_bridge_edit` with a one-op list — it handles a
+single op fine, no need to compose a two-item batch.
 
 ## Dock to an edge
 Stretch on the cross axis, align on the main axis, and use margins to inset —
@@ -40,7 +40,7 @@ optix_bridge_edit(project, ops=[
 ## Auto-arranging containers (instead of manual margins)
 For rows/columns/grids that lay children out automatically, create a layout
 container and drop children into it:
-`optix_bridge_create_widget(project, screen="UI/Screens/<S>", name="Row1", widget_type="RowLayout")`
+`optix_bridge_edit(project, ops=[{"op": "create_widget", "screen": "UI/Screens/<S>", "name": "Row1", "widget_type": "RowLayout"}])`
 (also `ColumnLayout`, `GridLayout`). **Verify the type live first** with
 `optix_describe_type("RowLayout")` — these aren't in the create tool's example
 list, so confirm the exact type name and its child-arrangement props before

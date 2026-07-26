@@ -138,7 +138,7 @@ class CDPClient:
     def reload(self, ignore_cache: bool = False) -> None:
         """Reload the current page. ignore_cache=True (CDP Page.reload's
         ignoreCache) bypasses Chrome's disk/memory cache for this load —
-        use it for a forced 'fresh' recapture: after optix_restart_emulator
+        use it for a forced 'fresh' recapture: after optix_emulator(action='restart')
         the runtime process is new but the tab/URL is unchanged, so a
         plain reload can still be served from cache instead of actually
         re-fetching from (and reconnecting to) the restarted runtime."""

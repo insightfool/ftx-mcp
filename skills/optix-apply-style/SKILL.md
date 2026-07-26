@@ -22,7 +22,7 @@ hand-set colors per widget.
    `ButtonStyle`/`SwitchStyle`/`GaugeStyle`).
 
 3. **Point it** (NodeId props resolve by path):
-   `optix_bridge_set_property(project, "UI/Screens/<S>/<Widget>", "Style", "UI/StyleSheets/DefaultStyleSheet/ButtonStyles/Emergency")`
+   `optix_bridge_edit(project, ops=[{"op": "set_property", "path": "UI/Screens/<S>/<Widget>", "name": "Style", "value": "UI/StyleSheets/DefaultStyleSheet/ButtonStyles/Emergency"}])`
 
    **Restyling several widgets at once** (e.g. every button on a screen to
    `Accent`)? One `set_property` per widget still fans out to N calls —
@@ -37,14 +37,14 @@ hand-set colors per widget.
       "value": "UI/StyleSheets/DefaultStyleSheet/ButtonStyles/Accent"},
    ])
    ```
-   Still just one widget to restyle? `optix_bridge_set_property` on its own
-   is simpler than composing a one-item batch.
+   Still just one widget to restyle? Call `optix_bridge_edit` with a one-op
+   list — no need to compose more than one op for a single widget.
 
 ## Reskin the whole app in one call
 
 Point a PresentationEngine's style-sheet property at a different StyleSheet node
 (e.g. an imported Rockwell **ISA Style Sheet**):
-`optix_bridge_set_property(project, "UI/WebPresentationEngine", "<StyleSheet prop>", "UI/ISAStylesheet")`
+`optix_bridge_edit(project, ops=[{"op": "set_property", "path": "UI/WebPresentationEngine", "name": "<StyleSheet prop>", "value": "UI/ISAStylesheet"}])`
 (`optix_describe_node` the engine for the exact prop name). This assumes the
 target StyleSheet already exists in the project — importing a library StyleSheet
 asset is a Studio action, not a bridge one.

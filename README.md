@@ -91,7 +91,7 @@ cd ftx-mcp                   # install + start the service
 .\bootstrap\setup-mcp-client.ps1 -WriteConfig          # adds as a connector to desktop app
 ```
 
-Restart Claude Desktop (You might have to end task in task manager to fully restart), then ask Claude to **"run optix_doctor"** — it
+Restart Claude Desktop (You might have to end task in task manager to fully restart), then ask Claude to **"run optix_status(action='doctor')"** — it
 reports anything missing, with a plain-English fix for each item.
 In settings > connectors you can adjust the permissions for each of the tools
 

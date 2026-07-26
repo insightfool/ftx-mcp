@@ -74,7 +74,7 @@ def test_tail_windows_large_file_and_drops_partial_line(cfg: core.Config, log_ro
 
 def test_tail_no_log_dir(cfg: core.Config, log_root: Path) -> None:
     out = core.runtime_log_tail(cfg, "Ghost")
-    assert out["error"] == "no_log_dir" and "optix_run_emulator" in out["hint"]
+    assert out["error"] == "no_log_dir" and "optix_emulator(action='run')" in out["hint"]
 
 
 def test_tail_no_log_file(cfg: core.Config, log_root: Path) -> None:

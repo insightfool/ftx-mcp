@@ -31,8 +31,8 @@ optix_bridge_edit(project, ops=[
    `HorizontalAlignment`/`VerticalAlignment` for placement (see
    `optix-anchor-fill`) — fold any of these straight into the same ops list.
 
-Just tweaking one property on an existing shape? `optix_bridge_set_property`
-on its own is simpler than a one-item batch.
+Just tweaking one property on an existing shape? `optix_bridge_edit` with a
+one-op list handles that fine — no separate one-off tool needed.
 
 ## Panel background (the trap)
 
@@ -47,8 +47,7 @@ appends (last = on top):
   ops, one batch: `{"op": "create_widget", ...}` then `{"op": "reorder",
   "path": "UI/Screens/<S>/<Panel>/<Rect>", "position": "back"}`. (Reorder
   only bites on graphic objects inside a TYPE — the normal screen case;
-  reload the runtime page to see it.) Standalone: `optix_bridge_reorder(project,
-  "UI/Screens/<S>/<Panel>/<Rect>", position="back")`.
+  reload the runtime page to see it.)
 
 ## Status indicator (color reacts to state)
 
@@ -60,8 +59,8 @@ appends (last = on top):
     {"op": "bind", "path": "<rect>", "name": "Blink", "source_path": "Model/AlarmActive", "mode": "Read"},
   ])
   ```
-  One property only? `optix_bridge_bind_property("<rect>", "FillColor", "Model/StatusColor", mode="Read")`
-  standalone is simpler.
+  One property only? `optix_bridge_edit` with a one-op `bind` list is just
+  as simple.
 - **Conditional** (fault=red / ok=green from a Boolean or value) — use
   `attach_expression` on `FillColor` (op fields `path`/`prop_name`/`expression`/`sources`):
   `expression="if({0}, 0xFFFF0000, 0xFF00FF00)", sources="Model/Fault"`. See the

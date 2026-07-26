@@ -75,11 +75,12 @@ underlying primitives (`add_label` → `create_widget` + `set_property`×1-3)
 when putting them in a batch. See each per-noun skill (`optix-add-label`,
 `optix-bound-toggle`, etc.) for the exact op shape.
 
-**One edit, and only one?** Skip the batch — the per-noun tool
-(`optix_bridge_set_property`, `optix_bridge_create_widget`, ...) is simpler
-and the round-trip cost of a single call is a non-issue. Batching pays off
-from 2 related ops up to a component's worth (~5-20); past that, split into
-another component batch rather than growing one call unbounded.
+**One edit, and only one?** Call `optix_bridge_edit` with a one-op list — the
+batch tool handles a single op fine, there's no separate "do one thing" tool
+by default (the per-noun primitives are gated behind
+`FTXMCP_BRIDGE_PRIMITIVES=1`; see `docs/tool-reference.md`). Batching pays
+off from 2 related ops up to a component's worth (~5-20); past that, split
+into another component batch rather than growing one call unbounded.
 
 ## The per-project UI cache
 

@@ -101,10 +101,10 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             "front.\n"
             "Authoring loop: optix_bridge_* (batch ONE component's related ops "
             "per optix_bridge_edit call -- it validates then applies; "
-            "component-sized, not whole-screen) -> optix_restart_emulator "
+            "component-sized, not whole-screen) -> optix_emulator(restart) "
             "(structural edits render only after a restart) -> "
-            "optix_cdp_screenshot (verify). optix_doctor if something seems "
-            "broken.\n"
+            "optix_cdp_screenshot (verify). optix_status(doctor) if something "
+            "seems broken.\n"
             "FILES: service filesystem is unreachable from sandboxed clients "
             "-- no host folder access; use optix_routes(action=\"save\"), "
             "return_image=true, sweep/diff text."
@@ -156,38 +156,84 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             return fn(*args, **kwargs)
         return _wrapper
 
-    @mcp.tool(annotations=_RO)
-    def optix_health() -> dict:
-        """Aggregate health of the ftx-mcp deploy stack (export-based, v0.2.x):
-        projects_root, studio_exe, runtime_dir, interactive_session, bind config.
+    # ---- consolidated status surface -------------------------------------
+    # optix_status collapses optix_health / optix_doctor / optix_services_status
+    # / optix_studio_version into one action-discriminated tool (same rationale
+    # as optix_schema/optix_routes/optix_emulator above). The four are
+    # HETEROGENEOUS in purpose (fast preflight config vs setup-fix checklist vs
+    # live dashboard vs raw binary version) — the docstring makes each action's
+    # distinct role explicit rather than flattening them into one concept. All
+    # four were already _RO, so the merge is annotation-uniform; no semantic
+    # split to reconcile there. Scope: optix_health/optix_services_status were
+    # "health" tier, optix_doctor/optix_studio_version were "read" tier; the
+    # merged tool takes "read" (most-privileged of the four), the same
+    # tightening the optix_routes merge applied to its get/list actions.
+    # doctor/services_status shell out -> stays in _OFFLOAD_TOOLS. Low-traffic
+    # internal plumbing -> CLEAN REPLACE, no deprecated aliases.
+    _STATUS_ACTIONS = ("health", "doctor", "services", "version")
+
+    @mcp.tool(annotations=_RO, name="optix_status")
+    def _optix_status_tool(
+        action: Literal["health", "doctor", "services", "version"],
+    ) -> dict:
+        """Deploy-stack status family — ONE tool, pick an `action`. Consolidates
+        optix_health / optix_doctor / optix_services_status / optix_studio_version
+        (each formerly its own tool); replaced cleanly, no deprecated aliases.
+
+        These four are HETEROGENEOUS — pick the one that matches what you
+        actually need, they are not interchangeable:
+
+        action:
+          - "health" — FAST preflight config snapshot (export-based, v0.2.x):
+            projects_root, studio_exe, runtime_dir, interactive_session, bind
+            config. Use this when the user asks "is everything wired up?",
+            "is studio installed?", or before a deploy attempt to fail fast on
+            missing config.
+          - "doctor" — setup-FIX checklist: every prerequisite plus a plain-
+            English fix for each. `ready` is True when the REQUIRED deps
+            (Studio, projects folder) are present; feature checks (bridge, cdp,
+            deploy creds, interactive session) report their own fix and gate
+            only their own feature. Use this for first-time setup, after a
+            reboot/config change, or when a tool failed and you want to know
+            which dependency is missing.
+          - "services" — LIVE dashboard aggregate: health + studio version +
+            runtime/cdp probes in one call — the HMI status-tile payload. Use
+            this for rendering an operator dashboard's services panel, or when
+            the user asks "what's the state of the deploy stack right now?"
+          - "version" — raw `FTOptixStudio.exe --version` output. Use this when
+            debugging a deploy failure and you want to confirm the binary
+            works, or the user asks which Studio version is installed.
+
+        An unknown `action` returns a structured error rather than raising.
 
         Use this when:
-          - the user asks "is everything wired up?", "is studio installed?"
-          - before a deploy attempt, to fail fast on missing config
+          - you need ANY status/health/version read on the deploy stack — pick
+            the action matching the question (see above); action="doctor" is
+            the right default when you're not sure which one you need
 
         Do NOT use this when:
+          - you want live-model project structure (optix_get_project_map /
+            optix_describe_node) — this family covers the SERVICE/Studio/
+            runtime stack, not the authored HMI model
           - you want a specific runtime slot's liveness (optix_runtime_status)
-          - you only need the Studio binary version (optix_studio_version)
+          - you want the last-deploy outcome details (read
+            /services/last-deploy-tail directly; not surfaced as an MCP tool)
         """
-        return core.health(cfg)
-
-    @mcp.tool(annotations=_RO)
-    def optix_doctor() -> dict:
-        """One-call setup check: every prerequisite + a plain-English fix for each.
-
-        `ready` is True when the REQUIRED deps (Studio, projects folder) are
-        present; feature checks (bridge, cdp, deploy creds, interactive session)
-        report their own fix and gate only their own feature.
-
-        Use this when:
-          - first-time setup, or after a reboot / config change
-          - any tool failed and you want to know which dependency is missing
-
-        Do NOT use this when:
-          - you need live service metrics (optix_health / optix_services_status)
-          - you already know the specific failure (go straight to that tool)
-        """
-        return core.doctor(cfg)
+        if action not in _STATUS_ACTIONS:
+            return {
+                "error": "bad_action",
+                "message": (f"unknown action {action!r}; valid actions: "
+                            f"{', '.join(_STATUS_ACTIONS)}"),
+                "valid_actions": list(_STATUS_ACTIONS),
+            }
+        if action == "health":
+            return core.health(cfg)
+        if action == "doctor":
+            return core.doctor(cfg)
+        if action == "services":
+            return core.services_status(cfg)
+        # action == "version"
+        return core.studio_version(cfg)
 
     @mcp.tool(annotations=_RO)
     def optix_list_skills() -> dict:
@@ -685,7 +731,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         Live-model write, export-safe by construction. Requires Studio open
         with this project AND the bridge running (else bridge_unavailable).
         A new widget is STRUCTURAL — a running emulator won't show it until a
-        restart cycle (optix_stop_emulator -> optix_run_emulator).
+        restart cycle (optix_emulator(action="restart")).
 
         Use this when:
           - adding a control while Studio is open (the live, export-safe path)
@@ -822,9 +868,9 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         property (e.g. a new Label's Text) so it persists AND renders — the
         fix for the GetVariable-null trap. Requires Studio open with this
         project AND the bridge running (else bridge_unavailable). To SEE it
-        in a running emulator: needs a restart cycle (optix_stop_emulator ->
-        optix_run_emulator) — the emulator renders its own loaded snapshot,
-        not the live Studio model.
+        in a running emulator: needs a restart cycle (optix_emulator(action=
+        "restart")) — the emulator renders its own loaded snapshot, not the
+        live Studio model.
 
         Use this when:
           - setting a property on a node while Studio is open
@@ -1243,15 +1289,15 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         DISK without running anything. Requires an interactive session and
         the project open in Studio.
 
-        You usually DON'T need this: optix_run_emulator's F5 saves as part of
-        staging. Saving does NOT push edits into an already-RUNNING emulator
-        — structural changes need optix_stop_emulator -> optix_run_emulator.
+        You usually DON'T need this: optix_emulator(action="run")'s F5 saves
+        as part of staging. Saving does NOT push edits into an already-RUNNING
+        emulator — structural changes need optix_emulator(action="restart").
 
         Use this when:
           - you need bridge edits on disk to read/verify the YAML (no run needed)
 
         Do NOT use this when:
-          - you're about to optix_run_emulator anyway (F5 handles saving)
+          - you're about to optix_emulator(action="run") anyway (F5 handles saving)
           - you expect it to refresh a running emulator (it can't — restart it)
           - Studio is closed, or you authored via file-path tools (already on disk)
         """
@@ -1260,70 +1306,118 @@ def make_mcp(cfg: core.Config) -> FastMCP:
             return {"saved": False, "error": "no project given and no bridge serving one — pass project or start the bridge"}
         return core.save(cfg, project)
 
-    @mcp.tool(annotations=_RW)
-    def optix_run_emulator(project: str | None = None, save_first: bool = False) -> dict:
-        """Launch the project in Studio's built-in emulator (sends F5 to Studio).
+    # ---- consolidated emulator-lifecycle surface -------------------------
+    # optix_emulator collapses optix_run_emulator / optix_restart_emulator /
+    # optix_stop_emulator / optix_emulator_status / optix_runtime_log_tail
+    # into one action-discriminated tool (same rationale as the optix_schema/
+    # optix_routes consolidation: fewer registered tools = fewer ToolSearch
+    # deferral round-trips). Low-traffic lifecycle plumbing relative to the
+    # heavily-used CDP surface -> CLEAN REPLACE, no deprecated aliases.
+    # Annotation: "status"/"log" are read-only, "run"/"restart"/"stop" are
+    # writes — the merged tool inherits the most-privileged shape (write, not
+    # destructive), the same trade-off optix_routes/optix_bridge_edit make for
+    # their most-privileged dispatched action/op. Scope: run/restart/stop were
+    # "author" tier, status/log were "read" tier; the merged tool takes
+    # "author" (most-privileged), tightening status/log the same way the
+    # optix_routes merge tightened its get/list actions from "read" to
+    # "author". SHELLS OUT (Studio F5/UIA + process probes) -> stays in
+    # _OFFLOAD_TOOLS.
+    _EMULATOR_ACTIONS = ("run", "restart", "stop", "status", "log")
 
-        THE default verify step — much cheaper and faster than a deploy. F5
-        stages the in-Studio model (saves as part of staging) and spins up a
-        LOCAL FTOptixRuntime; shipping to hardware stays a deliberate step
-        from Studio's Deploy dialog after the emulator + screenshot confirm
-        the change.
+    @mcp.tool(annotations=_RW, name="optix_emulator")
+    def _optix_emulator_tool(
+        action: Literal["run", "restart", "stop", "status", "log"],
+        project: str | None = None,
+        save_first: bool = False,
+        lines: int = 100,
+        contains: str | None = None,
+    ) -> dict:
+        """Emulator lifecycle — ONE tool, pick an `action`. Consolidates
+        optix_run_emulator / optix_restart_emulator / optix_stop_emulator /
+        optix_emulator_status / optix_runtime_log_tail (each formerly its own
+        tool); replaced cleanly, no deprecated aliases.
 
-        IMPORTANT — a RUNNING emulator does not pick up Studio edits (separate
-        process, its own loaded snapshot). Structural changes (new widgets,
-        bindings, layout) need a restart cycle: optix_stop_emulator ->
-        optix_run_emulator. Only already-on-screen interactive state (switches,
-        text fields) can be exercised live without a restart. If a screenshot
-        doesn't show your edit, restart before concluding it failed.
+        action:
+          - "run" — F5: launch the project in Studio's built-in emulator. THE
+            default verify step — much cheaper and faster than a deploy. F5
+            stages the in-Studio model (saves as part of staging) and spins up
+            a LOCAL FTOptixRuntime. F5 TOGGLES: check action="status" first so
+            a blind "run" doesn't stop a running emulator. A RUNNING emulator
+            does not pick up Studio edits (separate process, its own loaded
+            snapshot) — structural changes (new widgets, bindings, layout)
+            need action="restart". TARGET GUARD: F5 runs Studio's SELECTED
+            deployment target; a non-emulator target refuses
+            (active_target_not_emulator) — the service never changes the
+            dropdown. `save_first` stages+saves before launching.
+          - "restart" — stop-if-running -> start -> wait until serving, in ONE
+            call. THE way to make a STRUCTURAL edit visible (new widget,
+            binding, layout) — removes the F5-toggle footgun. No save needed
+            (starting stages and saves the current Studio model).
+          - "stop" — explicit, unambiguous stop (vs "run", which toggles and
+            is easy to double-fire). Terminates ONLY emulator instances
+            (--application-name=Emulator); an UpdateSvc-deployed runtime is
+            the same exe and is left alone.
+          - "status" — not_running / starting / running. Counts ONLY real
+            emulator processes. state=starting means the port isn't serving
+            yet — wait before screenshotting; running means safe to
+            screenshot. Check this before "run" to avoid the F5-toggle trap.
+          - "log" — tail the emulator's runtime log (NetLogic output,
+            exceptions) — the debug signal when a preview misbehaves.
+            Non-blocking: one brief shared read of the newest
+            FTOptixRuntime.*.log (never poll this in a tight loop). `lines`
+            caps the tail (default 100); `contains` filters case-
+            insensitively. NOTE: the log is NOT rotated per restart — a
+            `contains="error"` hit may be HOURS old; check timestamps before
+            treating a match as current.
 
-        F5 TOGGLES: check optix_emulator_status first so a blind "run" doesn't
-        stop a running emulator.
+        `project`: used by "run"/"restart" (defaults to the bridge's served
+        project; a structured no-project error if neither is given) and "log"
+        (same resolution, required). Ignored by "stop"/"status" — those are
+        process-level, not project-scoped. `save_first` only applies to
+        "run". `lines`/`contains` only apply to "log".
 
-        TARGET GUARD: F5 runs Studio's SELECTED deployment target. A
-        non-emulator target refuses (active_target_not_emulator) — the
-        service never changes the dropdown. `launched:true` +
-        runtime_identity:"not_running" + probable_cause:"target_or_modal"
-        means the dropdown was pointed elsewhere or a modal ate the keystroke
-        — surface that, don't retry-loop.
+        An unknown `action` returns a structured error rather than raising.
 
         Use this when:
-          - verifying ANY bridge edit (the default fast loop)
+          - previewing/verifying a bridge edit, or debugging why a preview
+            looks wrong — pick the action for what you need (see above)
 
         Do NOT use this when:
-          - the emulator is already running and you changed structure (stop
-            it first — F5 on a running emulator STOPS it)
-          - you're ready to ship to the real target (Studio's Deploy dialog)
+          - you want the UpdateSvc-deployed runtime's lifecycle (that's
+            optix_runtime_start/_stop/_status — a different process)
+          - you want Studio's SELECTED deployment target (optix_active_target)
         """
-        project = project or core.default_project(cfg)
-        if not project:
-            return {"launched": False, "error": "no project given and no bridge serving one — pass project or start the bridge"}
-        return core.run_emulator(cfg, project, save_first=save_first)
-
-    @mcp.tool(annotations=_RO)
-    def optix_emulator_status() -> dict:
-        """Emulator state: not_running / starting / running.
-
-        F5 (optix_run_emulator) TOGGLES the emulator, so a blind "run" can
-        actually STOP a running one — check this first. Counts ONLY real
-        emulator processes (--application-name=Emulator); an UpdateSvc-
-        deployed runtime is the same exe/port and does NOT count.
-        state=starting means the port isn't serving yet — wait before
-        screenshotting; running means safe to screenshot.
-
-        Use this when:
-          - deciding whether to run vs stop the emulator (avoid the F5 toggle trap)
-          - confirming a preview actually came up before a screenshot
-
-        Do NOT use this when:
-          - you want the UpdateSvc-deployed runtime's port state (optix_runtime_status)
-        """
-        return core.emulator_status(cfg)
+        if action not in _EMULATOR_ACTIONS:
+            return {
+                "error": "bad_action",
+                "message": (f"unknown action {action!r}; valid actions: "
+                            f"{', '.join(_EMULATOR_ACTIONS)}"),
+                "valid_actions": list(_EMULATOR_ACTIONS),
+            }
+        if action == "run":
+            proj = project or core.default_project(cfg)
+            if not proj:
+                return {"launched": False, "error": "no project given and no bridge serving one — pass project or start the bridge"}
+            return core.run_emulator(cfg, proj, save_first=save_first)
+        if action == "restart":
+            proj = project or core.default_project(cfg)
+            if not proj:
+                return {"launched": False, "error": "no project given and no bridge serving one — pass project or start the bridge"}
+            return core.restart_emulator(cfg, proj)
+        if action == "stop":
+            return core.stop_emulator(cfg)
+        if action == "status":
+            return core.emulator_status(cfg)
+        # action == "log"
+        proj = _resolve_project(project)
+        if not proj:
+            return _NO_PROJECT
+        return core.runtime_log_tail(cfg, proj, lines=lines, contains=contains)
 
     @mcp.tool(annotations=_RO)
     def optix_active_target() -> dict:
         """Which deployment target Studio's dropdown has selected — the thing an
-        F5 (optix_run_emulator) would actually run.
+        F5 (optix_emulator action="run") would actually run.
 
         Reads the LIVE per-window selection off the bridge's Studio toolbar via
         UI Automation, accurate even when Studio's Configuration.xml is stale
@@ -1332,81 +1426,15 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         is the lazy fallback (off-Windows, no bridge, or non-interactive session).
 
         Use this when:
-          - checking whether F5 is safe (is_emulator) BEFORE optix_run_emulator
+          - checking whether F5 is safe (is_emulator) BEFORE
+            optix_emulator(action="run")
           - the user asks "what target is selected?" — this is the clean read
-            (optix_run_emulator only reports the target as a refusal side effect)
+            (optix_emulator only reports the target as a refusal side effect)
 
         Do NOT use this when:
-          - you want emulator PROCESS state (optix_emulator_status)
+          - you want emulator PROCESS state (optix_emulator action="status")
         """
         return core.active_target(cfg)
-
-    @mcp.tool(annotations=_RW)
-    def optix_restart_emulator(project: str | None = None) -> dict:
-        """Restart the emulator in one call: stop if running, start, wait until
-        it's serving — THE way to make a STRUCTURAL edit visible (new widget,
-        binding, layout). Replaces the status/stop/run dance and removes the
-        F5-toggle footgun (F5 on a running emulator stops it). No save needed —
-        starting stages and saves the current Studio model.
-
-        Use this when:
-          - you made a bridge edit and want to SEE it (then optix_cdp_screenshot)
-          - the emulator state is unknown and you just want it running fresh
-
-        Do NOT use this when:
-          - only exercising already-rendered interactive elements (no restart
-            needed — click/type on the live canvas directly)
-          - you want it OFF (optix_stop_emulator)
-        """
-        project = project or core.default_project(cfg)
-        if not project:
-            return {"launched": False, "error": "no project given and no bridge serving one — pass project or start the bridge"}
-        return core.restart_emulator(cfg, project)
-
-    @mcp.tool(annotations=_RO)
-    @_with_project
-    def optix_runtime_log_tail(
-        lines: int = 100, contains: str | None = None,
-        project: str | None = None,
-    ) -> dict:
-        """Tail the emulator's runtime log (NetLogic output, exceptions) — the
-        debug signal when a preview misbehaves.
-
-        Non-blocking: one brief shared read of the newest FTOptixRuntime.*.log
-        (never poll this in a tight loop — a held handle blocks the runtime's
-        own writes). `lines` caps the tail; `contains` filters case-
-        insensitively. NOTE: the log is NOT rotated per emulator restart — a
-        contains="error" hit may be HOURS old and already fixed; check
-        timestamps before treating a match as current.
-
-        Use this when:
-          - the emulator is up but the canvas is blank/wrong — read the log
-            before guessing
-          - a NetLogic script should have produced output/thrown
-
-        Do NOT use this when:
-          - you want deploy-verb output (this tail is the emulator/runtime log)
-          - you're polling for readiness (optix_emulator_status is the probe)
-        """
-        return core.runtime_log_tail(cfg, project, lines=lines, contains=contains)
-
-    @mcp.tool(annotations=_RW)
-    def optix_stop_emulator() -> dict:
-        """Stop the local FTOptixRuntime emulator (terminates its process).
-
-        An explicit, unambiguous stop — vs F5, which toggles and is easy to
-        double-fire. Terminates ONLY emulator instances (--application-name=
-        Emulator); an UpdateSvc-deployed runtime is the same exe and is left
-        alone. stopped=False with reason=not_running if none was up.
-
-        Use this when:
-          - a preview is running and you want it down (not a blind F5 re-press)
-          - freeing the runtime port before a fresh run/deploy
-
-        Do NOT use this when:
-          - you mean the UpdateSvc-deployed runtime (use optix_runtime_stop)
-        """
-        return core.stop_emulator(cfg)
 
     @mcp.tool(annotations=_RW_DESTRUCTIVE)
     def optix_deploy_updatesvc(
@@ -1417,8 +1445,9 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """Deploy a saved project via the FT Optix Application Update Service.
 
         THE SHIP STEP — deliberate, not the everyday verify. For iteration,
-        use optix_run_emulator + optix_cdp_screenshot instead (much faster,
-        no transfer); deploy AFTER the emulator preview confirms the change.
+        use optix_emulator(action="run") + optix_cdp_screenshot instead (much
+        faster, no transfer); deploy AFTER the emulator preview confirms the
+        change.
         WORKS WITH STUDIO OPEN (contrast optix_deploy, which REFUSES while
         Studio is open): the `deploy` verb spawns its OWN short-lived Studio
         to build+transfer, so your interactive Studio + bridge stay up the
@@ -1447,9 +1476,10 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - you want the verb to deploy AND start the runtime in one call
 
         Do NOT use this when:
-          - you're still iterating/verifying a change (optix_run_emulator is the
-            fast default loop — deploy is the ship step)
-          - the deploy account/cert aren't configured (run optix_doctor)
+          - you're still iterating/verifying a change (optix_emulator(action=
+            "run") is the fast default loop — deploy is the ship step)
+          - the deploy account/cert aren't configured (run optix_status(
+            action="doctor"))
         """
         project = project or core.default_project(cfg)
         if not project:
@@ -1581,19 +1611,6 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return core.deploy_preflight(cfg, project)
 
-    @mcp.tool(annotations=_RO)
-    def optix_studio_version() -> dict:
-        """Return FTOptixStudio.exe --version output.
-
-        Use this when:
-          - debugging a deploy failure and want to confirm the binary works
-          - the user asks which Studio version is installed
-
-        Do NOT use this when:
-          - you want full health (use optix_health, which calls this internally)
-        """
-        return core.studio_version(cfg)
-
     @mcp.tool(annotations=_RW)
     @_with_project
     def optix_runtime_start(
@@ -1663,8 +1680,9 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - cold-start drift check after a Windows reboot
 
         Do NOT use this when:
-          - you want to know whether Studio is installed (optix_health)
-          - you want deploy outcome details (optix_services_status)
+          - you want to know whether Studio is installed (optix_status(
+            action="health"))
+          - you want deploy outcome details (optix_status(action="services"))
         """
         return core.runtime_status(cfg, slot)
 
@@ -1689,7 +1707,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
         Do NOT use this when:
           - the chrome-cdp task isn't running (returns cdp_unavailable; run
-            optix_doctor / services.ps1 status)
+            optix_status(action="doctor") / services.ps1 status)
           - you haven't established coordinates from a screenshot first
         """
         return core.cdp_click_runtime(
@@ -1798,7 +1816,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
         IMPORTANT — if your edit is NOT in the screenshot, do NOT conclude it
         failed: a running emulator renders its own loaded snapshot and does
-        not pick up Studio edits. optix_restart_emulator, then screenshot
+        not pick up Studio edits. optix_emulator(action="restart"), then screenshot
         again before diagnosing. fresh=true forces a page reload before
         capture (stale-frame suspected).
 
@@ -1834,7 +1852,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
         Do NOT use this when:
           - the chrome-cdp task isn't running (returns cdp_unavailable; run
-            optix_doctor / services.ps1 status)
+            optix_status(action="doctor") / services.ps1 status)
         """
         if not save_path:
             import os
@@ -2268,7 +2286,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - you need to CHANGE the runtime (click/fill/type/key/navigate) —
             that's optix_interact
           - the chrome-cdp task isn't running (returns cdp_unavailable; run
-            optix_doctor)
+            optix_status(action="doctor"))
         """
         if mode not in _OBSERVE_MODES:
             return {
@@ -2369,7 +2387,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
           - you only need to READ the canvas (screenshot/ocr/find) — that's
             optix_observe
           - the chrome-cdp task isn't running (returns cdp_unavailable; run
-            optix_doctor)
+            optix_status(action="doctor"))
         """
         if action not in _INTERACT_ACTIONS:
             return {
@@ -2505,25 +2523,6 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         return _bridge_guarded(project, lambda: core.bridge_edit(
             cfg, project, ops, dry_run=dry_run, strict=strict))
 
-    @mcp.tool(annotations=_RO)
-    def optix_services_status() -> dict:
-        """Aggregate health + studio version + runtime/cdp probes.
-
-        The HMI status-tile payload: health, studio version, the runtime
-        test-port probe, and a CDP-endpoint probe (the chrome-cdp task used
-        for canvas verify).
-
-        Use this when:
-          - rendering an operator dashboard's services panel
-          - the user asks "what's the state of the deploy stack right now?"
-
-        Do NOT use this when:
-          - you only need health (use optix_health)
-          - you want the last-deploy outcome details (read
-            /services/last-deploy-tail directly; not surfaced as an MCP tool)
-        """
-        return core.services_status(cfg)
-
     if not cfg.enable_deploy:
         # MCP deploy integration is statically disabled in this distribution. The
         # standard loop is author -> emulator preview -> verify; shipping
@@ -2575,19 +2574,51 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         for _sk in ("optix_list_skills", "optix_get_skill"):
             mcp._tool_manager._tools.pop(_sk, None)
 
+    # FTXMCP_BRIDGE_PRIMITIVES=1 restores the 14 per-noun bridge primitives
+    # (set_property/bind_property/attach_expression/wire_event/delete_node/
+    # move_node/reorder/create_variable/create_folder/create_object/
+    # create_type/create_alias/create_widget/add_translation). Each is 1:1
+    # with an optix_bridge_edit op verb, so by DEFAULT they are popped —
+    # opposite polarity from FTXMCP_SKILLS above (default OFF here, not
+    # default ON): they clutter the surface for no capability optix_bridge_edit
+    # doesn't already cover (a one-op list is a single edit). The composite
+    # wrappers (add_label / add_bound_widget / add_navigation_panel_item),
+    # optix_bridge_convert_to_type, optix_bridge_ensure_web_engine,
+    # optix_bridge_validate_expression, optix_bridge_status, and
+    # optix_bridge_edit itself are NEVER gated -- they either have no
+    # optix_bridge_edit-op equivalent or ARE the batch tool. Any other value
+    # (unset / "0" / anything != "1") keeps them popped, mirroring the
+    # FTXMCP_LEGACY_TOOLS gate's "1" opt-in shape above.
+    _BRIDGE_PRIMITIVES = (
+        "optix_bridge_set_property", "optix_bridge_bind_property",
+        "optix_bridge_attach_expression", "optix_bridge_wire_event",
+        "optix_bridge_delete_node", "optix_bridge_move_node",
+        "optix_bridge_reorder", "optix_bridge_create_variable",
+        "optix_bridge_create_folder", "optix_bridge_create_object",
+        "optix_bridge_create_type", "optix_bridge_create_alias",
+        "optix_bridge_create_widget", "optix_bridge_add_translation",
+    )
+    if os.environ.get("FTXMCP_BRIDGE_PRIMITIVES") != "1":
+        for _prim in _BRIDGE_PRIMITIVES:
+            mcp._tool_manager._tools.pop(_prim, None)
+
     # Offload the tools that shell out to Studio / PowerShell / Chrome-CDP onto a
     # worker thread. The official FastMCP runs a sync `def` tool fn DIRECTLY on the
     # event loop (Tool.run -> FuncMetadata.call_fn_with_arg_validation), so a slow
-    # shell-out (e.g. emulator_status' Get-CimInstance process scan, up to ~15s)
+    # shell-out (e.g. emulator status' Get-CimInstance process scan, up to ~15s)
     # stalls the shared HTTP+MCP loop long enough to drop the MCP streamable-http
-    # transport (the observed 120s optix_emulator_status hang). These are the only
-    # tools with multi-second subprocess/CDP calls; the rest are fast and stay on
-    # the loop. Tool.run reads self.fn/self.is_async at call time, so this takes
-    # effect. (New shell-out tools MUST be added here.)
+    # transport (the observed 120s optix_emulator_status hang, pre-consolidation).
+    # These are the only tools with multi-second subprocess/CDP calls; the rest
+    # are fast and stay on the loop. Tool.run reads self.fn/self.is_async at call
+    # time, so this takes effect. (New shell-out tools MUST be added here.)
     _OFFLOAD_TOOLS = frozenset((
-        "optix_run_emulator", "optix_restart_emulator", "optix_stop_emulator",
-        "optix_emulator_status", "optix_save", "optix_studio_version",
-        "optix_services_status", "optix_doctor",
+        # optix_emulator: run/restart/stop/status all shell out (Studio F5/UIA +
+        # process probes); log is a fast file tail, but the offload wraps the
+        # whole dispatcher so it rides along -- negligible overhead.
+        "optix_emulator", "optix_save",
+        # optix_status: doctor/services shell out; health/version are fast, same
+        # whole-dispatcher rationale as optix_emulator above.
+        "optix_status",
         "optix_cdp_screenshot", "optix_cdp_click", "optix_cdp_fill",
         "optix_cdp_type", "optix_cdp_key", "optix_cdp_ocr", "optix_cdp_restart",
         "optix_runtime_start", "optix_runtime_stop", "optix_runtime_status",

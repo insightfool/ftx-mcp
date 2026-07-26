@@ -43,6 +43,10 @@ is needed.
 
 ### Longhand (per-noun calls) — same result, one call per step
 
+Requires `FTXMCP_BRIDGE_PRIMITIVES=1` (the per-noun bridge tools are gated
+off by default — see `docs/tool-reference.md`); on a default install use the
+one-op-list form via `optix_bridge_edit` shown per step below instead.
+
 1. **Create the backing variable:**
    `optix_bridge_create_variable(project, name="PowerOn", parent="Model", datatype="Boolean")`
    → resolvable at `Model/PowerOn`.
@@ -56,17 +60,18 @@ is needed.
    `optix_bridge_bind_property(project, "UI/Screens/<Screen>/OnLabel", "Visible", "Model/PowerOn", mode="Read")`
 
 That's it — the model is live in the designer immediately. **Single edit,
-nothing to batch?** The per-noun tools above are simpler than composing an
-ops list for one call.
+nothing to batch?** Call `optix_bridge_edit` with a one-op list (e.g.
+`ops=[{"op": "create_variable", "name": "PowerOn", "parent": "Model", "datatype": "Boolean"}]`)
+— it handles a single op fine, no need for the gated per-noun tools above.
 
 ## Alternative: a Button that toggles (no switch)
 
-`optix_bridge_wire_event(project, "UI/Screens/<Screen>/<Button>", "MouseClickEvent", command="ToggleVariable", variable="Model/PowerOn")`
+`optix_bridge_edit(project, ops=[{"op": "wire_event", "path": "UI/Screens/<Screen>/<Button>", "event_type": "MouseClickEvent", "command": "ToggleVariable", "variable": "Model/PowerOn"}])`
 — a native command, no bind needed on the button.
 
 ## Verify at runtime
 
-`optix_restart_emulator(project)` → `optix_observe(mode="screenshot", ...)`;
+`optix_emulator(action="restart", project=project)` → `optix_observe(mode="screenshot", ...)`;
 drive it with `optix_interact(action="click", ...)` (trusted CDP events reach Optix's hit-tester
 where synthetic clicks no-op). Switch on → label appears; off → hides.
 

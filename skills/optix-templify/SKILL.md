@@ -35,17 +35,17 @@ optix_bridge_edit(project, ops=[
    `bind` all write into a type exactly like into a screen; fold as many as
    the template needs into the same batch. Bind to properties/aliases you
    expect instances to override, not to absolute one-off variables.
-4. Instantiate: `optix_bridge_create_object(parent="UI/Screens/ScreenA",
-   name="Pump1", object_type="UI/Templates/PumpCard")` — repeat per
-   placement; multiple placements batch too (`create_object` is an op verb):
+4. Instantiate: `create_object` is an op verb — `optix_bridge_edit(project,
+   ops=[{"op": "create_object", "parent": "UI/Screens/ScreenA", "name":
+   "Pump1", "object_type": "UI/Templates/PumpCard"}])`. Multiple placements
+   batch into the same call:
    `{"op": "create_object", "parent": "UI/Screens/ScreenA", "name": "Pump1", "object_type": "UI/Templates/PumpCard"}`,
    `{"op": "create_object", "parent": "UI/Screens/ScreenA", "name": "Pump2", "object_type": "UI/Templates/PumpCard"}`, ...
 5. Verify per the optix-verify-loop skill (instances are structural changes —
    restart the emulator).
 
-One-off folder or type, nothing else to author yet? The per-noun tools
-(`optix_bridge_create_folder`, `optix_bridge_create_type`, ...) are simpler
-than a one-item batch.
+One-off folder or type, nothing else to author yet? `optix_bridge_edit` with
+a one-op list handles that fine — no need for a bigger batch.
 
 ## Promote an existing assembly: convert_to_type
 
@@ -65,7 +65,7 @@ leaving the original untouched).
 **Read `skipped` and the link audit in the response — do not assume.**
 - `skipped` nonempty → those constructs (expression converters, exotic
   attachments) were NOT copied; re-attach them on the type
-  (optix_bridge_attach_expression etc.).
+  (`optix_bridge_edit` with `attach_expression` ops etc.).
 - `broken_links` nonempty → those bindings no longer resolve; re-bind them on
   the type.
 - `optix_save` BEFORE converting anything you can't rebuild in a minute, and
@@ -99,8 +99,8 @@ optix_bridge_edit(project, ops=[
      {"op": "set_property", "path": "UI/Screens/ScreenB/Pump2Card/PumpAlias", "name": "Value", "value": "Model/Pump2"},
    ])
    ```
-   Standalone form: `optix_bridge_set_property(node_path="UI/Screens/ScreenA/Pump1Card/PumpAlias",
-   name="Value", value="Model/Pump1")`.
+   Single instance? `optix_bridge_edit` with a one-op `set_property` list is
+   just as simple.
 4. Render-verify — raw paths can't be validated at bind time by design, so
    the emulator is the only truth (restart it; structural change).
 

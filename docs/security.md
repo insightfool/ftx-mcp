@@ -38,7 +38,7 @@ fields:
 - `optix_find` → each match's `text` / `context_before` / `context_after`
 - `optix_describe_node` → property **values** (names/paths/types stay raw)
 - `optix_get_project_map` → the outline `map` (once; `fmt="json"` trees are raw)
-- `optix_runtime_log_tail` → `lines` (one delimited block)
+- `optix_emulator(action="log")` → `lines` (one delimited block)
 - `optix_observe(mode="ocr")` / `optix_observe(mode="read_text")` → `text` (confidence fields stay numeric)
 
 Structural, machine-consumed returns are deliberately **not** wrapped —

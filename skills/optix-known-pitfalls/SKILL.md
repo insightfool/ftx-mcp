@@ -22,7 +22,7 @@ time. Workaround: attach the expression with a placeholder variable as the
 source, then rebind `Source0` to the session path afterwards via
 `bridge_bind_property` with a raw_path.
 
-## optix_restart_emulator (Studio F5) SAVES the live model
+## optix_emulator(action="restart") (Studio F5) SAVES the live model
 
 A "temporary" bridge edit becomes permanent the moment you restart the
 emulator to look at it — F5 writes the live model to disk. If an edit was

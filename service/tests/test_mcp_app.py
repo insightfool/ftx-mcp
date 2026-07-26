@@ -23,8 +23,7 @@ from service.tests.conftest import make_project
 
 EXPECTED_TOOLS = {
     "optix_active_target",
-    "optix_health",
-    "optix_doctor",
+    "optix_status",  # consolidated optix_health/_doctor/_services_status/_studio_version
     "optix_list_projects",
     "optix_list_skills",
     "optix_get_skill",
@@ -39,42 +38,30 @@ EXPECTED_TOOLS = {
     "optix_describe_type",
     "optix_schema",  # U17: consolidated optix_schema_dump/_list/_diff
     "optix_bridge_edit",
-    "optix_bridge_create_widget",
     "optix_bridge_add_label",
     "optix_bridge_add_bound_widget",
     "optix_bridge_add_navigation_panel_item",
     "optix_bridge_ensure_web_engine",
-    "optix_bridge_set_property",
-    "optix_bridge_create_variable",
-    "optix_bridge_create_folder",
-    "optix_bridge_create_object",
-    "optix_bridge_create_type",
     "optix_bridge_convert_to_type",
-    "optix_bridge_move_node",
-    "optix_bridge_bind_property",
-    "optix_bridge_create_alias",
-    "optix_bridge_add_translation",
-    "optix_bridge_delete_node",
-    "optix_bridge_wire_event",
-    "optix_bridge_reorder",
-    "optix_bridge_attach_expression",
     "optix_bridge_validate_expression",
+    # The 14 per-noun bridge primitives (set_property/bind_property/
+    # attach_expression/wire_event/delete_node/move_node/reorder/
+    # create_variable/create_folder/create_object/create_type/create_alias/
+    # create_widget/add_translation) are gated OFF by default behind
+    # FTXMCP_BRIDGE_PRIMITIVES=1 -- each is 1:1 with an optix_bridge_edit op
+    # verb, so the DEFAULT surface no longer registers them. See
+    # test_bridge_primitives_present_when_gate_on /
+    # test_bridge_primitives_absent_by_default below.
     "optix_save",
-    "optix_run_emulator",
-    "optix_restart_emulator",
-    "optix_emulator_status",
-    "optix_stop_emulator",
-    "optix_runtime_log_tail",
+    "optix_emulator",  # consolidated run/restart/stop/status/log
     "optix_deploy_updatesvc",
     "optix_add_widget",
     "optix_add_model_variable",
     "optix_set_property",
     "optix_deploy_preflight",
-    "optix_studio_version",
     "optix_runtime_start",
     "optix_runtime_stop",
     "optix_runtime_status",
-    "optix_services_status",
     "optix_routes",  # U17: consolidated optix_routes_save/_get/_list
     "optix_cdp_sweep",
     "optix_cdp_restart",
@@ -85,6 +72,27 @@ EXPECTED_TOOLS = {
     # aliases and stay always-registered.
     "optix_observe",
     "optix_interact",
+}
+
+# The 14 per-noun bridge primitives, gated behind FTXMCP_BRIDGE_PRIMITIVES=1
+# (see the mcp_app.py gate block near the FTXMCP_SKILLS pop). Kept as a
+# separate set so EXPECTED_TOOLS reflects the actual default (gate-off)
+# surface while these two sets stay easy to reconcile against each other.
+_BRIDGE_PRIMITIVE_TOOLS = {
+    "optix_bridge_set_property",
+    "optix_bridge_bind_property",
+    "optix_bridge_attach_expression",
+    "optix_bridge_wire_event",
+    "optix_bridge_delete_node",
+    "optix_bridge_move_node",
+    "optix_bridge_reorder",
+    "optix_bridge_create_variable",
+    "optix_bridge_create_folder",
+    "optix_bridge_create_object",
+    "optix_bridge_create_type",
+    "optix_bridge_create_alias",
+    "optix_bridge_create_widget",
+    "optix_bridge_add_translation",
 }
 
 
@@ -123,6 +131,30 @@ def test_ftxmcp_skills_0_drops_skill_tools(cfg: core.Config, monkeypatch) -> Non
     assert "optix_bridge_edit" in names  # authoring surface unaffected
 
 
+def test_bridge_primitives_absent_by_default(cfg: core.Config, monkeypatch) -> None:
+    """The 14 per-noun bridge primitives are gated OFF by default (opposite
+    polarity from FTXMCP_SKILLS): each is 1:1 with an optix_bridge_edit op
+    verb, so the default surface omits them. optix_bridge_edit and the
+    always-on composite/gated-exempt tools stay registered."""
+    monkeypatch.delenv("FTXMCP_BRIDGE_PRIMITIVES", raising=False)
+    names = {t.name for t in _list_tools(make_mcp(cfg))}
+    for n in _BRIDGE_PRIMITIVE_TOOLS:
+        assert n not in names, f"{n} should be gated off by default"
+    assert "optix_bridge_edit" in names
+    assert "optix_bridge_add_bound_widget" in names
+    assert "optix_bridge_convert_to_type" in names
+
+
+def test_bridge_primitives_present_when_gate_on(cfg: core.Config, monkeypatch) -> None:
+    """FTXMCP_BRIDGE_PRIMITIVES=1 is the opt-in escape hatch that restores all
+    14 per-noun bridge primitives, alongside the always-on optix_bridge_edit."""
+    monkeypatch.setenv("FTXMCP_BRIDGE_PRIMITIVES", "1")
+    names = {t.name for t in _list_tools(make_mcp(cfg))}
+    for n in _BRIDGE_PRIMITIVE_TOOLS:
+        assert n in names, f"{n} should be present when the gate is on"
+    assert "optix_bridge_edit" in names
+
+
 def test_mcp_tool_descriptions_carry_use_when_guidance(cfg: core.Config) -> None:
     """Each tool docstring must include the 'Use this when' / 'Do NOT use'
     framing — it is a shipped UX surface for LLM-side MCP clients."""
@@ -142,16 +174,16 @@ def test_mcp_tools_carry_readonly_destructive_annotations(cfg: core.Config) -> N
     writes/destructive ops. Reads -> readOnlyHint True; writes -> readOnlyHint
     False, destructiveHint False; destructive -> readOnlyHint False,
     destructiveHint True."""
-    READ = {"optix_health","optix_doctor","optix_find","optix_list_projects",
+    READ = {"optix_find","optix_list_projects",
             "optix_list_screens","optix_read_file","optix_describe_node",
             "optix_describe_type","optix_list_ui_types","optix_bridge_status",
-            "optix_studio_version","optix_runtime_status","optix_services_status",
+            "optix_runtime_status",
             "optix_deploy_preflight","optix_cdp_screenshot","optix_cdp_ocr",
             "optix_cdp_read_text","optix_cdp_find_text","optix_cdp_diff",
             "optix_bridge_validate_expression",
-            "optix_emulator_status", "optix_runtime_log_tail",
             "optix_get_project_map", "optix_list_skills", "optix_get_skill",
             "optix_schema",  # U17: consolidated, all 3 actions were read-only
+            "optix_status",  # consolidated health/doctor/services/version — all read-only
             "optix_active_target",
             # U14 consolidated read-side capture
             "optix_observe"}
@@ -187,6 +219,7 @@ def test_mcp_bridge_tool_returns_structured_nudge_on_failure(
 ) -> None:
     """A bridge write that raises must reach the model as a structured, nudging
     dict (via classify_bridge_failure), never a raw exception."""
+    monkeypatch.setenv("FTXMCP_BRIDGE_PRIMITIVES", "1")
     def _raise(*a, **k):
         raise core.BridgeUnavailable("bridge unreachable")
     monkeypatch.setattr(core, "bridge_set_property", _raise)
@@ -203,8 +236,8 @@ def test_mcp_bridge_tool_returns_structured_nudge_on_failure(
 
 def test_mcp_health_tool_returns_expected_keys(cfg: core.Config) -> None:
     mcp = make_mcp(cfg)
-    tool = next(t for t in _list_tools(mcp) if t.name == "optix_health")
-    out = _tool_fn(tool)()
+    tool = next(t for t in _list_tools(mcp) if t.name == "optix_status")
+    out = _tool_fn(tool)(action="health")
     for key in (
         "projects_root",
         "studio_exe",
@@ -251,13 +284,14 @@ def test_shellout_tools_are_offloaded_async(cfg: core.Config) -> None:
     # optix_cdp_* aliases are off by default; the consolidated optix_observe /
     # optix_interact carry the same multi-second CDP/tesseract shell-out paths
     # and MUST be offloaded, along with the always-registered sweep/restart.
-    for n in ("optix_emulator_status", "optix_run_emulator", "optix_restart_emulator",
-              "optix_studio_version", "optix_doctor", "optix_services_status",
+    # optix_emulator/optix_status are the consolidated forms of the former
+    # per-action emulator-lifecycle/status tools — same shell-out paths.
+    for n in ("optix_emulator", "optix_status",
               "optix_save", "optix_cdp_sweep", "optix_cdp_restart",
               "optix_observe", "optix_interact"):
         assert by_name[n].is_async is True, f"{n} must be offloaded (async)"
-    for n in ("optix_health", "optix_list_projects", "optix_describe_node",
-              "optix_bridge_set_property", "optix_get_project_map",
+    for n in ("optix_list_projects", "optix_describe_node",
+              "optix_bridge_add_bound_widget", "optix_get_project_map",
               "optix_routes"):
         assert by_name[n].is_async is False, f"{n} should stay sync"
 
@@ -269,7 +303,7 @@ def test_mcp_call_tool_path_invokes_health(cfg: core.Config) -> None:
     mcp = make_mcp(cfg)
 
     async def _invoke():
-        return await mcp.call_tool("optix_health", {})
+        return await mcp.call_tool("optix_status", {"action": "health"})
 
     result = asyncio.run(_invoke())
     # `call_tool` returns either a list of ContentBlock (no output_schema)
@@ -356,9 +390,8 @@ def test_deploy_family_hidden_by_default(cfg: core.Config) -> None:
     names = {t.name for t in _list_tools(make_mcp(lean))}
     assert not (names & DEPLOY_FAMILY), names & DEPLOY_FAMILY
     # the emulator-first surface is intact
-    for keep in ("optix_run_emulator", "optix_restart_emulator",
-                 "optix_bridge_create_widget", "optix_observe",
-                 "optix_get_project_map"):
+    for keep in ("optix_emulator", "optix_bridge_add_bound_widget",
+                 "optix_observe", "optix_get_project_map"):
         assert keep in names
 
 
@@ -372,7 +405,7 @@ def test_server_ships_instructions(cfg: core.Config) -> None:
     exist, stay short, and point at the skill tools."""
     mcp = make_mcp(cfg)
     ins = mcp._mcp_server.instructions or ""
-    assert "optix_list_skills" in ins and "optix_restart_emulator" in ins
+    assert "optix_list_skills" in ins and "optix_emulator" in ins
     assert len(ins) < 1200, "instructions must stay lean — they cost every session"
 
 
@@ -803,14 +836,19 @@ def test_with_project_tool_count_and_annotations_unchanged(cfg: core.Config) -> 
     off unless FTXMCP_LEGACY_TOOLS=1, so 72 - 10 = 62 by default. U17 folds the
     3-tool optix_schema_dump/_list/_diff family into optix_schema and the
     3-tool optix_routes_save/_get/_list family into optix_routes (clean
-    replace, no aliases): 62 - 4 = 58."""
+    replace, no aliases): 62 - 4 = 58. Second consolidation pass: the 4-tool
+    optix_health/_doctor/_services_status/_studio_version family folds into
+    optix_status (58 - 3 = 55); the 5-tool optix_run_emulator/_restart_emulator/
+    _stop_emulator/_emulator_status/_runtime_log_tail family folds into
+    optix_emulator (55 - 4 = 51); the 14 per-noun bridge primitives are gated
+    OFF by default behind FTXMCP_BRIDGE_PRIMITIVES (51 - 14 = 37)."""
     mcp = make_mcp(cfg)
     by_name = {t.name: t for t in _list_tools(mcp)}
-    assert len(by_name) == 58
+    assert len(by_name) == 37
     assert by_name["optix_list_screens"].annotations.readOnlyHint is True
-    write = by_name["optix_bridge_set_property"].annotations
+    write = by_name["optix_bridge_add_bound_widget"].annotations
     assert write.readOnlyHint is False and write.destructiveHint is False
-    destr = by_name["optix_bridge_delete_node"].annotations
+    destr = by_name["optix_bridge_edit"].annotations
     assert destr.readOnlyHint is False and destr.destructiveHint is True
 
 
@@ -830,7 +868,12 @@ def test_with_project_resolution_is_uniform(cfg: core.Config, monkeypatch,
                                             tool_name, core_fn, extra) -> None:
     """The decorator behaves identically across decorated tools: an omitted
     `project` resolves to the bridge default and reaches core; a None default
-    short-circuits with the `no_project` envelope (core never called)."""
+    short-circuits with the `no_project` envelope (core never called).
+
+    optix_bridge_set_property is gated OFF by default (FTXMCP_BRIDGE_PRIMITIVES)
+    but @_with_project's behavior is identical regardless of gate state, so the
+    gate is enabled here to keep this case registered and exercised."""
+    monkeypatch.setenv("FTXMCP_BRIDGE_PRIMITIVES", "1")
     seen = {}
     monkeypatch.setattr(core, "default_project", lambda c: "BridgeProj")
     monkeypatch.setattr(core, core_fn,
@@ -849,17 +892,17 @@ def test_with_project_resolution_is_uniform(cfg: core.Config, monkeypatch,
 
 
 def test_excluded_outliers_keep_bespoke_no_project_envelope(cfg: core.Config, monkeypatch) -> None:
-    """optix_save / optix_run_emulator are intentionally NOT decorated with
-    @_with_project: they own a bespoke no-project envelope keyed to their
-    success shape ({saved: False} / {launched: False}), NOT the generic
-    {error: "no_project"}. Decorating them would silently swap that contract.
-    Lock the exclusion in."""
+    """optix_save / optix_emulator(action="run"|"restart") are intentionally NOT
+    decorated with @_with_project: they own a bespoke no-project envelope keyed
+    to their success shape ({saved: False} / {launched: False}), NOT the
+    generic {error: "no_project"}. Decorating them would silently swap that
+    contract. Lock the exclusion in."""
     monkeypatch.setattr(core, "default_project", lambda c: None)
     mcp = make_mcp(cfg)
     by_name = {t.name: t for t in _list_tools(mcp)}
     save_out = _tool_fn(by_name["optix_save"])()
     assert save_out.get("saved") is False
     assert save_out.get("error") != "no_project"
-    emu_out = _tool_fn(by_name["optix_run_emulator"])()
+    emu_out = _tool_fn(by_name["optix_emulator"])(action="run")
     assert emu_out.get("launched") is False
     assert emu_out.get("error") != "no_project"

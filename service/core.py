@@ -108,7 +108,7 @@ class BridgeWriteFailed(CoreError):
 class DeployConfigError(CoreError):
     http_status = 400
     code = "deploy_not_configured"
-    hint = "UpdateSvc deploy needs OPTIX_DEPLOY_USERNAME (and usually OPTIX_DEPLOY_IP / OPTIX_DEPLOY_THUMBPRINT) set, plus OPTIX_STUDIO_DEPLOYMENT_PASSWORD in the environment. Run optix_doctor for the full checklist."
+    hint = "UpdateSvc deploy needs OPTIX_DEPLOY_USERNAME (and usually OPTIX_DEPLOY_IP / OPTIX_DEPLOY_THUMBPRINT) set, plus OPTIX_STUDIO_DEPLOYMENT_PASSWORD in the environment. Run optix_status(action='doctor') for the full checklist."
 
 
 class StudioOpen(CoreError):
@@ -3299,7 +3299,7 @@ def run_emulator(
             if st.get("state") == "starting":
                 result["hint"] = (
                     "The emulator process exists but its port isn't serving yet — "
-                    "still building/loading. Poll optix_emulator_status until "
+                    "still building/loading. Poll optix_emulator(action='status') until "
                     "`running`; do NOT resend F5 (it TOGGLES and would stop it).")
             elif st.get("state") == "not_running" and _bare_runtime_running(cfg, runner):
                 # A FTOptixRuntime process DOES exist, but the strict
@@ -3310,7 +3310,7 @@ def run_emulator(
                 result["hint"] = (
                     f"An FTOptixRuntime process exists but :{port} isn't serving yet "
                     "and its emulator identity isn't confirmable yet — still starting. "
-                    "Poll optix_emulator_status until `running`; do NOT resend F5 "
+                    "Poll optix_emulator(action='status') until `running`; do NOT resend F5 "
                     "(it TOGGLES and would stop it).")
             elif st.get("state") == "not_running":
                 tgt = studio_active_deployment_target(cfg)
@@ -3501,7 +3501,7 @@ def runtime_log_tail(
     if not log_dir.is_dir():
         return {"error": "no_log_dir", "project": project,
                 "hint": (f"no emulator log dir at {log_dir} — the emulator has "
-                         "never run for this project (optix_run_emulator first)")}
+                         "never run for this project (optix_emulator(action='run') first)")}
     candidates = sorted(
         (p for p in log_dir.glob("FTOptixRuntime.*.log") if p.is_file()),
         key=lambda p: p.stat().st_mtime, reverse=True)
@@ -4308,7 +4308,7 @@ def ensure_chrome_cdp(
         return {"state": "failed", "alive": False, "has_page": False,
                 "restarted": True,
                 "detail": f"started {_CHROME_CDP_TASK} but {cfg.cdp_url} still down "
-                          f"after {wait_seconds:.0f}s (see optix_doctor)"}
+                          f"after {wait_seconds:.0f}s (see optix_status(action='doctor'))"}
     try:
         _cdp.ensure_page(cfg.cdp_url)
     except _cdp.CDPError as e:
@@ -4666,7 +4666,7 @@ def _resolve_region(sess: Any, region: list[float] | None) -> tuple[list[float] 
 
 # Last fresh(=True) capture digest per CDP endpoint, keyed by cfg.cdp_url:
 # (sha256_hex, size_bytes). Used ONLY to detect the "stale tab after
-# optix_restart_emulator" failure mode (see cdp_screenshot_runtime) — a
+# optix_emulator(action='restart')" failure mode (see cdp_screenshot_runtime) — a
 # fresh capture that is byte-IDENTICAL to the previous fresh capture from
 # the same endpoint is the empirical signature of a screenshot that never
 # actually re-pointed at the restarted runtime. Never consulted for
@@ -4721,7 +4721,7 @@ def cdp_screenshot_runtime(
     (capturing mid-navigation fails).
 
     fresh=True additionally guards against the "stale tab after
-    optix_restart_emulator" trap: the runtime process gets a new PID but
+    optix_emulator(action='restart')" trap: the runtime process gets a new PID but
     keeps the SAME URL, so the auto-target check above sees the tab is
     "already there" and would otherwise skip navigating entirely, and even
     a forced reload can still be served from Chrome's cache instead of
@@ -4775,7 +4775,7 @@ def cdp_screenshot_runtime(
         if fresh and not navigated:
             # force a reload so a stale frame can never masquerade as current
             # (the auto-target skips re-navigation when already on the runtime).
-            # ignore_cache=True: after optix_restart_emulator the runtime
+            # ignore_cache=True: after optix_emulator(action='restart') the runtime
             # process is new but the tab/URL is unchanged, so a plain reload
             # can still be served from Chrome's cache — see _cdp.CDPClient.reload.
             sess.reload(ignore_cache=True)
@@ -4826,7 +4826,7 @@ def cdp_screenshot_runtime(
                     "fresh capture stayed byte-identical to the prior fresh "
                     "capture even after a forced session reconnect + hard "
                     "reload — the runtime canvas genuinely hasn't changed "
-                    "(or is not repainting at all). Check optix_emulator_status "
+                    "(or is not repainting at all). Check optix_emulator(action='status') "
                     "for a wedged process before assuming the edit failed to apply."
                 )
         if save_path:

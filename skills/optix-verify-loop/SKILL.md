@@ -11,7 +11,7 @@ Never deploy just to look at a change.
 **Default cadence: author ALL structural edits for the screen/build first,
 restart the emulator ONCE, verify ONCE.** A build with N components does not
 get N restarts — it gets one, after the last component lands. Each
-`optix_restart_emulator` is ~10s (stop → start → wait-until-serving) plus a
+`optix_emulator(action="restart")` is ~10s (stop → start → wait-until-serving) plus a
 re-render; restarting per-component on an 8-widget screen turns a ~10s check
 into minutes of stacked restarts, for no extra signal — a mid-build
 screenshot only confirms components you already validated by reading the
@@ -20,7 +20,7 @@ one specific edit you suspect is broken (see step 6) — it is not the normal
 rhythm of authoring, and "restart to check" after every widget is exactly
 the pattern this skill exists to stop.
 
-1. **Check state first.** `optix_emulator_status` → `not_running` / `starting`
+1. **Check state first.** `optix_emulator(action="status")` → `not_running` / `starting`
    / `running`. F5 TOGGLES — a blind run stops a running emulator. F5 also
    runs Studio's SELECTED deployment target: if the run tool refuses with
    `active_target_not_emulator`, the user's dropdown points at hardware —
@@ -35,7 +35,7 @@ the pattern this skill exists to stop.
    an incomplete screen and burns a cycle.
 
 3. **One restart, at the end of the batch.** Once every structural edit is
-   in: one call, `optix_restart_emulator` (stops if running, starts, waits
+   in: one call, `optix_emulator(action="restart")` (stops if running, starts, waits
    until serving; no save needed).
 
 4. **Interactive-only exercise?** (clicking a switch, typing a value into an
@@ -48,7 +48,7 @@ the pattern this skill exists to stop.
    the port isn't up yet — a screenshot now hits nothing.
 
 5b. **Run reported launched but the emulator never spawns?** If
-   `optix_run_emulator` returns `runtime_identity: "not_running"` with
+   `optix_emulator(action="run")` returns `runtime_identity: "not_running"` with
    `probable_cause: "target_or_modal"` (or repeated starts just never serve),
    hypothesize FIRST that Studio's toolbar target dropdown is set to another
    target, or a modal dialog (credentials, NetLogic security warning) is
@@ -57,11 +57,11 @@ the pattern this skill exists to stop.
    call — each press fires at whatever target is selected.
 
 6. **Edit not visible in the screenshot?** Do NOT conclude the edit failed.
-   In order: (a) did you `optix_restart_emulator` after the FULL batch of
+   In order: (a) did you `optix_emulator(action="restart")` after the FULL batch of
    structural edits (not just the one you're eyeing)? (b) is status
    `running`, not `starting`? (c) right screen navigated? (d) re-screenshot
    with `fresh=true` (rules out a stale frame); (e)
-   `optix_runtime_log_tail(contains="error")` — NetLogic exceptions land
+   `optix_emulator(action="log", contains="error")` — NetLogic exceptions land
    there; (f) container renders blank with children configured? Check the
    **container's own** Width/Height via `optix_describe_node` — a layout
    container created without a size can be 0×0 and hides every child, no

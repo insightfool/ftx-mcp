@@ -289,14 +289,23 @@ DEFAULT_SCOPE_RULES: tuple[ScopeRule, ...] = (
 # action-aware resolution through _required_tool_scope. Includes the
 # deploy-family tools that are popped from the registry when
 # enable_deploy=False (harmless: a popped tool never
-# dispatches) so the table describes the enable_deploy=True superset.
+# dispatches) so the table describes the enable_deploy=True superset. Also
+# includes the 14 gated bridge-primitive tools (FTXMCP_BRIDGE_PRIMITIVES,
+# default off) for the same reason — a gate-popped tool never dispatches, but
+# the table must still cover it for when the gate is on.
+#
+# Second consolidation pass: optix_health/optix_doctor/optix_services_status/
+# optix_studio_version (2x "health", 2x "read") merged into one optix_status
+# tool (action=) — assigned "read" (most-privileged of the four), tightening
+# the health-tier actions the same way the optix_routes merge tightened its
+# get/list actions. optix_run_emulator/optix_restart_emulator/
+# optix_stop_emulator ("author") + optix_emulator_status/optix_runtime_log_tail
+# ("read") merged into one optix_emulator tool (action=) — assigned "author"
+# (most-privileged), tightening status/log the same way.
 TOOL_SCOPES: dict[str, str] = {
-    # ---- health (3): liveness/status probes ----
-    "optix_health": "health",
+    # ---- health (1): liveness/status probes ----
     "optix_runtime_status": "health",
-    "optix_services_status": "health",
-    # ---- read (25): read-only introspection ----
-    "optix_doctor": "read",
+    # ---- read (22): read-only introspection ----
     "optix_list_skills": "read",
     "optix_get_skill": "read",
     "optix_list_projects": "read",
@@ -310,50 +319,46 @@ TOOL_SCOPES: dict[str, str] = {
     "optix_describe_type": "read",
     "optix_schema": "read",  # U17: consolidated schema_dump/_list/_diff
     "optix_bridge_validate_expression": "read",
-    "optix_emulator_status": "read",
     "optix_active_target": "read",
-    "optix_runtime_log_tail": "read",
     "optix_deploy_preflight": "read",
-    "optix_studio_version": "read",
+    "optix_status": "read",  # consolidated health/doctor/services/version
     "optix_cdp_screenshot": "read",
     "optix_cdp_ocr": "read",
     "optix_cdp_read_text": "read",
     "optix_cdp_find_text": "read",
     "optix_cdp_diff": "read",
     "optix_observe": "read",  # U14 consolidated read-side CDP capture
-    # ---- author (36): mutates project / previews / drives canvas ----
+    # ---- author (34): mutates project / previews / drives canvas ----
     # U16 batched authoring: `author`, same as every per-noun bridge write it
     # dispatches to. It can only do what those tools can do — batching does not
     # widen the surface, so it must not need a wider scope.
     "optix_bridge_edit": "author",
-    "optix_bridge_create_widget": "author",
+    "optix_bridge_create_widget": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
     "optix_bridge_add_bound_widget": "author",
     "optix_bridge_add_navigation_panel_item": "author",
     "optix_bridge_add_label": "author",
     "optix_bridge_ensure_web_engine": "author",
-    "optix_bridge_set_property": "author",
-    "optix_bridge_create_variable": "author",
-    "optix_bridge_create_folder": "author",
-    "optix_bridge_create_object": "author",
-    "optix_bridge_create_type": "author",
-    "optix_bridge_bind_property": "author",
-    "optix_bridge_create_alias": "author",
-    "optix_bridge_add_translation": "author",
-    "optix_bridge_reorder": "author",
-    "optix_bridge_attach_expression": "author",
-    "optix_bridge_wire_event": "author",
+    "optix_bridge_set_property": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
+    "optix_bridge_create_variable": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
+    "optix_bridge_create_folder": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
+    "optix_bridge_create_object": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
+    "optix_bridge_create_type": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
+    "optix_bridge_bind_property": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
+    "optix_bridge_create_alias": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
+    "optix_bridge_add_translation": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
+    "optix_bridge_reorder": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
+    "optix_bridge_attach_expression": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
+    "optix_bridge_wire_event": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
     "optix_save": "author",
-    "optix_run_emulator": "author",
-    "optix_restart_emulator": "author",
-    "optix_stop_emulator": "author",
+    "optix_emulator": "author",  # consolidated run/restart/stop/status/log
     "optix_add_widget": "author",
     "optix_add_model_variable": "author",
     "optix_set_property": "author",
     "optix_routes": "author",  # U17: consolidated routes_save/_get/_list
     "optix_cdp_restart": "author",
-    "optix_bridge_move_node": "author",
+    "optix_bridge_move_node": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
     "optix_bridge_convert_to_type": "author",
-    "optix_bridge_delete_node": "author",
+    "optix_bridge_delete_node": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
     "optix_cdp_click": "author",
     "optix_cdp_fill": "author",
     "optix_cdp_type": "author",

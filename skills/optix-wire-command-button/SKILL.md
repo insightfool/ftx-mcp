@@ -37,15 +37,14 @@ variable isn't live until the batch applies).
    (`variable` is a resolvable node path — `Model/<var>`; create it first with
    `create_variable` if needed.)
 
-Just wiring one existing button, nothing to create? The per-noun tools
-(`optix_bridge_create_widget`, `optix_bridge_set_property`, `optix_bridge_wire_event`)
-are simpler than composing a batch for one or two calls.
+Just wiring one existing button, nothing to create? `optix_bridge_edit` with
+a one-op `wire_event` list handles that fine — no need for a bigger batch.
 
 ## Custom logic instead of a native command
 
 To run a NetLogic `[ExportMethod]` on click, pass `method_path` instead of
-`command` (op field, or the standalone tool):
-`optix_bridge_wire_event(project, ".../StartBtn", "MouseClickEvent", method_path="NetLogic/MyLogic/DoThing")`.
+`command` (same `wire_event` op field):
+`optix_bridge_edit(project, ops=[{"op": "wire_event", "path": ".../StartBtn", "event_type": "MouseClickEvent", "method_path": "NetLogic/MyLogic/DoThing"}])`.
 (The ExportMethod is authored as an EventHandler.)
 
 ## Notes
@@ -56,7 +55,7 @@ To run a NetLogic `[ExportMethod]` on click, pass `method_path` instead of
   tool. For a single Set/Toggle this is complete.
 - **Describe first** if unsure of the event name: `optix_describe_type("Button")`
   lists events/props; `MouseClickEvent` is the click.
-- Verify at runtime: `optix_restart_emulator` then
+- Verify at runtime: `optix_emulator(action="restart")` then
   `optix_interact(action="click", ...)`/`optix_observe(mode="screenshot", ...)` (trusted CDP events reach the Optix
   hit-tester).
 - Wiring several buttons/components in one build? Don't restart per button —

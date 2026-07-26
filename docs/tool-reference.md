@@ -1,7 +1,8 @@
 # Tool reference
 
-70 tools, grouped by where they sit in the loop. Every tool's docstring
-carries "Use when / Do NOT use when" guidance for the model, and MCP
+37 tools registered by default, grouped by where they sit in the loop
+(gate env vars can add more — see the notes below each table). Every tool's
+docstring carries "Use when / Do NOT use when" guidance for the model, and MCP
 annotations (`readOnlyHint`/`destructiveHint`) so hosts can auto-run reads
 and gate writes. `project` is optional everywhere — it defaults to the
 project open in Studio.
@@ -10,8 +11,7 @@ project open in Studio.
 
 | Tool | What it does |
 |---|---|
-| `optix_doctor` | Dependency checklist with a plain-English fix per item — run first |
-| `optix_health` | Service config + liveness |
+| `optix_status` (`action="health"`/`"doctor"`/`"services"`/`"version"`) | Deploy-stack status family: fast preflight config (`health`), setup-fix checklist (`doctor`), live dashboard aggregate (`services`), raw Studio binary version (`version`) — heterogeneous, pick the action that matches the question |
 | `optix_list_projects` | Projects under the projects root |
 | `optix_list_screens` | Screen/Panel/Dialog nodes in the project |
 | `optix_get_project_map` | Whole-subtree component map in one call — overview with counts, then drill by path |
@@ -19,7 +19,7 @@ project open in Studio.
 | `optix_describe_node` | Live node: children, properties, values |
 | `optix_list_ui_types` / `optix_describe_type` | Widget catalog + per-type property legend (consult before setting); `type_names=[...]` batches a survey into one call |
 | `optix_schema` (`action="dump"`/`"list"`/`"diff"`) | Cache the full type-schema dump per Studio version (offline), list cached versions, diff two versions (upgrade intelligence) |
-| `optix_bridge_status` / `optix_studio_version` / `optix_services_status` | Component status |
+| `optix_bridge_status` / `optix_active_target` | Bridge status; which deployment target Studio's dropdown has selected |
 | `optix_list_skills` / `optix_get_skill` | Bundled authoring playbooks — catalog + on-demand full content (served by the server itself, version-locked to the tools) |
 
 ## Authoring (live bridge — Studio open)
@@ -27,33 +27,45 @@ project open in Studio.
 Writes go into Studio's in-memory model; an undeclared property is rejected
 with the valid-property list rather than crashing Studio.
 
+`optix_bridge_edit` is the primary entry point — batch one or more ops
+(`set_property`, `bind`, `create_widget`, `create_variable`, `create_folder`,
+`create_object`, `create_type`, `create_alias`, `delete`, `move`, `reorder`,
+`wire_event`, `attach_expression`, `add_translation`), validated as a whole
+before anything is applied. **A single edit is just a one-op list** — there
+is no separate "do one thing" tool for these verbs by default (see the gate
+note below the table).
+
 | Tool | What it does |
 |---|---|
-| `optix_bridge_create_widget` | Create a widget; collection-aware (a `NavigationPanelItem` aimed at the panel lands in `Panels` automatically) |
+| `optix_bridge_edit` | Batch of live-model authoring ops (see verb list above), validated then applied as a whole |
 | `optix_bridge_add_bound_widget` | Create + position + bind in one call — the standard way to add a bound control |
 | `optix_bridge_add_navigation_panel_item` | Add a nav tab in one call (create into `Panels` + Title + target screen) |
-| `optix_bridge_set_property` | Set any property (colors as `#RRGGBB`/`#AARRGGBB`) |
-| `optix_bridge_bind_property` | DynamicLink a property to a model variable |
-| `optix_bridge_attach_expression` | Computed color/visibility/scaling/text from one or more sources |
+| `optix_bridge_add_label` | One-shot Label with text (+ optional position) |
+| `optix_bridge_ensure_web_engine` | Ensure the web presentation engine exists so a deploy has a canvas to serve |
+| `optix_bridge_convert_to_type` | Promote an existing instance to a reusable ObjectType (Studio's "Convert to Type", with a link audit) |
 | `optix_bridge_validate_expression` | Syntax-check a formula before wiring it |
-| `optix_bridge_wire_event` | Click/change events + native Set/Toggle commands |
-| `optix_bridge_create_variable` / `_create_alias` / `_add_translation` | Model variables, aliases, i18n |
-| `optix_bridge_create_folder` / `_create_object` | Structural nodes: folders; plain Object containers or instances of custom types |
-| `optix_bridge_create_type` / `_convert_to_type` | Reusable templates: create an ObjectType and author into it, or promote an existing instance (Studio's "Convert to Type", with a link audit) |
-| `optix_bridge_move_node` | Reparent an instance (re-authoring move: copy + link fixups + delete original; NodeId changes) |
-| `optix_bridge_reorder` | Z-order (send to back/front) |
-| `optix_bridge_delete_node` / `_add_label` / `_ensure_web_engine` | Delete; one-shot label; ensure the web presentation engine |
+
+**Per-noun bridge primitives (gated, off by default).** The 14 tools that are
+1:1 with an `optix_bridge_edit` op verb — `optix_bridge_set_property`,
+`_bind_property`, `_attach_expression`, `_wire_event`, `_delete_node`,
+`_move_node`, `_reorder`, `_create_variable`, `_create_folder`,
+`_create_object`, `_create_type`, `_create_alias`, `_create_widget`,
+`_add_translation` — are popped from the registry by default; they clutter
+the surface for no capability `optix_bridge_edit` doesn't already cover.
+Set `FTXMCP_BRIDGE_PRIMITIVES=1` to restore them (an opt-in escape hatch for
+callers that prefer one-verb-per-tool). The composite wrappers above and
+`optix_bridge_edit` itself are **never** gated.
 
 ## Preview & ship
 
 | Tool | What it does |
 |---|---|
-| `optix_run_emulator` | Start Studio's emulator — the default verify step |
-| `optix_restart_emulator` | Stop-if-running → start → wait serving: THE call after a structural edit |
-| `optix_emulator_status` | `not_running` / `starting` / `running` (check first — the emulator toggle can stop a running one) |
-| `optix_stop_emulator` | Stop it (structural edits need a stop → start to show) |
-| `optix_runtime_log_tail` | Tail the emulator/NetLogic log when a preview misbehaves |
+| `optix_emulator` (`action="run"`/`"restart"`/`"stop"`/`"status"`/`"log"`) | Emulator lifecycle: start (`run`), stop-then-start-then-wait (`restart`), stop (`stop`), `not_running`/`starting`/`running` (`status`), tail the runtime log (`log`, honors `lines`/`contains`) |
 | `optix_save` | Explicit Ctrl+S — rarely needed (the emulator saves as part of staging) |
+
+`optix_emulator` toggles on F5 (`action="run"`) — check `action="status"`
+first so a blind "run" doesn't stop a running emulator. Structural edits
+(new widgets, bindings, layout) need `action="restart"` before they render.
 
 ## Verify (rendered canvas)
 

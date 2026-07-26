@@ -61,8 +61,8 @@ optix_bridge_edit(project, ops=[
    children can join the same batch as more `create_widget`+`set_property`
    ops once the skeleton is confirmed.
 
-Building just the skeleton and nothing else? `optix_bridge_create_widget`
-per node is simpler than composing a batch for one or two calls.
+Building just the skeleton and nothing else? Two nodes is still a two-op
+`optix_bridge_edit` list — no separate per-node tool needed.
 
 ## Migrating existing content
 
@@ -72,7 +72,8 @@ another batch: `{"op": "move", "path": <existing widget>, "new_parent": <the
 layout's path>}` repeated, one call. Read the response: outbound bindings
 are re-created, but the moved node's NodeId changes — anything elsewhere
 that bound INTO it needs rebinding (the response's note + broken_links tell
-you). `optix_bridge_move_node` standalone is simpler for a single widget.
+you). Moving a single widget? `optix_bridge_edit` with a one-op `move` list
+is just as simple.
 
 ## Verify
 

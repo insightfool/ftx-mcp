@@ -44,7 +44,7 @@ conditionally-visible label is several related edits — batch those.
      see the exact settable property names rather than guessing.
 
 3. **Runtime (only if the user wants it live):**
-   `optix_restart_emulator(project)` →
+   `optix_emulator(action="restart", project=project)` →
    `optix_observe(mode="screenshot", project=project, save_path="<session dir>/label.jpg")`.
    Adding several labels/components in one build? Don't restart per label —
    author them all first and do ONE restart + screenshot at the end (see
@@ -53,9 +53,10 @@ conditionally-visible label is several related edits — batch those.
 ## Show/hide on a condition
 
 Bind the label's `Visible` to a Boolean model variable (op verb `bind`, field
-`source_path` — see the batch above):
-`optix_bridge_bind_property(project, "UI/Screens/<Screen>/<Name>", "Visible", "Model/<BoolVar>", mode="Read")`
-if doing it standalone. Create the variable first (`optix_bridge_create_variable`)
+`source_path` — see the batch above). Single edit? Call `optix_bridge_edit`
+with a one-op list:
+`optix_bridge_edit(project, ops=[{"op": "bind", "path": "UI/Screens/<Screen>/<Name>", "name": "Visible", "source_path": "Model/<BoolVar>", "mode": "Read"}])`.
+Create the variable first (`{"op": "create_variable", ...}`)
 — see [`optix-bound-toggle`](../optix-bound-toggle/SKILL.md).
 
 ## Notes
