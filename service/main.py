@@ -17,9 +17,12 @@ Auth:
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 import sys
 import threading
+
+import traceback
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -341,10 +344,28 @@ def main(argv: list[str] | None = None) -> int:
     async def serve_both() -> None:
         await asyncio.gather(http_server.serve(), mcp_server.serve())
 
+    # Lifecycle logging (state_dir/logs/service.jsonl): a "start" with no later
+    # "stop"/"crash" is the fingerprint of an external kill (e.g. a Task Scheduler
+    # ExecutionTimeLimit); a "crash" carries the traceback. This is what turns the
+    # next "why did it die?" from a guess into a lookup.
+    core.service_event(
+        cfg, "start", version=__version__, pid=os.getpid(),
+        host=cfg.bind_host, http_port=cfg.bind_http_port, mcp_port=cfg.bind_mcp_port,
+    )
     try:
         asyncio.run(serve_both())
     except KeyboardInterrupt:
+        core.service_event(cfg, "stop", reason="keyboard_interrupt")
         return 130
+    except Exception as e:
+        # An unhandled server exception would otherwise exit silently (stdout/stderr
+        # are not captured by the scheduled task). Record it before re-raising.
+        core.service_event(
+            cfg, "crash", error=f"{type(e).__name__}: {e}",
+            traceback=traceback.format_exc(),
+        )
+        raise
+    core.service_event(cfg, "stop", reason="serve_returned")
     return 0
 
 

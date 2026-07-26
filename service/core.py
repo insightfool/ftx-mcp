@@ -1611,6 +1611,41 @@ def _untrusted(value: object, source: str) -> str:
 # and came back as a false "bridge unreachable" — the bridge was fine, the
 # call was just still running when the client gave up. Generic invoke needs
 # to let slow methods run longer.
+
+# --- Service-lifecycle log (state_dir/logs/service.jsonl) ---------------------
+# Records process start / clean stop / crash-with-traceback. This is what makes a
+# mysterious death diagnosable after the fact: a "start" with no following "stop" or
+# "crash" means the process was killed EXTERNALLY (SIGKILL, a manual stop, or a Task
+# Scheduler ExecutionTimeLimit termination = result 0x00041306) — whereas a "crash"
+# carries the Python traceback. Size-rotated; best-effort (never breaks startup).
+_SERVICE_LOG_MAX_BYTES = 1_000_000
+_SERVICE_LOG_BACKUPS = 3
+
+
+def service_event(cfg: Config, event: str, **fields) -> None:
+    """Append one JSONL line to the service-lifecycle log
+    (state_dir/logs/service.jsonl), size-rotated (.jsonl -> .1 -> .2 -> .3).
+    Best-effort: lifecycle logging must never break the service."""
+    try:
+        d = cfg.state_dir / "logs"
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / "service.jsonl"
+        try:
+            if p.exists() and p.stat().st_size >= _SERVICE_LOG_MAX_BYTES:
+                for i in range(_SERVICE_LOG_BACKUPS, 0, -1):
+                    src = p if i == 1 else d / f"service.jsonl.{i - 1}"
+                    if src.exists():
+                        os.replace(src, d / f"service.jsonl.{i}")
+        except Exception:
+            pass
+        rec = {"ts": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+               "event": event, **fields}
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+
+
 def _bridge_write(
     cfg: Config, project: str, op: str, endpoint: str, params: dict,
     *, method: str = "POST", timeout: float | None = None,
