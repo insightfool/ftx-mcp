@@ -1665,6 +1665,21 @@ public class StudioMCPBridge : BaseNetLogic
                 .GetField(typeName, BindingFlags.Public | BindingFlags.Static);
             if (typeField == null || !(typeField.GetValue(null) is NodeId typeId))
                 return ErrorJson("type_not_found", "no builtin UI type: " + typeName);
+            // The ObjectTypes catalog also carries the ABSTRACT layout bases in the
+            // Item -> Container -> Panel chain. `Item`/`Container` are not concrete
+            // renderable widgets: a bare instance is "not a UI object type" to the
+            // WebPresentationEngine and CRASHES the render tree, killing every
+            // sibling after it (found live 2026-07-25 — an agent picked "Container"
+            // as a layout widget and lost the screen). Refuse loud and redirect.
+            // (A full reflect-the-runtime-proxy renderability filter is a follow-up;
+            // these two are the only bases an author realistically mistakes for a
+            // widget.)
+            if (typeName == "Item" || typeName == "Container")
+                return ErrorJson("not_renderable",
+                    "'" + typeName + "' is an abstract layout base, not a renderable "
+                    + "widget — a bare instance crashes the render tree. Use 'Panel' "
+                    + "(invisible layout container; add a Rectangle child for a "
+                    + "background) or 'Rectangle' (a filled/bordered box) instead.");
             var screenNode = ResolveNode(screen);
             if (screenNode == null)
                 return ErrorJson("node_not_found", "no screen at: " + screen);
