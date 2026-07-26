@@ -135,8 +135,14 @@ class CDPClient:
     def navigate(self, url: str) -> None:
         self.cmd("Page.navigate", url=url)
 
-    def reload(self) -> None:
-        self.cmd("Page.reload")
+    def reload(self, ignore_cache: bool = False) -> None:
+        """Reload the current page. ignore_cache=True (CDP Page.reload's
+        ignoreCache) bypasses Chrome's disk/memory cache for this load —
+        use it for a forced 'fresh' recapture: after optix_restart_emulator
+        the runtime process is new but the tab/URL is unchanged, so a
+        plain reload can still be served from cache instead of actually
+        re-fetching from (and reconnecting to) the restarted runtime."""
+        self.cmd("Page.reload", ignoreCache=bool(ignore_cache))
 
     def current_url(self) -> str:
         """The URL of the page currently shown in this target, or "" if it

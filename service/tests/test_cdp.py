@@ -172,6 +172,141 @@ def test_cdp_settle_explicit_override_wins(cfg, fake_cdp, monkeypatch):
     assert recorded == [0.25]
 
 
+# ---- Problem #2: stale-tab self-heal after optix_restart_emulator ----------
+#
+# Root cause: after a restart the runtime process gets a new PID but keeps the
+# SAME URL, so _point_screenshot_at_runtime's "already there" check sees the
+# tab already pointed at the runtime and skips navigating. fresh=True forces a
+# reload in that case, but a PLAIN reload can still be served from Chrome's
+# cache instead of re-fetching from (and reconnecting to) the restarted
+# process -- the observed "identical byte size across three restarts" bug.
+# The fix has two parts, tested separately below:
+#   1. the forced reload now passes ignoreCache=True (ignore_cache wiring).
+#   2. a fresh=True capture that comes back byte-identical to the previous
+#      fresh capture from the same endpoint triggers ONE recovery cycle
+#      (session reconnect + hard reload) and a single re-capture.
+
+def test_cdp_screenshot_fresh_reload_bypasses_cache_when_already_on_runtime(cfg, fake_cdp, monkeypatch):
+    monkeypatch.setattr(core, "_LAST_FRESH_CAPTURE", {})
+    jpeg = b"\xff\xd8jpeg\xff\xd9"
+    on = f"http://127.0.0.1:{cfg.runtime_test_port}/#/Screen1"
+    ws = fake_cdp(results=_shot_results(jpeg, current_url=on))
+    out = core.cdp_screenshot_runtime(cfg, fresh=True)
+    assert out["state"] == "succeeded" and out["navigated"] is True
+    reloads = [p for (m, p, _) in ws.sent if m == "Page.reload"]
+    # Page.reload with ignoreCache=True -- a plain reload (ignoreCache=False,
+    # the pre-fix behavior) can still be served from cache and never actually
+    # re-points at the restarted runtime process.
+    assert reloads == [{"ignoreCache": True}]
+
+
+class _StaleFakeSess:
+    """Session double for the stale-capture recovery path: records
+    navigate/reload/close so the test can assert the recovery actually
+    reconnects + hard-reloads rather than silently reusing the old tab."""
+
+    def __init__(self):
+        self.navigated_to: list[str] = []
+        self.reloaded: list[bool] = []
+        self.closed = 0
+
+    def navigate(self, url):
+        self.navigated_to.append(url)
+
+    def reload(self, ignore_cache: bool = False):
+        self.reloaded.append(ignore_cache)
+
+    def close(self):
+        self.closed += 1
+
+    def set_viewport(self, *a, **k):
+        return True
+
+
+def _script_stale_capture_test(monkeypatch, responses: list[tuple]):
+    """Shared rig for the stale-detection tests: fake _cdp_session (records
+    each session opened) + fake _point_screenshot_at_runtime (pretend the tab
+    is already on the runtime, navigated=True, so the initial forced-reload
+    branch is out of scope here) + a scripted _cdp_capture_once returning
+    `responses` in call order. Returns the list of sessions opened, in order."""
+    monkeypatch.setattr(core, "_LAST_FRESH_CAPTURE", {})
+    monkeypatch.setattr(core.time, "sleep", lambda s: None)
+    monkeypatch.setattr(core, "_point_screenshot_at_runtime",
+                         lambda c, sess, url, settle: True)
+    sessions: list[_StaleFakeSess] = []
+
+    def fake_session(c, **k):
+        s = _StaleFakeSess()
+        sessions.append(s)
+        return s
+    monkeypatch.setattr(core, "_cdp_session", fake_session)
+
+    calls = {"n": 0}
+    def fake_capture_once(sess, cfg_, quality, region):
+        i = calls["n"]
+        calls["n"] += 1
+        return responses[i]
+    monkeypatch.setattr(core, "_cdp_capture_once", fake_capture_once)
+    return sessions
+
+
+def test_cdp_screenshot_fresh_first_call_has_nothing_to_compare(cfg, monkeypatch):
+    _script_stale_capture_test(monkeypatch, [(b"frame-A", None, None)])
+    out = core.cdp_screenshot_runtime(cfg, fresh=True)
+    assert out["state"] == "succeeded"
+    assert "stale_recovery" not in out
+
+
+def test_cdp_screenshot_fresh_recovers_from_stale_capture(cfg, monkeypatch):
+    sessions = _script_stale_capture_test(monkeypatch, [
+        (b"frame-A", None, None),  # call #1 -> seeds the cache
+        (b"frame-A", None, None),  # call #2, first attempt -> identical -> stale
+        (b"frame-B", None, None),  # call #2, recovery attempt -> different
+    ])
+    out1 = core.cdp_screenshot_runtime(cfg, fresh=True)
+    assert "stale_recovery" not in out1
+
+    out2 = core.cdp_screenshot_runtime(cfg, fresh=True)
+    assert out2["state"] == "succeeded"
+    assert out2["stale_recovery"] == {"attempted": True, "resolved": True}
+    assert out2["size_bytes"] == len(b"frame-B")
+    assert "next_step" not in out2
+    # call #1 session, call #2's initial (stale) session, call #2's recovery session
+    assert len(sessions) == 3
+    assert sessions[1].closed == 1  # the stale session was torn down, not reused
+    assert sessions[2].navigated_to  # recovery re-navigated the fresh session
+    assert sessions[2].reloaded == [True]  # ...and hard-reloaded (ignore_cache=True)
+
+
+def test_cdp_screenshot_fresh_reports_unresolved_when_still_stale_after_recovery(cfg, monkeypatch):
+    _script_stale_capture_test(monkeypatch, [
+        (b"frame-A", None, None),
+        (b"frame-A", None, None),
+        (b"frame-A", None, None),  # recovery ALSO byte-identical
+    ])
+    out1 = core.cdp_screenshot_runtime(cfg, fresh=True)
+    assert "stale_recovery" not in out1
+
+    out2 = core.cdp_screenshot_runtime(cfg, fresh=True)
+    assert out2["state"] == "succeeded"  # never raises -- surfaces the info instead
+    assert out2["stale_recovery"] == {"attempted": True, "resolved": False}
+    assert "next_step" in out2
+
+
+def test_cdp_screenshot_no_stale_check_when_not_fresh(cfg, fake_cdp, monkeypatch):
+    # fresh=False must NEVER consult/populate the stale-capture cache --
+    # repeatedly confirming "nothing changed" is a legitimate, expected outcome.
+    monkeypatch.setattr(core, "_LAST_FRESH_CAPTURE", {})
+    jpeg = b"\xff\xd8jpeg\xff\xd9"
+    on = f"http://127.0.0.1:{cfg.runtime_test_port}/#/Screen1"
+    fake_cdp(results=_shot_results(jpeg, current_url=on))
+    out1 = core.cdp_screenshot_runtime(cfg)
+    out2 = core.cdp_screenshot_runtime(cfg)
+    assert "stale_recovery" not in out1
+    assert "stale_recovery" not in out2
+    assert core._LAST_FRESH_CAPTURE == {}
+
+
 def test_cdp_unavailable_when_connect_fails(cfg, monkeypatch):
     monkeypatch.setattr(_cdp, "_discover_page_ws",
                         lambda url, timeout=5.0: "ws://x/1")

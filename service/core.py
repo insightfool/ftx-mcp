@@ -4664,6 +4664,44 @@ def _resolve_region(sess: Any, region: list[float] | None) -> tuple[list[float] 
     return px, None
 
 
+# Last fresh(=True) capture digest per CDP endpoint, keyed by cfg.cdp_url:
+# (sha256_hex, size_bytes). Used ONLY to detect the "stale tab after
+# optix_restart_emulator" failure mode (see cdp_screenshot_runtime) — a
+# fresh capture that is byte-IDENTICAL to the previous fresh capture from
+# the same endpoint is the empirical signature of a screenshot that never
+# actually re-pointed at the restarted runtime. Never consulted for
+# fresh=False calls (those intentionally may return the same frame, e.g.
+# re-verifying nothing changed).
+_LAST_FRESH_CAPTURE: dict[str, tuple[str, int]] = {}
+
+
+def _capture_digest(data: bytes) -> tuple[str, int]:
+    return hashlib.sha256(data).hexdigest(), len(data)
+
+
+def _cdp_capture_once(
+    sess: Any, cfg: Config, quality: int, region: list[float] | None,
+) -> tuple[bytes | None, list[float] | None, str | None]:
+    """One screenshot attempt: reapply the viewport override, resolve
+    `region`, capture the JPEG. Returns (jpeg_bytes, resolved_region,
+    bad_region_detail). `bad_region_detail` is set (jpeg/region both None)
+    for a malformed region — the caller turns that into the standard
+    state='failed', error='bad_region' shape. Factored out of
+    cdp_screenshot_runtime so the stale-capture recovery path can call it
+    a second time without duplicating the viewport/region/capture dance."""
+    sess.set_viewport(cfg.cdp_viewport_width, cfg.cdp_viewport_height,
+                       cfg.cdp_viewport_scale)
+    px_region, err = _resolve_region(sess, region)
+    if err is not None:
+        return None, None, err
+    clip = None
+    if px_region is not None:
+        clip = {"x": px_region[0], "y": px_region[1],
+                "width": px_region[2], "height": px_region[3], "scale": 1}
+    jpeg = sess.screenshot_jpeg(quality=quality, clip=clip)
+    return jpeg, px_region, None
+
+
 def cdp_screenshot_runtime(
     cfg: Config, save_path: str | None = None, quality: int = 65,
     navigate_url: str | None = None, settle_seconds: float | None = None,
@@ -4682,6 +4720,30 @@ def cdp_screenshot_runtime(
     After a navigation it waits settle_seconds for the Optix canvas to render
     (capturing mid-navigation fails).
 
+    fresh=True additionally guards against the "stale tab after
+    optix_restart_emulator" trap: the runtime process gets a new PID but
+    keeps the SAME URL, so the auto-target check above sees the tab is
+    "already there" and would otherwise skip navigating entirely, and even
+    a forced reload can still be served from Chrome's cache instead of
+    actually re-fetching from (and reconnecting to) the restarted runtime.
+    So when fresh=True:
+      1. if the auto-target above didn't navigate, force one with
+         ignore_cache=True (bypasses cache — a plain reload can't).
+      2. after capturing, compare this capture's bytes to the last fresh
+         capture taken from this cfg.cdp_url. Byte-IDENTICAL is the
+         observed signature of a screenshot that's still looking at a
+         pre-restart frame (three restarts, three identical screenshots
+         was the reported failure). On a match: close this CDP session,
+         open a new one (drops any wedged debugger/session state), hard
+         reload the runtime URL bypassing cache, wait settle again, and
+         recapture ONCE — never loops, so a capture that's genuinely
+         unchanged (nothing to see) isn't retried forever. The result
+         carries `stale_recovery: {attempted, resolved}` so this is never
+         silent — the caller (and the agent reading the JSON) can see a
+         recovery fired instead of quietly re-serving a stale frame.
+    fresh=False never touches this cache — repeated identical screenshots
+    are an expected, legitimate outcome of "confirm nothing changed".
+
     Before capture, the emulated device viewport is (re)set to
     cfg.cdp_viewport_width x cfg.cdp_viewport_height @ cfg.cdp_viewport_scale
     (default 1280x720 @ 1, tune via OPTIX_CDP_VIEWPORT / OPTIX_CDP_SCALE) so
@@ -4699,7 +4761,8 @@ def cdp_screenshot_runtime(
     zero w/h, x/y outside the frame) returns state='failed',
     error='bad_region' — never raises.
 
-    Returns {state, path|b64, size_bytes, navigated, captured_at, region}.
+    Returns {state, path|b64, size_bytes, navigated, captured_at, region}
+    (+ `stale_recovery` when fresh=True triggered the recovery path above).
     `region` in the result is the resolved absolute-pixel [x, y, w, h] (or
     None when no region was requested).
     """
@@ -4711,37 +4774,61 @@ def cdp_screenshot_runtime(
         navigated = _point_screenshot_at_runtime(cfg, sess, navigate_url, settle)
         if fresh and not navigated:
             # force a reload so a stale frame can never masquerade as current
-            # (the auto-target skips re-navigation when already on the runtime)
-            sess.reload()
+            # (the auto-target skips re-navigation when already on the runtime).
+            # ignore_cache=True: after optix_restart_emulator the runtime
+            # process is new but the tab/URL is unchanged, so a plain reload
+            # can still be served from Chrome's cache — see _cdp.CDPClient.reload.
+            sess.reload(ignore_cache=True)
             time.sleep(max(0.0, settle))
             navigated = True
-        # Reapply the viewport override after any navigation this call just
-        # did (_cdp_session already applied it once at session-open, before
-        # navigate_url was known — belt-and-suspenders in case a real
-        # navigation ever resets emulation state on some Chrome build).
         # Deliberately AFTER navigate, BEFORE region resolution/capture: a
         # region resolved against the pre-override viewport would be wrong,
         # and a capture taken before the override is applied is the exact
         # clipped-HMI bug this exists to fix.
-        sess.set_viewport(cfg.cdp_viewport_width, cfg.cdp_viewport_height,
-                           cfg.cdp_viewport_scale)
-        px_region, err = _resolve_region(sess, region)
+        jpeg, px_region, err = _cdp_capture_once(sess, cfg, quality, region)
         if err is not None:
             return {
                 "state": "failed", "path": None, "b64": None, "size_bytes": 0,
                 "navigated": navigated, "captured_at": _now_iso(),
                 "error": "bad_region", "detail": err, "region": region,
             }
-        clip = None
-        if px_region is not None:
-            clip = {"x": px_region[0], "y": px_region[1],
-                    "width": px_region[2], "height": px_region[3], "scale": 1}
-        jpeg = sess.screenshot_jpeg(quality=quality, clip=clip)
+
+        stale_recovery: dict[str, bool] | None = None
+        if fresh:
+            digest = _capture_digest(jpeg)
+            prev = _LAST_FRESH_CAPTURE.get(cfg.cdp_url)
+            if prev is not None and prev == digest:
+                sess.close()
+                sess = _cdp_session(cfg)
+                recover_target = navigate_url or _runtime_verify_url(cfg)
+                sess.navigate(recover_target)
+                sess.reload(ignore_cache=True)
+                time.sleep(max(0.0, settle))
+                navigated = True
+                jpeg2, px_region2, err2 = _cdp_capture_once(sess, cfg, quality, region)
+                if err2 is None:
+                    digest2 = _capture_digest(jpeg2)
+                    stale_recovery = {"attempted": True, "resolved": digest2 != digest}
+                    jpeg, px_region, digest = jpeg2, px_region2, digest2
+                else:
+                    stale_recovery = {"attempted": True, "resolved": False}
+            _LAST_FRESH_CAPTURE[cfg.cdp_url] = digest
+
         result: dict[str, Any] = {
             "state": "succeeded", "path": None, "b64": None,
             "size_bytes": len(jpeg), "navigated": navigated,
             "captured_at": _now_iso(), "region": px_region,
         }
+        if stale_recovery is not None:
+            result["stale_recovery"] = stale_recovery
+            if not stale_recovery["resolved"]:
+                result["next_step"] = (
+                    "fresh capture stayed byte-identical to the prior fresh "
+                    "capture even after a forced session reconnect + hard "
+                    "reload — the runtime canvas genuinely hasn't changed "
+                    "(or is not repainting at all). Check optix_emulator_status "
+                    "for a wedged process before assuming the edit failed to apply."
+                )
         if save_path:
             out = Path(save_path)
             out.parent.mkdir(parents=True, exist_ok=True)
