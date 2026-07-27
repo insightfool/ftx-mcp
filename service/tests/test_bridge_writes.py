@@ -524,6 +524,29 @@ def test_create_object_not_a_type_raises(alpha, monkeypatch):
     assert "not_a_type" in str(e.value)
 
 
+def test_create_netlogic_posts(alpha, monkeypatch):
+    cap: list = []
+    routes = {"/bridge/model/netlogic": (200, {"ok": True,
+              "created_path": "UI/Screens/ScreenD/MyLogic", "type": "NetLogic",
+              "node_class": "Object", "bound_class": "MyLogic"})}
+    monkeypatch.setattr(core, "_bridge_http", _fake_bridge(routes, capture=cap))
+    out = core.bridge_create_netlogic(alpha, "Alpha", "UI/Screens/ScreenD", "MyLogic")
+    assert out["type"] == "NetLogic" and out["bound_class"] == "MyLogic"
+    method, path = next(c for c in cap if "/bridge/model/netlogic" in c[1])
+    assert method == "POST"
+    assert "parent=UI%2FScreens%2FScreenD" in path and "name=MyLogic" in path
+
+
+def test_create_netlogic_dup_name_raises(alpha, monkeypatch):
+    routes = {"/bridge/model/netlogic": (200, {"error": {
+        "code": "dup_name",
+        "message": "a child named MyLogic already exists under UI/Screens/ScreenD"}})}
+    monkeypatch.setattr(core, "_bridge_http", _fake_bridge(routes))
+    with pytest.raises(core.BridgeWriteFailed) as e:
+        core.bridge_create_netlogic(alpha, "Alpha", "UI/Screens/ScreenD", "MyLogic")
+    assert "dup_name" in str(e.value)
+
+
 def test_create_type_posts_base(alpha, monkeypatch):
     cap: list = []
     routes = {"/bridge/model/type": (200, {"ok": True,

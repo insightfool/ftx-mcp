@@ -15,7 +15,9 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable
 import dataclasses
@@ -695,6 +697,119 @@ def resolve_subpath(cfg: Config, project: str, subpath: str) -> Path:
     if not full.is_relative_to(project_dir):
         raise PathTraversal(f"path traversal rejected: {subpath}")
     return full
+
+
+# ---- build check (C# compile pre-flight) ------------------------------
+
+# MSBuild diagnostic line: "<path>(line,col): error CS0117: message [proj]".
+# The trailing "[<csproj>]" is stripped. Matches both error and warning; the
+# code group covers CSxxxx and longer SDK codes (e.g. NETSDK1045).
+_MSBUILD_DIAG = re.compile(
+    r"^(?P<file>[^(\n]+?)\((?P<line>\d+),(?P<col>\d+)\):\s+"
+    r"(?P<sev>error|warning)\s+(?P<code>[A-Za-z]{1,6}\d+):\s+"
+    r"(?P<msg>.*?)(?:\s+\[[^\]\n]+\])?\s*$",
+    re.MULTILINE,
+)
+
+
+def _parse_msbuild_diagnostics(text: str, base_dir: Path | None = None) -> tuple[list, list]:
+    """Extract deduped {file,line,col,code,message} diagnostics from MSBuild
+    output. Paths are made relative to base_dir when possible (clean output, and
+    no absolute host path is leaked)."""
+    errors: list = []
+    warnings: list = []
+    seen: set = set()
+    for m in _MSBUILD_DIAG.finditer(text):
+        raw = m.group("file").strip()
+        path = raw
+        if base_dir is not None:
+            try:
+                p = Path(raw)
+                if p.is_relative_to(base_dir):
+                    path = str(p.relative_to(base_dir)).replace("\\", "/")
+            except (ValueError, OSError):
+                path = raw
+        key = (path, m.group("line"), m.group("code"), m.group("msg"))
+        if key in seen:
+            continue
+        seen.add(key)
+        item = {
+            "file": path,
+            "line": int(m.group("line")),
+            "col": int(m.group("col")),
+            "code": m.group("code"),
+            "message": m.group("msg").strip(),
+        }
+        (errors if m.group("sev") == "error" else warnings).append(item)
+    return errors, warnings
+
+
+def build_check(cfg: Config, project: str, timeout_seconds: int = 240) -> dict:
+    """Compile the project's NetSolution and report any C# errors/warnings,
+    WITHOUT overwriting Studio's own bin or running the emulator.
+
+    A broken .cs otherwise fails the build silently and takes the in-Studio
+    bridge AND the emulator down with it; this turns that into an instant, safe
+    file:line report. It is also the correct pre-flight before a deploy: never
+    ship a NetSolution that does not compile. The REAL csproj is built IN PLACE
+    so every reference resolves (relative HintPaths, an imported
+    Directory.Build.props/.targets, ProjectReferences) — a copy-to-temp build
+    would miss those and cry wolf with errors the real build never has. Only the
+    OUTPUT assemblies are redirected to a throwaway dir, so the project's bin is
+    never overwritten; the intermediate obj stays at the project default (Studio
+    regenerates it). Returns {ok, error_count, warning_count, errors[],
+    warnings[], returncode, csproj}."""
+    project_dir = resolve_project(cfg, project)
+    netsol = project_dir / "ProjectFiles" / "NetSolution"
+    if not netsol.is_dir():
+        return {"ok": False, "error": "no_netsolution",
+                "message": f"no ProjectFiles/NetSolution under {project}"}
+    csprojs = sorted(netsol.glob("*.csproj"))
+    if not csprojs:
+        return {"ok": False, "error": "no_csproj",
+                "message": f"no .csproj under {project}/ProjectFiles/NetSolution"}
+    csproj = csprojs[0]
+    dotnet = shutil.which("dotnet") or "dotnet"
+
+    out_dir = Path(tempfile.mkdtemp(prefix="ftxbuild_"))
+    try:
+        cmd = [
+            dotnet, "build", str(csproj),
+            "-c", "Debug", "-o", str(out_dir),
+            "--nologo", "-v", "minimal", "-p:GenerateFullPaths=true",
+        ]
+        try:
+            proc = _run_subprocess_with_tree_kill(
+                cmd, capture_output=True, text=True, timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "build_timeout",
+                    "message": f"dotnet build exceeded {timeout_seconds}s",
+                    "csproj": _rel_to(csproj, project_dir)}
+        except FileNotFoundError:
+            return {"ok": False, "error": "no_dotnet",
+                    "message": "the .NET SDK (dotnet) was not found on PATH; install it",
+                    "csproj": _rel_to(csproj, project_dir)}
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        errors, warnings = _parse_msbuild_diagnostics(out, netsol)
+        return {
+            "ok": proc.returncode == 0 and not errors,
+            "returncode": proc.returncode,
+            "error_count": len(errors),
+            "warning_count": len(warnings),
+            "errors": errors[:100],
+            "warnings": warnings[:40],
+            "csproj": _rel_to(csproj, project_dir),
+            "dotnet": dotnet,
+        }
+    finally:
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+
+def _rel_to(path: Path, base: Path) -> str:
+    try:
+        return str(Path(path).relative_to(base)).replace("\\", "/")
+    except ValueError:
+        return str(path)
 
 
 # ---- read ops ---------------------------------------------------------
@@ -1460,6 +1575,22 @@ def bridge_create_object(
         params["type"] = object_type
     return _bridge_write(
         cfg, project, "create_object", "/bridge/model/object", params)
+
+
+def bridge_create_netlogic(
+    cfg: Config, project: str, parent: str, name: str,
+) -> dict:
+    """Create a NetLogic node bound to a C# class BY NAME (no Studio "New ->
+    NetLogic" step). A NetLogic node carries no proxy and no code reference: the
+    runtime binds it to a class whose name equals the node BrowseName, and the
+    SDK-style NetSolution .csproj auto-globs every .cs, so a matching class
+    compiles in on the next build. `name` MUST equal the C# class name exactly.
+    Author the .cs (class : BaseNetLogic) separately, then rebuild/run so the
+    runtime instantiates it. For a runtime NetLogic that reads its Owner's
+    siblings, place it under that object (parent)."""
+    return _bridge_write(
+        cfg, project, "create_netlogic", "/bridge/model/netlogic",
+        {"parent": parent, "name": name})
 
 
 def bridge_create_type(

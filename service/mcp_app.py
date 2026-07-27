@@ -279,6 +279,36 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         return {"projects": core.list_projects(cfg)}
 
     @mcp.tool(annotations=_RO)
+    def optix_build_check(project: str | None = None) -> dict:
+        """Compile the project's NetSolution C# and report errors — a safe
+        pre-flight that never touches Studio's build or runs the emulator.
+
+        WHY: a NetLogic that does not compile fails the build silently and takes
+        the in-Studio bridge AND the emulator down with it, with no clear signal.
+        This compiles the NetSolution to a throwaway copy (bin/obj excluded, so a
+        concurrent Studio build is undisturbed) and returns {ok, error_count,
+        warning_count, errors:[{file,line,col,code,message}], warnings, csproj}.
+        Paths are relative to the project root. Unlike optix_find it works whether
+        or not Studio is open (it reads the .cs on disk, which is always current —
+        only the model YAML lives in Studio's RAM).
+
+        Use this when:
+          - you just authored/edited a .cs (esp. before optix_restart_emulator)
+            and want to catch a compile error without a full emulator cycle
+          - gating a deploy: never ship a NetSolution that does not compile
+          - a restart_emulator produced no visible change / the bridge died after
+            a rebuild — check for a compile error first
+
+        Do NOT use this when:
+          - you changed only model/YAML or widgets (no C#) — nothing to compile
+          - the .NET SDK is unavailable (returns dotnet errors; install it)
+        """
+        project = _resolve_project(project)
+        if not project:
+            return _NO_PROJECT
+        return core.build_check(cfg, project)
+
+    @mcp.tool(annotations=_RO)
     @_with_project
     def optix_find(
         query: str,
@@ -974,6 +1004,46 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """
         return _bridge_guarded(project, lambda: core.bridge_create_object(
             cfg, project, parent, name, object_type))
+
+    @mcp.tool(annotations=_RW)
+    def optix_bridge_create_netlogic(
+        parent: str, name: str, project: str | None = None,
+    ) -> dict:
+        """Register a NetLogic (C#) node in the LIVE model via the bridge — the
+        authoring step that used to require Studio's "New -> NetLogic" menu.
+
+        A NetLogic node has NO generated proxy and NO code-reference property:
+        the runtime binds it to the class whose name equals the node BrowseName,
+        and the SDK-style NetSolution .csproj auto-globs every .cs. So the full
+        recipe to add running C# is: (1) write the .cs (public class <name> :
+        BaseNetLogic { ... }) into the project's NetSolution folder with the
+        normal file tools, (2) call this with name == that class name, (3)
+        restart the emulator so the rebuild instantiates it. `name` MUST match
+        the class exactly.
+
+        PLACEMENT matters: a runtime NetLogic that reads sibling nodes through
+        Owner must be created under the object that owns those nodes (pass that
+        object as `parent`, e.g. a screen). A self-contained one can live under
+        any loaded container (a NetLogic category folder runs at app start).
+
+        Returns {ok, created_path, bound_class, node_class}. After a C# rebuild
+        the design-time bridge unloads (see the bridge note on emulator
+        restart); restart it before further authoring.
+
+        Use this when:
+          - you have (or will write) a BaseNetLogic class and need its node
+          - a screen/object needs code-behind and there is no node yet
+        Do NOT use this when:
+          - the class does not exist and you are not about to author it (the
+            node will bind to nothing until a matching class compiles in)
+          - you want a plain data object (optix_bridge_create_object) or a
+            reusable template type (optix_bridge_create_type)
+        """
+        project = _resolve_project(project)
+        if not project:
+            return _NO_PROJECT
+        return _bridge_guarded(project, lambda: core.bridge_create_netlogic(
+            cfg, project, parent, name))
 
     @mcp.tool(annotations=_RW)
     @_with_project
@@ -2808,25 +2878,33 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
     mcp._tool_manager.call_tool = _measured_dispatch
 
-    # Keep the asyncio event loop free. FastMCP runs a SYNCHRONOUS tool function
-    # directly on the loop (mcp.server.fastmcp func_metadata.call_fn_with_arg_validation:
-    # `return fn(...)` for a non-async fn), and every tool here is a sync def that does
-    # blocking work (subprocess, the urllib bridge calls, file IO). One in-flight tool
-    # would then stall the loop for its whole duration, and while stalled uvicorn cannot
-    # accept new connections -- so a burst of parallel tool calls fails with
-    # "cannot connect" even though nothing is actually down. Offload every sync tool to a
-    # worker thread so the loop stays responsive and accepts concurrent connections.
-    # The arg schema is already built from the original signature (fn_metadata on the
-    # Tool), so replacing .fn here does not change the tool's public interface.
-    def _threaded(sync_fn):
-        @functools.wraps(sync_fn)
-        async def _runner(**kwargs):
-            return await anyio.to_thread.run_sync(functools.partial(sync_fn, **kwargs))
-        return _runner
+    # Keep the asyncio event loop free. FastMCP runs a SYNCHRONOUS tool fn
+    # directly on the loop (func_metadata.call_fn_with_arg_validation:
+    # `return fn(...)`), so any tool that does BLOCKING I/O -- a subprocess
+    # shell-out, one of the urllib bridge calls, a large file read -- stalls the
+    # loop for its whole duration, and while stalled uvicorn cannot accept new
+    # connections; a burst of parallel calls then fails with "cannot connect"
+    # even though nothing is down. So offload such tools to a worker thread.
+    #
+    # IMPORTANT: "read-only" is NOT "non-blocking". The bridge READ tools
+    # (optix_describe_node, optix_get_project_map, ...) do blocking HTTP and MUST
+    # offload too -- keeping them on the loop was the original bridge-drop bug.
+    # Only a small allowlist of provably fast, pure-local tools stays sync, to
+    # skip a needless thread hop (and so unit tests can call their .fn directly).
+    # The arg schema is built from the original signature (fn_metadata on the
+    # Tool), so replacing .fn does not change the tool's public interface.
+    _STAY_SYNC = frozenset(("optix_health", "optix_list_projects"))
+    for _name, _tool in mcp._tool_manager._tools.items():
+        if _tool.is_async or _name in _STAY_SYNC:
+            continue
+        _sync_fn = _tool.fn
 
-    for _t in mcp._tool_manager.list_tools():
-        if not _t.is_async:
-            _t.fn = _threaded(_t.fn)
-            _t.is_async = True
+        async def _offloaded(*a, _sync_fn=_sync_fn, **k):
+            return await anyio.to_thread.run_sync(functools.partial(_sync_fn, *a, **k))
+
+        _offloaded.__name__ = getattr(_sync_fn, "__name__", "tool")
+        _offloaded.__doc__ = _sync_fn.__doc__
+        _tool.fn = _offloaded
+        _tool.is_async = True
 
     return mcp

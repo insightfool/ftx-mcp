@@ -24,6 +24,7 @@ from service.tests.conftest import make_project
 EXPECTED_TOOLS = {
     "optix_active_target",
     "optix_status",  # consolidated optix_health/_doctor/_services_status/_studio_version
+    "optix_build_check",
     "optix_list_projects",
     "optix_list_skills",
     "optix_get_skill",
@@ -42,6 +43,7 @@ EXPECTED_TOOLS = {
     "optix_bridge_add_bound_widget",
     "optix_bridge_add_navigation_panel_item",
     "optix_bridge_ensure_web_engine",
+
     "optix_bridge_convert_to_type",
     "optix_bridge_validate_expression",
     # AInsightfool: generic ExecuteMethod invoke, no optix_bridge_edit op verb
@@ -93,6 +95,7 @@ _BRIDGE_PRIMITIVE_TOOLS = {
     "optix_bridge_create_variable",
     "optix_bridge_create_folder",
     "optix_bridge_create_object",
+    "optix_bridge_create_netlogic",
     "optix_bridge_create_type",
     "optix_bridge_create_alias",
     "optix_bridge_create_widget",
@@ -281,28 +284,31 @@ def test_mcp_deploy_preflight_tool_returns_envelope(
 
 
 def test_shellout_tools_are_offloaded_async(cfg: core.Config) -> None:
-    """Slow shell-out tools are async-wrapped so their blocking subprocess/CDP
-    calls run OFF the shared event loop. A sync tool fn runs directly on the loop
-    (FastMCP Tool.run), so a multi-second Studio/CDP call would stall the loop and
-    drop the MCP streamable-http transport (the observed 120s emulator_status
-    hang). Fast tools stay sync (so tests can call .fn directly and there's no
-    needless thread hop)."""
+    """Tools that do BLOCKING I/O are async-wrapped so they run OFF the shared
+    event loop. A sync tool fn runs directly on the loop (FastMCP Tool.run), so a
+    blocking call would stall the loop and drop the MCP streamable-http transport
+    (the observed 120s emulator_status hang / bridge-drop under bursts).
+
+    This covers BOTH shell-outs (subprocess/CDP) AND the bridge read tools: a
+    bridge read does blocking HTTP, so "read-only" does NOT mean "stays sync" --
+    keeping the bridge reads on the loop was the original drop bug. Only a small
+    allowlist of provably fast, pure-local tools stays sync (no needless thread
+    hop, and unit tests can call their .fn directly)."""
     mcp = make_mcp(cfg)
     by_name = {t.name: t for t in _list_tools(mcp)}
-    # Only tools present in the DEFAULT (consolidated-only) surface. The 10
-    # optix_cdp_* aliases are off by default; the consolidated optix_observe /
-    # optix_interact carry the same multi-second CDP/tesseract shell-out paths
-    # and MUST be offloaded, along with the always-registered sweep/restart.
-    # optix_emulator/optix_status are the consolidated forms of the former
-    # per-action emulator-lifecycle/status tools — same shell-out paths.
+    # Under the _STAY_SYNC denylist everything offloads except provably fast,
+    # pure-local tools. "read-only" is NOT "non-blocking": the bridge READ tools
+    # do blocking HTTP and must offload too (that was the bridge-drop bug).
+    # Only tools present in the DEFAULT (consolidated-only) surface are asserted.
     for n in ("optix_emulator", "optix_status",
               "optix_save", "optix_cdp_sweep", "optix_cdp_restart",
-              "optix_observe", "optix_interact"):
+              "optix_observe", "optix_interact", "optix_build_check",
+              "optix_describe_node", "optix_get_project_map",
+              "optix_bridge_add_bound_widget", "optix_routes"):
         assert by_name[n].is_async is True, f"{n} must be offloaded (async)"
-    for n in ("optix_list_projects", "optix_describe_node",
-              "optix_bridge_add_bound_widget", "optix_get_project_map",
-              "optix_routes"):
-        assert by_name[n].is_async is False, f"{n} should stay sync"
+    # only provably fast, pure-local tools stay on the loop
+    for n in ("optix_list_projects",):
+        assert by_name[n].is_async is False, f"{n} should stay sync (pure-local)"
 
 
 def test_mcp_call_tool_path_invokes_health(cfg: core.Config) -> None:

@@ -622,6 +622,11 @@ public class StudioMCPBridge : BaseNetLogic
                     body = CreateObjectInline(firstLine);
                     status = "200 OK";
                 }
+                else if (firstLine.StartsWith("POST /bridge/model/netlogic"))
+                {
+                    body = CreateNetLogicInline(firstLine);
+                    status = "200 OK";
+                }
                 else if (firstLine.StartsWith("POST /bridge/model/type"))
                 {
                     body = CreateTypeInline(firstLine);
@@ -1509,6 +1514,43 @@ public class StudioMCPBridge : BaseNetLogic
                    "\",\"type\":\"" + JsonEscape(typeLabel) +
                    "\",\"node_class\":\"" + o.NodeClass +
                    "\",\"mode\":\"inline\",\"thread\":\"http-bg\"}";
+        }
+        catch (Exception ex)
+        { return "{\"ok\":false,\"error\":\"" + JsonEscape(ExcMsg(ex)) + "\"}"; }
+    }
+
+    // POST /bridge/model/netlogic?parent=<path>&name=<ClassName>
+    // Create a NetLogicObject node bound to a C# class BY NAME. This is the piece
+    // that used to force a manual Studio "New -> NetLogic" step: it turns out a
+    // NetLogic node carries no proxy and no code-reference property - Optix binds
+    // the node to a class whose name equals the node BrowseName, and the SDK-style
+    // NetSolution .csproj auto-globs every .cs, so a matching class compiles in on
+    // the next build. Proven by a name-bound probe: a hand-authored NetLogic ran
+    // Start() at runtime with no Studio menu step.
+    // Caller contract: the class named `name` must exist in the NetSolution and
+    // match exactly; add the .cs (design-time authoring), then rebuild/run so the
+    // runtime instantiates it. Placement matters for runtime NetLogics that use
+    // Owner (put it under the object whose siblings it reads).
+    private string CreateNetLogicInline(string firstLine)
+    {
+        string parent = QueryParam(firstLine, "parent");
+        string name = QueryParam(firstLine, "name");
+        if (string.IsNullOrEmpty(parent) || string.IsNullOrEmpty(name))
+            return ErrorJson("bad_query", "required query params: parent, name (name must equal the C# class name)");
+        try
+        {
+            var parentNode = ResolveNode(parent);
+            if (parentNode == null)
+                return ErrorJson("node_not_found", "no parent node at: " + parent);
+            var dup = DupNameGuard(parentNode, name, parent);
+            if (dup != null) return dup;
+            var o = InformationModel.MakeObject(name, FTOptix.NetLogic.ObjectTypes.NetLogic);
+            parentNode.Add(o);
+            return "{\"ok\":true,\"created_path\":\"" + JsonEscape(parent + "/" + name) +
+                   "\",\"type\":\"NetLogic\",\"node_class\":\"" + o.NodeClass +
+                   "\",\"bound_class\":\"" + JsonEscape(name) +
+                   "\",\"note\":\"class must exist in NetSolution and match name exactly; rebuild/run to instantiate\"" +
+                   ",\"mode\":\"inline\",\"thread\":\"http-bg\"}";
         }
         catch (Exception ex)
         { return "{\"ok\":false,\"error\":\"" + JsonEscape(ExcMsg(ex)) + "\"}"; }
