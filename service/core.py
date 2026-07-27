@@ -712,21 +712,37 @@ _MSBUILD_DIAG = re.compile(
 )
 
 
-def _parse_msbuild_diagnostics(text: str, base_dir: Path | None = None) -> tuple[list, list]:
+# Base FTOptix/UAManagedCore/OPC-UA types that only fail to resolve when the
+# assembly REFERENCES are missing - the signature of stale .references HintPaths
+# (pinned to a Studio version not installed here, or a project moved between
+# machines), NOT a real code defect.
+_FTOPTIX_REF_TOKENS = ("FTOptix", "UAManagedCore", "IUAVariable", "IUAObject",
+                       "BaseNetLogic", "NodeId", "OpcUa", "ExportMethod")
+
+
+def _parse_msbuild_diagnostics(
+    text: str, strip_prefix: Path | None = None, rebase_to: Path | None = None,
+) -> tuple[list, list]:
     """Extract deduped {file,line,col,code,message} diagnostics from MSBuild
-    output. Paths are made relative to base_dir when possible (clean output, and
-    no absolute host path is leaked)."""
+    output. A path under the throwaway build copy (strip_prefix) is mapped back
+    to the real tree (rebase_to) and made relative to it, so file:line stays
+    meaningful and no absolute host path leaks."""
     errors: list = []
     warnings: list = []
     seen: set = set()
     for m in _MSBUILD_DIAG.finditer(text):
         raw = m.group("file").strip()
         path = raw
-        if base_dir is not None:
+        if strip_prefix is not None and rebase_to is not None:
             try:
                 p = Path(raw)
-                if p.is_relative_to(base_dir):
-                    path = str(p.relative_to(base_dir)).replace("\\", "/")
+                sp, rt = Path(strip_prefix), Path(rebase_to)
+                if p.is_relative_to(sp):
+                    p = rt / p.relative_to(sp)
+                if p.is_relative_to(rt):
+                    path = str(p.relative_to(rt)).replace("\\", "/")
+                else:
+                    path = str(p)
             except (ValueError, OSError):
                 path = raw
         key = (path, m.group("line"), m.group("code"), m.group("msg"))
@@ -744,21 +760,45 @@ def _parse_msbuild_diagnostics(text: str, base_dir: Path | None = None) -> tuple
     return errors, warnings
 
 
+def _looks_like_stale_references(errors: list) -> bool:
+    """True when errors are dominated by CS0246 'type/namespace not found' on
+    FTOptix/UAManagedCore/OPC-UA types - the signature of stale .references
+    HintPaths, not a code defect (the project builds fine in Studio, which
+    regenerates its references against the installed version)."""
+    if not errors:
+        return False
+    cs0246 = [e for e in errors if e.get("code") == "CS0246"]
+    if len(cs0246) < max(5, 0.8 * len(errors)):
+        return False
+    return any(any(tok in e.get("message", "") for tok in _FTOPTIX_REF_TOKENS)
+               for e in cs0246)
+
+
 def build_check(cfg: Config, project: str, timeout_seconds: int = 240) -> dict:
     """Compile the project's NetSolution and report any C# errors/warnings,
-    WITHOUT overwriting Studio's own bin or running the emulator.
+    WITHOUT touching Studio's own build state or running the emulator.
 
     A broken .cs otherwise fails the build silently and takes the in-Studio
     bridge AND the emulator down with it; this turns that into an instant, safe
-    file:line report. It is also the correct pre-flight before a deploy: never
-    ship a NetSolution that does not compile. The REAL csproj is built IN PLACE
-    so every reference resolves (relative HintPaths, an imported
-    Directory.Build.props/.targets, ProjectReferences) — a copy-to-temp build
-    would miss those and cry wolf with errors the real build never has. Only the
-    OUTPUT assemblies are redirected to a throwaway dir, so the project's bin is
-    never overwritten; the intermediate obj stays at the project default (Studio
-    regenerates it). Returns {ok, error_count, warning_count, errors[],
-    warnings[], returncode, csproj}."""
+    file:line report, and is the correct pre-flight before a deploy. The check
+    copies the NetSolution to a throwaway temp dir (bin/obj excluded) and builds
+    the COPY there, so it NEVER touches the project's own bin/obj - a concurrent
+    Studio build cannot race it and Studio's incremental state is never
+    disturbed. Shared compilation is disabled so no background compiler process
+    is left behind.
+
+    Returns {ok, returncode, error_count, warning_count, errors[], warnings[],
+    csproj, dotnet}, plus `hint` when the failure looks like stale .references,
+    and `note_multiple_csproj` when more than one .csproj is present.
+
+    LIMITATIONS a caller should know: (1) references must resolve from within the
+    NetSolution copy - true for a standard Optix project (its .references file
+    with absolute module HintPaths lives in NetSolution); a csproj that reaches
+    OUTSIDE NetSolution won't resolve here. (2) If every error is CS0246 on
+    FTOptix/UAManagedCore/OPC-UA types the project's .references HintPaths are
+    almost certainly stale (pinned to a Studio version not installed, or carried
+    from another machine) - it builds fine in Studio; the `hint` field flags
+    this so it is not mistaken for a real code error."""
     project_dir = resolve_project(cfg, project)
     netsol = project_dir / "ProjectFiles" / "NetSolution"
     if not netsol.is_dir():
@@ -771,16 +811,21 @@ def build_check(cfg: Config, project: str, timeout_seconds: int = 240) -> dict:
     csproj = csprojs[0]
     dotnet = shutil.which("dotnet") or "dotnet"
 
-    out_dir = Path(tempfile.mkdtemp(prefix="ftxbuild_"))
+    work = Path(tempfile.mkdtemp(prefix="ftxbuild_"))
     try:
+        src = work / "NetSolution"
+        shutil.copytree(netsol, src,
+                        ignore=shutil.ignore_patterns("bin", "obj", ".vs", "*.user"))
         cmd = [
-            dotnet, "build", str(csproj),
-            "-c", "Debug", "-o", str(out_dir),
-            "--nologo", "-v", "minimal", "-p:GenerateFullPaths=true",
+            dotnet, "build", str(src / csproj.name), "-c", "Debug",
+            "-o", str(work / "out"), "--nologo", "-v", "minimal",
+            "-p:GenerateFullPaths=true", "-p:UseSharedCompilation=false",
         ]
+        # Disable node reuse so no background compiler server lingers after the run.
+        env = dict(os.environ, MSBUILDDISABLENODEREUSE="1")
         try:
             proc = _run_subprocess_with_tree_kill(
-                cmd, capture_output=True, text=True, timeout=timeout_seconds)
+                cmd, capture_output=True, text=True, timeout=timeout_seconds, env=env)
         except subprocess.TimeoutExpired:
             return {"ok": False, "error": "build_timeout",
                     "message": f"dotnet build exceeded {timeout_seconds}s",
@@ -790,8 +835,8 @@ def build_check(cfg: Config, project: str, timeout_seconds: int = 240) -> dict:
                     "message": "the .NET SDK (dotnet) was not found on PATH; install it",
                     "csproj": _rel_to(csproj, project_dir)}
         out = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        errors, warnings = _parse_msbuild_diagnostics(out, netsol)
-        return {
+        errors, warnings = _parse_msbuild_diagnostics(out, src, netsol)
+        result = {
             "ok": proc.returncode == 0 and not errors,
             "returncode": proc.returncode,
             "error_count": len(errors),
@@ -801,8 +846,19 @@ def build_check(cfg: Config, project: str, timeout_seconds: int = 240) -> dict:
             "csproj": _rel_to(csproj, project_dir),
             "dotnet": dotnet,
         }
+        if len(csprojs) > 1:
+            result["note_multiple_csproj"] = [c.name for c in csprojs[1:]]
+        if not result["ok"] and _looks_like_stale_references(errors):
+            result["hint"] = (
+                "every error is CS0246 on FTOptix/UAManagedCore/OPC-UA types: this is "
+                "almost always stale .references HintPaths (pinned to a Studio version "
+                "not installed here, or the project moved between machines), NOT a code "
+                "defect. Open/rebuild the project in Studio to regenerate its "
+                "references, then re-run. Compare ProjectFiles/NetSolution/*.references "
+                "HintPaths to the installed Studio version.")
+        return result
     finally:
-        shutil.rmtree(out_dir, ignore_errors=True)
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def _rel_to(path: Path, base: Path) -> str:

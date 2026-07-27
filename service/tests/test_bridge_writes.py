@@ -538,13 +538,14 @@ def test_create_netlogic_posts(alpha, monkeypatch):
 
 
 def test_create_netlogic_dup_name_raises(alpha, monkeypatch):
+    # The real bridge's DupNameGuard emits "name_exists" (not "dup_name").
     routes = {"/bridge/model/netlogic": (200, {"error": {
-        "code": "dup_name",
-        "message": "a child named MyLogic already exists under UI/Screens/ScreenD"}})}
+        "code": "name_exists",
+        "message": "a node named 'MyLogic' already exists under 'UI/Screens/ScreenD'"}})}
     monkeypatch.setattr(core, "_bridge_http", _fake_bridge(routes))
     with pytest.raises(core.BridgeWriteFailed) as e:
         core.bridge_create_netlogic(alpha, "Alpha", "UI/Screens/ScreenD", "MyLogic")
-    assert "dup_name" in str(e.value)
+    assert "name_exists" in str(e.value)
 
 
 def test_create_type_posts_base(alpha, monkeypatch):

@@ -1,6 +1,6 @@
 ---
 name: optix-netlogic-and-bridge
-description: Register NetLogic (C#) into the live model, compile-check it, and operate the design-time bridge lifecycle — start it, know when new bridge code needs a Studio reopen, and run design-time [ExportMethod]s SAFELY. Use when adding code-behind, running generators/builders, or when the bridge is down/stale after a rebuild.
+description: Register NetLogic (C#) into the live model, compile-check it, operate the design-time bridge lifecycle (start it, when new bridge code needs a Studio reopen, run design-time [ExportMethod]s SAFELY), restart the MCP service, and deploy. Use when adding code-behind, running generators/builders, when the bridge is down/stale after a rebuild, or when restarting the service or shipping to a panel.
 ---
 
 # NetLogic registration + bridge operation
@@ -33,12 +33,20 @@ like a class, which never binds.)
 
 ## Compile pre-flight — ALWAYS before restart_emulator
 
-`optix_build_check(project=...)` compiles the NetSolution to a throwaway copy
-(Studio's own bin/obj untouched) and returns `{ok, error_count, errors:[{file,
-line,col,code,message}]}`. Run it after editing any `.cs`. A NetLogic that does
-not compile fails the build **silently** and takes the in-Studio bridge AND the
+`optix_build_check(project=...)` copies the NetSolution to a throwaway temp dir
+and builds the copy there (Studio's own bin/obj untouched, so it can't race a
+Studio build) and returns `{ok, error_count, errors:[{file,line,col,code,
+message}], hint?, ...}`. Run it after editing any `.cs`. A NetLogic that does not
+compile fails the build **silently** and takes the in-Studio bridge AND the
 emulator down with it — build_check turns that into an instant file:line report.
 It works whether or not Studio is open (it reads the `.cs` on disk).
+
+**Read the `hint`.** If every error is `CS0246` on FTOptix/UAManagedCore types,
+it is almost always **stale `.references` HintPaths** (pinned to a Studio version
+not installed here, or the project moved between machines) — the project builds
+fine in Studio, which regenerates its references. Do NOT treat that as a code
+error; open/rebuild in Studio first. (References must resolve from within the
+NetSolution, which is the case for a standard Optix project.)
 
 ## Bridge lifecycle — start, staleness, reopen
 
@@ -63,12 +71,15 @@ ANY design-time method by hand (see below).
 
 - Any NetLogic (C#) recompile unloads the bridge listener — after
   `optix_restart_emulator` the bridge is down until you re-run StartBridge.
-- **StartBridge after an emulator-only rebuild reuses Studio's already-loaded
-  NetLogic assembly.** So if you edited `StudioMCPBridge.cs` itself, a rebuild +
-  StartBridge will run the OLD bridge code. To load NEW *bridge* code you must
-  **close and reopen the Studio project** (which recompiles and reloads the
-  assembly), then StartBridge. (Editing OTHER NetLogics is fine — only changes to
-  the bridge's own code need the reopen.)
+- **StartBridge after an emulator-only rebuild was OBSERVED to run the OLD bridge
+  code.** The Optix docs say a DesignTime NetLogic's assembly is *reloaded from
+  disk on every `[ExportMethod]` call* — but the bridge is a long-lived listener
+  started from a prior load (a case the docs do not cover), and in practice a new
+  build of `StudioMCPBridge.cs` did not take effect until the project was
+  reopened. So, to be safe: if you edited `StudioMCPBridge.cs` itself, **close and
+  reopen the Studio project** (which recompiles and reloads the assembly), then
+  StartBridge. (Editing OTHER NetLogics is fine — only changes to the bridge's own
+  code need the reopen; a normal generator/screen NetLogic edit does not.)
 
 ## Running design-time [ExportMethod]s (generators, card builders)
 
@@ -89,3 +100,37 @@ fails to bind. `optix_bridge_status` reports which project the live bridge serve
 `project=` on the tools does not re-route bridge calls to a different Studio (a
 mismatch surfaces as a wrong-project failure, not a silent write into the wrong
 project).
+
+## Restarting the MCP service (loading new tools/code)
+
+The MCP tools are served by the ftx-mcp service (a scheduled task), separate from
+Studio and the bridge. It is a long-lived process, so **edits to the service's
+Python (new/changed tools) do not take effect until the service restarts** — a
+running client keeps the old tool list.
+
+- Restart: from the repo root, `.\bootstrap\services.ps1 stop` then
+  `.\bootstrap\services.ps1 start` (`status` reports task state + the health
+  probe). This bounces both `ftx-mcp` (the MCP/HTTP server) and
+  `ftx-mcp-chrome-cdp` (the CDP task).
+- A restart **drops the current MCP connection**; the client reconnects and
+  re-lists tools. Verify with the dashboard health at `http://127.0.0.1:8765/health`
+  and that `:8766` is listening.
+- This is unrelated to the bridge — restarting the service does NOT start the
+  bridge (that is still StartBridge in Studio, above), and restarting the bridge
+  does not need a service restart.
+
+## Deploying (shipping to a panel / production)
+
+Deploy is **not** done through this MCP distribution — the deploy tool family is
+disabled here on purpose; the standard loop is author -> `optix_restart_emulator`
+preview -> `optix_cdp_screenshot` verify. When you are ready to ship:
+
+- Use **Studio's own Deploy dialog** (UI) to push to a connected panel / runtime.
+- Or the **Studio CLI export** for a USB panel image:
+  `export "<projectPath>" --platform="Yocto_arm64" --location="<outputDir>"`.
+- `optix_build_check` is the right **pre-deploy gate**: never ship a NetSolution
+  that does not compile.
+
+Promotion between environments (dev -> prod) is a per-screen manual step tracked
+outside the MCP — check each screen's NetLogic config source and any hardcoded
+host/path before promoting.

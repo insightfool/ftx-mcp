@@ -285,12 +285,21 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
         WHY: a NetLogic that does not compile fails the build silently and takes
         the in-Studio bridge AND the emulator down with it, with no clear signal.
-        This compiles the NetSolution to a throwaway copy (bin/obj excluded, so a
-        concurrent Studio build is undisturbed) and returns {ok, error_count,
-        warning_count, errors:[{file,line,col,code,message}], warnings, csproj}.
+        This copies the NetSolution to a throwaway temp dir (bin/obj excluded) and
+        builds the COPY there, so it never touches the project's own bin/obj — a
+        concurrent Studio build cannot race it. Returns {ok, returncode,
+        error_count, warning_count, errors:[{file,line,col,code,message}],
+        warnings, csproj, dotnet}, plus `hint` when the failure looks like stale
+        .references and `note_multiple_csproj` when more than one csproj is found.
         Paths are relative to the project root. Unlike optix_find it works whether
         or not Studio is open (it reads the .cs on disk, which is always current —
         only the model YAML lives in Studio's RAM).
+
+        READ THE `hint`: if every error is CS0246 on FTOptix/UAManagedCore types,
+        the project's .references HintPaths are stale (pinned to a Studio version
+        not installed, or moved between machines) — it builds fine in Studio; do
+        NOT report it as a code error. References must resolve from within the
+        NetSolution (true for a standard Optix project).
 
         Use this when:
           - you just authored/edited a .cs (esp. before optix_restart_emulator)
@@ -301,7 +310,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
         Do NOT use this when:
           - you changed only model/YAML or widgets (no C#) — nothing to compile
-          - the .NET SDK is unavailable (returns dotnet errors; install it)
+          - the .NET SDK is unavailable (returns {error:"no_dotnet"}; install it)
         """
         project = _resolve_project(project)
         if not project:
