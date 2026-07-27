@@ -13,6 +13,7 @@ import time
 from typing import Any, Literal
 
 import anyio
+import anyio.to_thread
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
@@ -2806,4 +2807,26 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         return result
 
     mcp._tool_manager.call_tool = _measured_dispatch
+
+    # Keep the asyncio event loop free. FastMCP runs a SYNCHRONOUS tool function
+    # directly on the loop (mcp.server.fastmcp func_metadata.call_fn_with_arg_validation:
+    # `return fn(...)` for a non-async fn), and every tool here is a sync def that does
+    # blocking work (subprocess, the urllib bridge calls, file IO). One in-flight tool
+    # would then stall the loop for its whole duration, and while stalled uvicorn cannot
+    # accept new connections -- so a burst of parallel tool calls fails with
+    # "cannot connect" even though nothing is actually down. Offload every sync tool to a
+    # worker thread so the loop stays responsive and accepts concurrent connections.
+    # The arg schema is already built from the original signature (fn_metadata on the
+    # Tool), so replacing .fn here does not change the tool's public interface.
+    def _threaded(sync_fn):
+        @functools.wraps(sync_fn)
+        async def _runner(**kwargs):
+            return await anyio.to_thread.run_sync(functools.partial(sync_fn, **kwargs))
+        return _runner
+
+    for _t in mcp._tool_manager.list_tools():
+        if not _t.is_async:
+            _t.fn = _threaded(_t.fn)
+            _t.is_async = True
+
     return mcp
