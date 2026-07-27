@@ -13,6 +13,7 @@ import datetime as _dt
 import hashlib
 import json
 import os
+import random
 import re
 import subprocess
 import time
@@ -1147,7 +1148,10 @@ def _bridge_http(
             _bridge_log_call(cfg, path, method, int((time.monotonic() - t0) * 1000), None, str(e))
             if attempt < retries:
                 attempt += 1
-                time.sleep(0.3)
+                # Backoff grows per attempt AND carries random jitter so that a burst
+                # of parallel writes that all failed to connect at once do not all wake
+                # and re-collide on the single-threaded accept loop at the same instant.
+                time.sleep(0.25 * attempt + random.uniform(0.0, 0.4))
                 continue
             raise BridgeUnavailable(f"bridge unreachable at {url}: {e}") from e
 
@@ -1165,8 +1169,15 @@ def _bridge_get_json(cfg: Config, path: str, timeout: float = 5.0, retries: int 
 
 
 def _bridge_post_json(cfg: Config, path: str, timeout: float = 8.0) -> tuple[int, dict]:
-    """POST to a bridge query-param endpoint; JSON-decode the response."""
-    status, raw = _bridge_http(cfg, path, method="POST", timeout=timeout)
+    """POST to a bridge query-param endpoint; JSON-decode the response.
+
+    Writes retry transient transport failures (retries=2). The bridge accept loop is
+    single-threaded, so a burst of parallel authoring calls can momentarily fail to
+    connect while it is mid-handling another; the retry re-attempts and succeeds in
+    milliseconds instead of surfacing a hard "cannot connect". Bridge writes are
+    idempotent (setting the same property twice is harmless), so retrying is safe.
+    """
+    status, raw = _bridge_http(cfg, path, method="POST", timeout=timeout, retries=3)
     try:
         data = json.loads(raw.decode("utf-8")) if raw else {}
     except (ValueError, UnicodeDecodeError):
