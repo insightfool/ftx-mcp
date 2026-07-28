@@ -407,6 +407,19 @@ def test_server_ships_instructions(cfg: core.Config) -> None:
     ins = mcp._mcp_server.instructions or ""
     assert "optix_list_skills" in ins and "optix_emulator" in ins
     assert len(ins) < 1200, "instructions must stay lean — they cost every session"
+    # The always-visible orientation must never name a tool absent from the
+    # DEFAULT surface: retired-with-no-alias tools, or aliases gated OFF by
+    # default (FTXMCP_LEGACY_TOOLS). Regression guard for the v1.0.4 fix where
+    # the block told every session to verify with optix_cdp_screenshot (gated
+    # off) — a self-evident-surface break. Every tool named here resolves on a
+    # stock install.
+    default_tools = set(mcp._tool_manager._tools)
+    for absent in ("optix_cdp_screenshot", "optix_cdp_click", "optix_run_emulator",
+                   "optix_restart_emulator", "optix_health", "optix_doctor"):
+        assert absent not in ins, f"instructions name a non-default tool: {absent}"
+    for present in ("optix_get_project_map", "optix_observe", "optix_emulator",
+                    "optix_status", "optix_routes"):
+        assert present in default_tools, f"instructions cite {present} but it is not registered"
 
 
 def test_cdp_screenshot_default_returns_dict_with_hint(

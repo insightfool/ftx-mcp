@@ -44,6 +44,13 @@ local-state/
 # Scratch / per-session artifacts
 .tmp/
 *-commit-msg.txt
+# dev probes, UIA dumps, and git bundles from the v1.0.x arcs (root-level scratch)
+*.bundle
+/probe*
+/toolcheck.py
+/uia*.py
+/uia*.txt
+/*_dump.txt
 
 # Claude Code local config (project-scoped, not shared)
 .claude/settings.local.json

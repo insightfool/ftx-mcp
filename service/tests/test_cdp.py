@@ -520,7 +520,7 @@ def test_cdp_type_fails_loud_without_focus(cfg, fake_cdp):
     ws = fake_cdp(results={"Runtime.evaluate": {"result": {"value": "BODY"}}})
     out = core.cdp_type_runtime(cfg, "hello")
     assert out["state"] == "failed" and out["error"] == "no_focused_input"
-    assert "optix_cdp_click" in out["hint"]
+    assert "optix_interact(action='click')" in out["hint"]
     assert not [p for (m, p, _) in ws.sent if m == "Input.insertText"]
 
 

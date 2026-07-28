@@ -26,7 +26,7 @@ using FTOptix.CoreBase;
 // "MCPBridge" Optix library (component "StudioMCPBridge") for drag-in reuse.
 public class StudioMCPBridge : BaseNetLogic
 {
-    private const string BridgeVersion = "1.0.1";
+    private const string BridgeVersion = "1.0.4";
     // Cross-ALC stop signal: at design time Studio runs each [ExportMethod] in an
     // ISOLATED AssemblyLoadContext, so StartBridge and StopBridge share NO managed
     // state (neither instance NOR static - both were tried and failed).
@@ -75,20 +75,25 @@ public class StudioMCPBridge : BaseNetLogic
         StopListener();
     }
 
-    // Right-click this node -> Execute ValidateExpression to syntax-check an
+    // Right-click this node -> Execute CheckFormula to syntax-check an
     // ExpressionEvaluator formula BEFORE wiring it (Optix only validates at runtime,
     // where a bad formula silently no-ops). Result goes to the Studio Output. The
     // bridge's attach-expression endpoint + POST /bridge/expr/validate run the SAME
     // ValidateExpressionSyntax check, so the operator and the model client agree.
+    // DELIBERATELY NOT named "ValidateExpression": that name collided with FTOptix's
+    // own expression subsystem, which invoked this ExportMethod with a mismatched arg
+    // count (TargetParameterCountException, observed live 2026-07-26 while editing
+    // converter expressions), breaking design-time expression validation. Do not rename
+    // back to ValidateExpression.
     [ExportMethod]
-    public void ValidateExpression(string expression, string sources)
+    public void CheckFormula(string expression, string sources)
     {
         int n = CountSources(sources);
         var err = ValidateExpressionSyntax(expression, n);
         if (err == null)
-            Log.Info("StudioBridge", "ValidateExpression OK (" + n + " source(s)): " + expression);
+            Log.Info("StudioBridge", "CheckFormula OK (" + n + " source(s)): " + expression);
         else
-            Log.Error("StudioBridge", "ValidateExpression INVALID: " + err + "  [" + expression + "]");
+            Log.Error("StudioBridge", "CheckFormula INVALID: " + err + "  [" + expression + "]");
     }
 
     // Visible setup action: right-click this NetLogic node in Studio -> SetupProject.
@@ -1781,6 +1786,8 @@ public class StudioMCPBridge : BaseNetLogic
         string raw  = QueryParam(firstLine, "value") ?? "";
         if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(name))
             return ErrorJson("bad_query", "required query params: path, name");
+        var fmtErr = FormatSpecifierError(name, raw);
+        if (fmtErr != null) return ErrorJson("bad_value", fmtErr);
         try
         {
             var node = ResolveNode(path);
@@ -2207,6 +2214,8 @@ public class StudioMCPBridge : BaseNetLogic
             addErr(idx, "bad_op", verb + " requires \"path\" and \"name\"", null);
             return;
         }
+        var fmtErr = FormatSpecifierError(name, value);
+        if (fmtErr != null) { addErr(idx, "bad_value", fmtErr, null); return; }
         if (deleted.Contains(path))
         {
             addErr(idx, "modifies_deleted_node",
@@ -2458,6 +2467,26 @@ public class StudioMCPBridge : BaseNetLogic
         if (known != null)
             return "invalid value '" + raw + "' for enum " + dt + "; valid: " + string.Join(", ", known);
         return null;
+    }
+
+    // FTOptix's ValueFormatter accepts .NET STANDARD numeric specifiers (F1, N2, G,
+    // E2, P1, C, D, X) but REJECTS custom patterns (0.0, 0.00, #.##, #,##0.0): a
+    // custom pattern is let through at author-time and only throws at RUNTIME
+    // ("Unsupported number format: <p>"), so the author burns a restart+screenshot
+    // cycle to discover it. A "Format" value with NO ASCII letter can ONLY be a
+    // custom numeric pattern (standard specifiers start with a letter; DateTime
+    // formats always contain H/m/s/y/d/M), so reject it up front with a did_you_mean
+    // pointing at the standard equivalent (decimal count -> F<n>, or N<n> if grouped).
+    private static string FormatSpecifierError(string propName, string raw)
+    {
+        if (propName != "Format" || string.IsNullOrEmpty(raw)) return null;
+        foreach (char c in raw)
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) return null;
+        int dot = raw.LastIndexOf('.');
+        int decimals = dot < 0 ? 0 : raw.Length - dot - 1;
+        string sugg = (raw.IndexOf(',') >= 0 ? "N" : "F") + decimals;
+        return "invalid Format '" + raw + "': FTOptix accepts .NET standard specifiers " +
+               "(F1, N2, G, P1), not custom patterns like 0.0/#.##; did_you_mean: '" + sugg + "'";
     }
 
     // Read the POST body that follows the headers. The accept loop does ONE 4KB
@@ -2935,10 +2964,14 @@ public class StudioMCPBridge : BaseNetLogic
                 inputArgs.Add(vtm);
                 if (cmdNeedsValue)
                 {
-                    // Value typed to the target variable's own DataType, coerced from raw.
+                    // Value typed to the target variable's own DataType. Route through
+                    // CoerceAssign (the full set_property coercion) so enum / Color / NodeId
+                    // targets resolve like set_property does. CoerceRaw's default arm
+                    // bare-string-assigns them and hits the "!localeId.empty()" assert class.
                     var valVar = InformationModel.MakeVariable("Value", cmdTargetVar.DataType);
-                    valVar.Value = CoerceRaw(DataTypeName(cmdTargetVar), cmdValueRaw, firstLine);
                     inputArgs.Add(valVar);
+                    var cverr = CoerceAssign(valVar, cmdValueRaw, firstLine);
+                    if (cverr != null) return ErrorJson("bad_value", cverr);
                 }
                 var ai = InformationModel.MakeVariable("ArrayIndex", OpcUa.DataTypes.UInt32);
                 ai.Value = (uint)0;
@@ -3127,17 +3160,51 @@ public class StudioMCPBridge : BaseNetLogic
         { "max","min","avg","abs","trunc","ceil","floor","round","sqrt","sign","like",
           "isempty","if","left_of","right_of" };
 
+    private const string ConcatErr =
+        "ExpressionEvaluator '+' is numeric-only -- it can't compose a number with text " +
+        "(e.g. round(...) + \" L\" silently no-ops, even fully parenthesized). To append a " +
+        "unit/label, wrap the expression in a StringFormatter node with Format like " +
+        "\"{0} L\" -- not '+ \"...\"'.";
+
+    // FTOptix's ExpressionEvaluator '+' is NUMERIC-ONLY -- it cannot compose a number
+    // with text (confirmed live 2026-07-26). Text composition needs a StringFormatter
+    // node. Flag an arithmetic operator (+ - * /) adjacent (whitespace-skipped) to a
+    // string literal. Low false-positive: if(c,"A","B") / left_of(x,"-") keep their
+    // string args after a ',', not an arithmetic op, so they pass unflagged.
+    private static string CheckNumStringConcat(string expr)
+    {
+        bool inStr = false; char prevSig = '\0';
+        for (int i = 0; i < expr.Length; i++)
+        {
+            char c = expr[i];
+            if (inStr) { if (c == '"') { inStr = false; prevSig = '"'; } continue; }
+            if (char.IsWhiteSpace(c)) continue;
+            if (c == '"')
+            {
+                if (prevSig == '+' || prevSig == '-' || prevSig == '*' || prevSig == '/')
+                    return ConcatErr;
+                inStr = true; prevSig = '"'; continue;
+            }
+            if ((c == '+' || c == '-' || c == '*' || c == '/') && prevSig == '"')
+                return ConcatErr;
+            prevSig = c;
+        }
+        return null;
+    }
+
     // Structural validation of an ExpressionEvaluator formula. Optix exposes NO
     // design-time parser (confirmed by reflection: ExpressionEvaluator has only
     // Expression/ExpressionVariable + inherited Start/Stop) and validates a formula
     // only at RUNTIME (a bad one silently no-ops). This catches the common author-time
     // mistakes WITHOUT reimplementing the grammar: unbalanced ()/{}, out-of-range {N}
-    // placeholders, unknown function names, unterminated strings. String literals are
-    // skipped so parens/braces inside them don't false-positive. Returns null when the
-    // formula is structurally sound, else a human-readable reason.
+    // placeholders, unknown function names, unterminated strings, number+string concat.
+    // String literals are skipped so parens/braces inside them don't false-positive.
+    // Returns null when the formula is structurally sound, else a human-readable reason.
     private static string ValidateExpressionSyntax(string expr, int sourceCount)
     {
         if (string.IsNullOrWhiteSpace(expr)) return "expression is empty";
+        var concat = CheckNumStringConcat(expr);
+        if (concat != null) return concat;
         int paren = 0;
         bool inStr = false;
         var word = new StringBuilder();

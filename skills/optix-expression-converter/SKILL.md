@@ -51,6 +51,25 @@ one-op list fine — no need to grow it beyond what's shown above.
 `left_of right_of`. Operators: arithmetic, `<< >>`, relational, `== !=`, `& ^ |`,
 `&& ||`, unary `- ~ (cast)`. Full reference: `docs/expression-evaluator-reference.md`.
 Beyond these needs a custom C# converter (out of bridge scope).
+- `round`/`abs`/`ceil`/`floor`/`trunc`/`sqrt`/`sign`/`isempty` take **ONE** arg —
+  `round({0})`, NOT `round({0}, 1)` (a 2nd arg fails). `if` takes 3, `like`/`left_of`/
+  `right_of` take 2.
+
+## Numbers + text — you CANNOT concatenate them in an expression
+`+` is **numeric-only**. `round({0}*10) + " L"` (or any `<number> + "text"`) **silently
+no-ops at runtime, even fully parenthesized** — FTOptix's ExpressionEvaluator has no
+number→string coercion. `optix_bridge_edit` now REJECTS this at author-time
+(`ExpressionEvaluator '+' is numeric-only ... use a StringFormatter`). To show a value
+WITH a unit/label:
+- **Bridge-authorable (do this):** two widgets — the numeric value via `attach_expression`
+  on one Label, and a **separate static Label** holding the unit (`"L"`, `"°C"`) placed
+  beside it. Anchor/position them as a pair.
+- **Native single-widget (NOT bridge-authorable today):** FTOptix's **StringFormatter**
+  converter (`Format = "{0} L"`) wrapping the ExpressionEvaluator — this is the operator's
+  GUI path in Studio, not an `optix_bridge_edit` op. Don't try to build it via
+  `attach_expression`.
+The `left_of`/`right_of` string funcs compose text from a **string** source (e.g. split a
+string tag), not from a computed number.
 
 ## Verify — converters no-op SILENTLY
 The bridge also does **not** validate the formula syntax at author-time (Optix
@@ -63,6 +82,16 @@ the property actually reacts (e.g. toggle the source and re-shoot).
 Mid a multi-component build, don't restart per converter — attach all of
 them (and the rest of the screen's edits) first, then do ONE restart +
 verify pass at the end (see `optix-verify-loop`).
+
+## Two silent traps (field-verified — each cost a slow debug once)
+- **An expression feeding a ResourceUri (e.g. an Image path) fails SILENTLY** —
+  blank image, no log line, no error. Don't fight it: use stacked Image widgets
+  with Boolean `Visible` expressions (one image per state, expressions toggle
+  visibility) instead.
+- **`{Session}/...` sources are rejected at design time.** Attach the expression
+  with a placeholder variable as the source, then rebind `Source0` to the
+  session path afterward (a `{"op": "bind", ...}` with a raw_path in the same or
+  a follow-up batch).
 
 ## Notes
 - `sources` must be resolvable **variable** paths (model vars, other props). Create a

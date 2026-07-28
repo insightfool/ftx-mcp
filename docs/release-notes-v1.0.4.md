@@ -117,8 +117,9 @@ install hardening.
 
 ## Install / setup / UI
 
-- **`services.ps1` StrictMode crash on the Chrome-PID scan fixed**
-  (community report, issue #1) — *pending PR merge; credit TBD.*
+- **`services.ps1` StrictMode crash on the Chrome-PID scan fixed** —
+  reported and diagnosed by [@Jraa01](https://github.com/Jraa01)
+  ([issue #1](https://github.com/asqi-carter/ftx-mcp/issues/1)).
 - **Connected-MCP-client status on the `:8765/ui` dashboard** — the
   dashboard now shows the connected client's name; a double-launch port
   guard prevents a second instance silently fighting for the port.

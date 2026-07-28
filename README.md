@@ -137,8 +137,9 @@ Create or open `.vscode/mcp.json` and add:
 - **Hand back to you to ship** when the preview looks right, you deploy
   from Studio as usual. This distribution only runs the emulator.
 
-The full tool list (65 tools, plus the same surface over plain HTTP for
-scripts and CI) is in [docs/tool-reference.md](docs/tool-reference.md).
+The full tool list (37 tools by default — gate env vars can add more — plus
+the same surface over plain HTTP for scripts and CI) is in
+[docs/tool-reference.md](docs/tool-reference.md).
 **Token economy:** screenshots cost ~1-2k vision tokens each; the OCR tool
 family (`optix_cdp_read_text`, `find_text`, `navigate`, `sweep`/`diff`) turns
 most checks into free text reads — see the `optix-blind-authoring` and

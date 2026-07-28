@@ -4519,9 +4519,9 @@ def cdp_type_runtime(
             return {
                 "state": "failed", "error": "no_focused_input",
                 "active_element": tag or None, "navigated": navigated,
-                "hint": ("nothing editable has keyboard focus — optix_cdp_click "
-                         "the field first (its cursor/selection confirms focus), "
-                         "then type"),
+                "hint": ("nothing editable has keyboard focus — "
+                         "optix_interact(action='click') the field first "
+                         "(its cursor/selection confirms focus), then type"),
             }
         sess.insert_text(text)
         return {

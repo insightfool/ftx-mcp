@@ -36,7 +36,10 @@ the pattern this skill exists to stop.
 
 3. **One restart, at the end of the batch.** Once every structural edit is
    in: one call, `optix_emulator(action="restart")` (stops if running, starts, waits
-   until serving; no save needed).
+   until serving; no manual save needed). Note F5 PERSISTS the live model to
+   disk — a "temporary" bridge edit becomes permanent the moment you restart to
+   look at it. If an edit was exploratory, revert it in the model BEFORE the
+   restart, or be ready to revert on disk afterward.
 
 4. **Interactive-only exercise?** (clicking a switch, typing a value into an
    already-rendered widget — no new bridge edit involved): no restart
@@ -45,7 +48,10 @@ the pattern this skill exists to stop.
 
 5. **Wait for `serving:true`** in the run result (or poll status to
    `running`), THEN `optix_observe(mode="screenshot", ...)`. `starting` means
-   the port isn't up yet — a screenshot now hits nothing.
+   the port isn't up yet — a screenshot now hits nothing. Omit `navigate_url`
+   to shoot the CURRENT tab state; passing a URL navigates first, which RESETS
+   transient UI state (open dropdowns, dialog overlays, unsaved form fields)
+   before the capture.
 
 5b. **Run reported launched but the emulator never spawns?** If
    `optix_emulator(action="run")` returns `runtime_identity: "not_running"` with
