@@ -68,11 +68,23 @@ on any box:
 
 ```powershell
 python -m build
+$whl = (Get-ChildItem dist\ftx_mcp-*-py3-none-any.whl | Select-Object -Last 1).FullName
+Push-Location $env:TEMP            # NOT the repo root - see below
 py -m venv $env:TEMP\rel-test
-& "$env:TEMP\rel-test\Scripts\pip.exe" install dist\ftx_mcp-<version>-py3-none-any.whl
+& "$env:TEMP\rel-test\Scripts\pip.exe" install --no-cache-dir $whl
 & "$env:TEMP\rel-test\Scripts\pip.exe" show mcp
-& "$env:TEMP\rel-test\Scripts\python.exe" -c "import service.mcp_app; print('ok')"
+& "$env:TEMP\rel-test\Scripts\python.exe" -c "import service.mcp_app, service; print('ok', service.__file__)"
+Pop-Location
 ```
+
+Two details make the difference between a real gate and one that passes for
+the wrong reason. **Run it from outside the repo:** Python puts the working
+directory on `sys.path`, so `import service.mcp_app` from the repo root
+imports the source tree and never touches the installed package. Printing
+`service.__file__` proves which copy answered — it must be under
+`site-packages`. **And pass `--no-cache-dir`,** or pip can serve a cached
+wheel of the previous version, especially in the first minute after upload
+while the index is still propagating.
 
 Install the built artifact into a cold environment and import the server
 module; `pip show mcp` must land inside the declared range. Reinstalling over
