@@ -1,6 +1,6 @@
 [project]
 name = "ftx-mcp"
-version = "1.0.4"
+version = "1.0.5"
 description = "MCP server for authoring, previewing, and verifying FactoryTalk Optix Studio changes via the emulator, single Windows box."
 readme = "README.md"
 license = "MIT"
@@ -22,7 +22,7 @@ dependencies = [
     "fastapi>=0.110",
     "pydantic>=2.5",
     "uvicorn>=0.27",
-    "mcp>=1.2",
+    "mcp>=1.2,<2",
     # Directly imported at module scope in service/mcp_app.py (anyio.to_thread).
     # Reaches the venv transitively via mcp + starlette today, but a direct
     # import warrants its own constraint so a downstream version shift can't

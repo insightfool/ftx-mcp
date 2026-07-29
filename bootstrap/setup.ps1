@@ -190,7 +190,15 @@ if ($conflicts.Count -gt 0) {
     $cdpMarker = Join-Path $env:LOCALAPPDATA "ftx-mcp\chrome-cdp-profile"
     foreach ($c in $conflicts) {
         if ($c.Port -eq $Script:FtxCdpPort) {
-            $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$($c.Pid)" -ErrorAction SilentlyContinue).CommandLine
+            # Bind + guard (issue #1). NOTE the deliberate asymmetry with
+            # services.ps1 and uninstall.ps1: those skip a dead pid, this
+            # one must NOT. Port-conflict detection is a refuse-to-proceed
+            # gate, so an unidentifiable holder has to fall through to the
+            # not-ftx-mcp branch and still fail setup. Do not unify these
+            # three call sites.
+            $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$($c.Pid)" -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+            $cmd = if ($proc) { $proc.CommandLine } else { $null }
             if ($cmd -and $cmd -like "*$cdpMarker*") {
                 Write-Host "  :9222 is ftx-mcp's own CDP chrome (pid $($c.Pid), likely a previous install)." -ForegroundColor Yellow
                 Write-Host "  Stop it:  .\bootstrap\services.ps1 stop    (then re-run setup)" -ForegroundColor Yellow

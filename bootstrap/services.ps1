@@ -73,7 +73,19 @@ function Get-CdpChromePids($port) {
     $pids = $conns | Select-Object -ExpandProperty OwningProcess -Unique
     $ours = @()
     foreach ($procId in $pids) {
-        $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction SilentlyContinue).CommandLine
+        # Dead-pid window (issue #1, reported by @Jraa01): the listening
+        # socket outlives its process by a beat. On a restart, Do-Stop kills
+        # our chrome and Do-Start re-probes ~1s later while :9222 is still
+        # LISTEN with OwningProcess naming a pid that is already gone.
+        # Get-CimInstance then returns nothing, and under Set-StrictMode
+        # dotting .CommandLine off $null is a TERMINATING error that
+        # ErrorActionPreference=Stop propagates out of the script. Bind
+        # first, guard, then read. Select-Object -First 1 also normalizes
+        # the pid-reuse case where the filter can match more than one.
+        $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+        if (-not $proc) { continue }
+        $cmd = $proc.CommandLine
         if ($cmd -and $cmd -like "*$cdpProfileMarker*") { $ours += $procId }
     }
     return $ours

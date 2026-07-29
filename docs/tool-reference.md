@@ -1,6 +1,6 @@
 # Tool reference
 
-37 tools registered by default, grouped by where they sit in the loop
+28 tools registered by default, grouped by where they sit in the loop
 (gate env vars can add more — see the notes below each table). Every tool's
 docstring carries "Use when / Do NOT use when" guidance for the model, and MCP
 annotations (`readOnlyHint`/`destructiveHint`) so hosts can auto-run reads

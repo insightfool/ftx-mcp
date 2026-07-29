@@ -91,7 +91,18 @@ $conns = Get-NetTCPConnection -LocalPort $Script:FtxCdpPort -State Listen -Error
 $reaped = 0
 if ($conns) {
     foreach ($procId in ($conns | Select-Object -ExpandProperty OwningProcess -Unique)) {
-        $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction SilentlyContinue).CommandLine
+        # Same dead-pid window as services.ps1 (issue #1): section 1 just
+        # unregistered the cdp task, so :9222 can still be LISTEN with a
+        # dead OwningProcess. Bind + guard before reading. A pid that is
+        # gone holds nothing, so say that rather than warning that some
+        # other app is holding the port.
+        $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+        if (-not $proc) {
+            Ok "pid $procId already gone (stale :9222 socket)"
+            continue
+        }
+        $cmd = $proc.CommandLine
         if ($cmd -and $cmd -like "*$cdpMarker*") {
             Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
             Ok "killed cdp chrome pid $procId"

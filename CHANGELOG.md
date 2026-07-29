@@ -4,6 +4,28 @@ All notable changes to ftx-mcp. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Per-release detail lives in
 `docs/release-notes-v<version>.md`.
 
+## [1.0.5]
+
+Theme: an installer that installs. Full notes: `docs/release-notes-v1.0.5.md`.
+
+### Fixed
+- **Fresh installs were broken.** `mcp>=1.2` had no upper bound, so a clean
+  `pip install ftx-mcp` resolved MCP Python SDK 2.0.0 (published 2026-07-28),
+  which removes `mcp.server.fastmcp`; the server failed at import. Pinned to
+  `mcp>=1.2,<2`. Existing installs were unaffected — an already-resolved
+  environment still satisfied the old range, so neither `setup.ps1` (which
+  reuses `.venv`) nor a plain reinstall re-resolved it.
+- **`services.ps1 restart` crashed under `Set-StrictMode`** when the CDP
+  chrome had just been killed (#1, reported and diagnosed by @Jraa01). A
+  listening socket outlives its process, so `OwningProcess` can name a dead
+  pid; reading `.CommandLine` off a `$null` CIM result is a terminating
+  error. Guarded at all three call sites (`services.ps1`, `uninstall.ps1`,
+  `setup.ps1`); `setup.ps1` deliberately still fails on an unidentifiable
+  port holder rather than skipping it.
+- **Documented tool counts were wrong.** The default surface is 28 tools;
+  `README.md` and `docs/tool-reference.md` both said 37, predating the 1.0.4
+  CDP consolidation.
+
 ## [1.0.4]
 
 Theme: authoring you can trust, and an agent that spends fewer tokens getting
