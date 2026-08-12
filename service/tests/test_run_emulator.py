@@ -21,6 +21,15 @@ def _no_bridge_by_default(monkeypatch) -> None:
     monkeypatch.setattr(core, "_bridge_cfg_for", lambda cfg, project: None)
 
 
+@pytest.fixture(autouse=True)
+def _no_host_runtime(monkeypatch) -> None:
+    """The bare-presence fallback scans REAL host processes (psutil) — a live
+    FTOptixRuntime on the test host would flip the no-spawn diagnosis tests
+    to 'starting'. Tests exercising the True path override this stub."""
+    monkeypatch.setattr(core, "_bare_runtime_running",
+                        lambda cfg, runner=None: False)
+
+
 def _proj(projects_root: Path) -> None:
     make_project(projects_root, "Alpha")
 
@@ -109,23 +118,50 @@ def _mock_port(monkeypatch, reachable: bool) -> None:
     monkeypatch.setattr(_socket, "socket", lambda *a, **k: FakeSock())
 
 
+class _PsProc:
+    """Minimal stand-in for a psutil.process_iter(attrs=...) element.
+    cmdline=None models an unreadable process (cmdline() raises AccessDenied,
+    like the real psutil object)."""
+
+    def __init__(self, pid: int, name: str, cmdline: list[str] | None) -> None:
+        self.info = {"pid": pid, "name": name}
+        self._cmdline = cmdline
+
+    def cmdline(self) -> list[str]:
+        if self._cmdline is None:
+            raise core.psutil.AccessDenied(self.info["pid"])
+        return self._cmdline
+
+
+def _mock_procs(monkeypatch, procs: list[_PsProc]) -> None:
+    monkeypatch.setattr(core.psutil, "process_iter",
+                        lambda attrs=None, ad_value=None: iter(procs))
+
+
+_EMU_CMD = ["FTOptixRuntime.exe", "--application-name=Emulator"]
+_DEPLOYED_CMD = ["FTOptixRuntime.exe", "--application-name=Deployed"]
+
+
 def test_emulator_status_running_needs_pid_and_port(cfg: core.Config, monkeypatch) -> None:
-    """running requires BOTH an emulator PID and the port serving."""
+    """running requires BOTH an emulator PID and the port serving; the PID scan
+    must be command-line-discriminated (a deployed runtime is the same exe)."""
     _mock_port(monkeypatch, reachable=True)
-    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "PIDS=1234,5678"))
-    st = core.emulator_status(cfg, runner=runner)
+    _mock_procs(monkeypatch, [
+        _PsProc(1234, "FTOptixRuntime.exe", _EMU_CMD),
+        _PsProc(5678, "FTOptixRuntime.exe", _EMU_CMD),
+        _PsProc(9999, "FTOptixRuntime.exe", _DEPLOYED_CMD),  # must NOT count
+        _PsProc(42, "notepad.exe", ["notepad.exe"]),
+    ])
+    st = core.emulator_status(cfg)
     assert st["state"] == "running" and st["running"] is True
     assert st["pids"] == [1234, 5678] and st["port_reachable"] is True
-    # the PID probe must be CommandLine-discriminated, not a name-only match
-    ps = runner.calls[0][0][-1]
-    assert "--application-name=Emulator" in ps and "Get-CimInstance" in ps
 
 
 def test_emulator_status_starting_when_port_not_serving(cfg: core.Config, monkeypatch) -> None:
     """PID up but port down = starting, NOT running (the pre-1.1 false positive)."""
     _mock_port(monkeypatch, reachable=False)
-    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "PIDS=1234"))
-    st = core.emulator_status(cfg, runner=runner)
+    _mock_procs(monkeypatch, [_PsProc(1234, "FTOptixRuntime.exe", _EMU_CMD)])
+    st = core.emulator_status(cfg)
     assert st["state"] == "starting" and st["running"] is False
     assert "hint" in st
 
@@ -134,8 +170,8 @@ def test_emulator_status_deployed_runtime_is_not_emulator(cfg: core.Config, monk
     """Port serving but no emulator PID (an UpdateSvc-deployed runtime holds the
     port) = not_running with a hint — the 2026-07-16 false-positive trap."""
     _mock_port(monkeypatch, reachable=True)
-    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "PIDS="))
-    st = core.emulator_status(cfg, runner=runner)
+    _mock_procs(monkeypatch, [_PsProc(9999, "FTOptixRuntime.exe", _DEPLOYED_CMD)])
+    st = core.emulator_status(cfg)
     assert st["state"] == "not_running" and st["running"] is False
     assert st["port_reachable"] is True
     assert "hint" in st and "deployed" in st["hint"].lower()
@@ -143,26 +179,49 @@ def test_emulator_status_deployed_runtime_is_not_emulator(cfg: core.Config, monk
 
 def test_emulator_status_not_running(cfg: core.Config, monkeypatch) -> None:
     _mock_port(monkeypatch, reachable=False)
-    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "PIDS="))
-    st = core.emulator_status(cfg, runner=runner)
+    _mock_procs(monkeypatch, [])
+    st = core.emulator_status(cfg)
     assert st["state"] == "not_running" and st["running"] is False and st["pids"] == []
+
+
+def test_emulator_status_survives_unreadable_cmdline(cfg: core.Config, monkeypatch) -> None:
+    """A process whose cmdline read raises AccessDenied must be skipped,
+    not crash the scan."""
+    _mock_port(monkeypatch, reachable=False)
+    _mock_procs(monkeypatch, [
+        _PsProc(7, "FTOptixRuntime.exe", None),
+        _PsProc(1234, "FTOptixRuntime.exe", _EMU_CMD),
+    ])
+    st = core.emulator_status(cfg)
+    assert st["pids"] == [1234]
+
+
+def _mock_kill(monkeypatch, state: dict, killed: list[int]) -> None:
+    """Fake psutil.Process/wait_procs: record kills, flip state['stopped']."""
+    class FakePs:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+        def kill(self) -> None:
+            killed.append(self.pid)
+            state["stopped"] = True
+
+    monkeypatch.setattr(core.psutil, "Process", FakePs)
+    monkeypatch.setattr(core.psutil, "wait_procs",
+                        lambda procs, timeout=None: (list(procs), []))
 
 
 def test_stop_emulator_kills_running(cfg: core.Config, monkeypatch) -> None:
     _mock_port(monkeypatch, reachable=True)
     state = {"stopped": False}
-
-    def handler(cmd, kw):
-        c = cmd[-1]
-        if "Stop-Process -Id" in c:
-            assert "1234" in c  # kills the discriminated PIDs, not every FTOptixRuntime
-            state["stopped"] = True
-            return FakeProc(0, "")
-        if "Get-CimInstance" in c:
-            return FakeProc(0, "PIDS=" if state["stopped"] else "PIDS=1234")
-        return FakeProc(0, "")
-
-    out = core.stop_emulator(cfg, runner=make_fake_runner(handler))
+    killed: list[int] = []
+    monkeypatch.setattr(
+        core, "_emulator_pids",
+        lambda: [] if state["stopped"] else [1234])
+    _mock_kill(monkeypatch, state, killed)
+    out = core.stop_emulator(cfg)
+    # kills the discriminated PIDs, not every FTOptixRuntime
+    assert killed == [1234]
     assert out["stopped"] is True and out["killed_pids"] == [1234]
 
 
@@ -170,25 +229,32 @@ def test_stop_emulator_stops_a_starting_emulator(cfg: core.Config, monkeypatch) 
     """A PID with the port not yet serving (state=starting) must still be stoppable."""
     _mock_port(monkeypatch, reachable=False)
     state = {"stopped": False}
-
-    def handler(cmd, kw):
-        c = cmd[-1]
-        if "Stop-Process -Id" in c:
-            state["stopped"] = True
-            return FakeProc(0, "")
-        if "Get-CimInstance" in c:
-            return FakeProc(0, "PIDS=" if state["stopped"] else "PIDS=4321")
-        return FakeProc(0, "")
-
-    out = core.stop_emulator(cfg, runner=make_fake_runner(handler))
+    killed: list[int] = []
+    monkeypatch.setattr(
+        core, "_emulator_pids",
+        lambda: [] if state["stopped"] else [4321])
+    _mock_kill(monkeypatch, state, killed)
+    out = core.stop_emulator(cfg)
     assert out["stopped"] is True and out["killed_pids"] == [4321]
 
 
 def test_stop_emulator_when_not_running(cfg: core.Config, monkeypatch) -> None:
     _mock_port(monkeypatch, reachable=False)
-    runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "PIDS="))
-    out = core.stop_emulator(cfg, runner=runner)
+    monkeypatch.setattr(core, "_emulator_pids", lambda: [])
+    out = core.stop_emulator(cfg)
     assert out["stopped"] is False and out["reason"] == "not_running"
+
+
+def test_stop_emulator_uses_prefetched_status(cfg: core.Config, monkeypatch) -> None:
+    """status= skips the redundant scan restart_emulator already paid for."""
+    _mock_port(monkeypatch, reachable=False)
+    state = {"stopped": True}  # live scan says gone (post-kill re-check)
+    killed: list[int] = []
+    monkeypatch.setattr(core, "_emulator_pids", lambda: [])
+    _mock_kill(monkeypatch, state, killed)
+    out = core.stop_emulator(cfg, status={"pids": [1234]})
+    assert killed == [1234]
+    assert out["stopped"] is True and out["killed_pids"] == [1234]
 
 
 # --- F5 target guard (2026-07-17): F5 runs the SELECTED deployment target ---

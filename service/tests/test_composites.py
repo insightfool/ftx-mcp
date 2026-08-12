@@ -12,7 +12,7 @@ def test_restart_emulator_stops_then_runs(cfg: core.Config, monkeypatch) -> None
     monkeypatch.setattr(core, "emulator_status",
                         lambda c, r=None: {"pids": [111], "state": "running"})
     monkeypatch.setattr(core, "stop_emulator",
-                        lambda c, r=None: calls.append("stop") or {"stopped": True, "killed_pids": [111]})
+                        lambda c, r=None, status=None: calls.append("stop") or {"stopped": True, "killed_pids": [111]})
     monkeypatch.setattr(core, "run_emulator",
                         lambda c, p, save_first=False, wait_ready=True, runner=None:
                         calls.append("run") or {"launched": True, "serving": True})
@@ -26,7 +26,7 @@ def test_restart_emulator_skips_stop_when_idle(cfg: core.Config, monkeypatch) ->
     monkeypatch.setattr(core, "emulator_status",
                         lambda c, r=None: {"pids": [], "state": "not_running"})
     monkeypatch.setattr(core, "stop_emulator",
-                        lambda c, r=None: (_ for _ in ()).throw(AssertionError("no stop when idle")))
+                        lambda c, r=None, status=None: (_ for _ in ()).throw(AssertionError("no stop when idle")))
     monkeypatch.setattr(core, "run_emulator",
                         lambda c, p, save_first=False, wait_ready=True, runner=None:
                         {"launched": True, "serving": True})

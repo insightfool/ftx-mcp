@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import socket
 import sys
+import threading
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -270,6 +271,13 @@ def main(argv: list[str] | None = None) -> int:
         for line in fails:
             print(line, file=sys.stderr, flush=True)
         return exit_code
+
+    # Warm psutil's process map off the request path: the FIRST process_iter
+    # can take tens of seconds (per-process handle opens, slower still when
+    # endpoint-protection hooks them), every later scan ~0.1s. Without this,
+    # the first emulator status/stop/restart after service boot eats that
+    # cold hit.
+    threading.Thread(target=core._emulator_pids, daemon=True).start()
 
     http_app: Any = make_app(cfg)
     mcp = make_mcp(cfg)

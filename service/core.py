@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import psutil
+
 from . import studio_guard
 from . import studio_uia
 from .deploy_lock import DeployLock
@@ -3216,19 +3218,18 @@ def _bridge_owner_pid(cfg: Config, runner: Runner = _DEFAULT_RUNNER) -> int | No
     """PID owning the bridge's TCP listener — i.e. the Studio instance HOSTING the
     design-time bridge (the bridge NetLogic runs inside that Studio process). Used by
     save() to target Ctrl+S at the SAME instance the bridge authored into.
-    Windows-only (Get-NetTCPConnection); returns None if not resolvable."""
+    In-process psutil scan (was a Get-NetTCPConnection PowerShell spawn — one of
+    the per-restart process-spawn costs); `runner` is kept for signature
+    stability. Returns None if not resolvable."""
     port = _bridge_port(cfg)
-    ps = (
-        f"$c = Get-NetTCPConnection -LocalPort {port} -State Listen "
-        f"-ErrorAction SilentlyContinue | Select-Object -First 1; "
-        f"if ($c) {{ Write-Output $c.OwningProcess }}"
-    )
     try:
-        proc = runner.run_powershell(ps, timeout=10)
-    except Exception:
+        for c in psutil.net_connections(kind="tcp"):
+            if (c.status == psutil.CONN_LISTEN and c.laddr
+                    and c.laddr.port == port and c.pid):
+                return c.pid
+    except (psutil.Error, OSError):
         return None
-    s = (proc.stdout or "").strip()
-    return int(s) if s.isdigit() else None
+    return None
 
 
 def _gentle_focus() -> bool:
@@ -3839,18 +3840,46 @@ def run_emulator(
 def _bare_runtime_running(cfg: Config, runner: Runner = _DEFAULT_RUNNER) -> bool:
     """Any FTOptixRuntime.exe process at all — the identity-agnostic fallback for
     run_emulator's spawn check. The strict --application-name=Emulator match in
-    emulator_status can miss a just-F5'd runtime whose CommandLine isn't in CIM
-    yet, or lag on a busy box; a bare presence check tells 'still starting' apart
+    emulator_status can miss a just-F5'd runtime whose command line isn't
+    readable yet; a bare presence check tells 'still starting' apart
     from 'nothing spawned'. Best-effort; returns False on any error.
     """
-    ps = ("$p = Get-Process FTOptixRuntime -ErrorAction SilentlyContinue; "
-          "if ($p) { 'RUNTIMES=' + $p.Count } else { 'RUNTIMES=0' }")
     try:
-        proc = runner.run_powershell(ps, timeout=15)
-        m = re.search(r"RUNTIMES=(\d+)", proc.stdout or "")
-        return bool(m) and int(m.group(1)) > 0
-    except Exception:
-        return False
+        for p in psutil.process_iter(["name"]):
+            if (p.info.get("name") or "").lower() == "ftoptixruntime.exe":
+                return True
+    except psutil.Error:
+        pass
+    return False
+
+
+def _emulator_pids() -> list[int]:
+    """PIDs of FTOptixRuntime.exe instances launched with
+    `--application-name=Emulator` — the command-line discriminator that
+    separates the emulator from an UpdateSvc-deployed runtime (same exe,
+    typically same port). In-process psutil scan; the previous
+    Get-CimInstance Win32_Process PowerShell spawn cost seconds per call and
+    ran up to four times per restart. Best-effort: unreadable processes are
+    skipped, any scan failure returns [].
+    """
+    pids: list[int] = []
+    try:
+        # Name-only iteration first (cheap toolhelp snapshot); read cmdline
+        # ONLY for actual FTOptixRuntime processes. Asking process_iter for
+        # "cmdline" up front queries EVERY process on the box and the
+        # access-denied fallbacks make that take tens of seconds unelevated.
+        for p in psutil.process_iter(["pid", "name"]):
+            if (p.info.get("name") or "").lower() != "ftoptixruntime.exe":
+                continue
+            try:
+                cmd = " ".join(p.cmdline())
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+            if "--application-name=Emulator" in cmd:
+                pids.append(p.info["pid"])
+    except psutil.Error:
+        pass
+    return pids
 
 
 def emulator_status(cfg: Config, runner: Runner = _DEFAULT_RUNNER) -> dict:
@@ -3859,11 +3888,8 @@ def emulator_status(cfg: Config, runner: Runner = _DEFAULT_RUNNER) -> dict:
     F5 in Studio TOGGLES the emulator, so a caller needs the current state to
     avoid a blind start-that-actually-stops.
 
-    Discriminates the EMULATOR from other FTOptixRuntime.exe instances — the
-    UpdateSvc-deployed runtime is the SAME exe, typically on the SAME port, so a
-    name-only process match reports "running" for a deployed app when no emulator
-    exists. Studio launches the emulator with
-    `--application-name=Emulator` on its command line; only those PIDs count.
+    Discriminates the EMULATOR from other FTOptixRuntime.exe instances via
+    _emulator_pids (see there); `runner` is kept for signature stability.
 
     States:
       not_running — no emulator process
@@ -3875,18 +3901,7 @@ def emulator_status(cfg: Config, runner: Runner = _DEFAULT_RUNNER) -> dict:
     is kept as a bool for back-compat and is True only in the `running` state.
     Adds a `hint` when the port is served by something that is NOT the emulator.
     """
-    ps = ("$p = Get-CimInstance Win32_Process -Filter \"Name='FTOptixRuntime.exe'\" "
-          "-ErrorAction SilentlyContinue | "
-          "Where-Object { $_.CommandLine -match '--application-name=Emulator' }; "
-          "if ($p) { 'PIDS=' + (($p | ForEach-Object { $_.ProcessId }) -join ',') } else { 'PIDS=' }")
-    pids: list[int] = []
-    try:
-        proc = runner.run_powershell(ps, timeout=15)
-        m = re.search(r"PIDS=([\d,]*)", (proc.stdout or ""))
-        if m and m.group(1):
-            pids = [int(x) for x in m.group(1).split(",") if x]
-    except Exception:
-        pass
+    pids = _emulator_pids()
     port = runtime_probe_port(cfg)
     reachable = _tcp_probe(runtime_probe_host(cfg), port)
     if pids and reachable:
@@ -4048,7 +4063,7 @@ def restart_emulator(
     st = emulator_status(cfg, runner)
     stopped = None
     if st.get("pids"):
-        stopped = stop_emulator(cfg, runner)
+        stopped = stop_emulator(cfg, runner, status=st)
     out = run_emulator(cfg, project, save_first=False, wait_ready=True, runner=runner)
     out["restarted"] = bool(st.get("pids"))
     if stopped is not None:
@@ -4069,24 +4084,35 @@ def _emulator_state_cached(cfg: Config, ttl: float = 5.0) -> dict:
     return _EMU_STATE_CACHE["v"]
 
 
-def stop_emulator(cfg: Config, runner: Runner = _DEFAULT_RUNNER) -> dict:
+def stop_emulator(
+    cfg: Config, runner: Runner = _DEFAULT_RUNNER, status: dict | None = None,
+) -> dict:
     """Stop the local FTOptixRuntime emulator by terminating its process(es).
 
     An explicit, unambiguous stop — vs F5, which toggles and is easy to double-fire.
-    Terminates ONLY emulator instances (CommandLine-matched via emulator_status);
+    Terminates ONLY emulator instances (command-line-matched via emulator_status);
     an UpdateSvc-deployed runtime is the same exe and is deliberately left alone.
+    `status` lets a caller that JUST ran emulator_status (restart_emulator) hand
+    the result in instead of paying a second scan. Kill is TerminateProcess
+    (same semantics as the old Stop-Process -Force), then a short wait so the
+    post-kill re-check doesn't race the process teardown.
     Returns {stopped, killed_pids, still_running}.
     """
     audit(cfg, "emulator_stop")
-    st = emulator_status(cfg, runner)
+    st = status if status is not None else emulator_status(cfg, runner)
     if not st["pids"]:  # pids, not `running` — a "starting" emulator must be stoppable
         return {"stopped": False, "reason": "not_running", "killed_pids": []}
-    ids = ",".join(str(p) for p in st["pids"])
+    procs = []
     try:
-        runner.run_powershell(
-            f"Stop-Process -Id {ids} -Force -ErrorAction SilentlyContinue",
-            timeout=15)
-    except Exception as e:
+        for pid in st["pids"]:
+            try:
+                p = psutil.Process(pid)
+                p.kill()
+                procs.append(p)
+            except psutil.NoSuchProcess:
+                pass  # already gone — that's a successful stop
+        psutil.wait_procs(procs, timeout=5)
+    except psutil.Error as e:
         return {"stopped": False, "reason": f"stop_failed: {e}", "killed_pids": []}
     after = emulator_status(cfg, runner)
     return {"stopped": not after["pids"], "killed_pids": st["pids"],
