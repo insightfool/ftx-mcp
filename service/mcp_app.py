@@ -2557,9 +2557,10 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         the node in place, so it gets a NEW NodeId; inbound references from
         elsewhere are not rewritten. set_property with name=DisplayName sets
         the node's DisplayName ATTRIBUTE (LocalizedText; dedicated safe
-        route) — note Studio's tree label follows BrowseName, so use rename
-        for the visible tree name. BrowseName itself is never settable
-        directly (it is the node's identity) — the attempt is refused.
+        route) — Studio's tree then labels the node "BrowseName (DisplayName)"
+        (verified live 2026-08-16); use rename to change the BrowseName part.
+        BrowseName itself is never settable directly (it is the node's
+        identity) — the attempt is refused.
 
         WHY BATCH: the bridge validates the ENTIRE list before anything is
         written, against a hypothetical model that accumulates this batch's

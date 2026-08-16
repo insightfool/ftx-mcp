@@ -2130,7 +2130,7 @@ public class StudioMCPBridge : BaseNetLogic
                    (before != null ? ",\"was\":\"" + JsonEscape(before) + "\"" : "") +
                    ",\"value\":\"" + JsonEscape(raw) +
                    "\",\"note\":\"browse_name (paths/links) is unchanged - Studio's " +
-                   "tree label may follow BrowseName, verify visually\"" +
+                   "tree shows 'BrowseName (DisplayName)' when they differ\"" +
                    ",\"mode\":\"inline\",\"thread\":\"http-bg\"}";
         }
         catch (Exception ex)
