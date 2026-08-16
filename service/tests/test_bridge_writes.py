@@ -403,16 +403,31 @@ def test_classify_array_write_failure_does_not_blame_connection(alpha):
 # --- node_attribute_not_settable (2026-08-16: agent set DisplayName; bridge
 # --- fabricated an orphan variable and the Studio PROCESS access-violated) ---
 
-def test_set_property_display_name_rejected_before_dispatch(alpha, monkeypatch):
-    """DisplayName never reaches the bridge — even a healthy one (the crash
-    fired on a bridge whose guard false-accepted node attributes)."""
+def test_set_property_display_name_routes_to_attribute_endpoint(alpha, monkeypatch):
+    """DisplayName never reaches the variable-materialization route (which
+    crashed Studio) — it dispatches to the dedicated attribute endpoint."""
     cap: list = []
-    monkeypatch.setattr(core, "_bridge_http", _fake_bridge({}, capture=cap))
-    with pytest.raises(core.BridgeWriteFailed) as e:
+    routes = {"/bridge/node/displayname": (200, {
+        "ok": True, "attribute": "DisplayName", "value": "Nice Name"})}
+    monkeypatch.setattr(core, "_bridge_http", _fake_bridge(routes, capture=cap))
+    out = core.bridge_set_property(
+        alpha, "Alpha", "UI/MainWindow/L1", "DisplayName", "Nice Name")
+    assert out["ok"] is True and out["attribute"] == "DisplayName"
+    assert [c for c in cap if "/bridge/node/displayname" in c[1]]
+    assert not [c for c in cap if "/bridge/node/property" in c[1]]
+
+
+def test_set_property_display_name_on_stale_bridge_fails_clean(alpha, monkeypatch):
+    """A 1.0.5/1.0.6 bridge has no attribute route — the unknown-route
+    not_found must surface as a per-op failure, never dispatch to the
+    crash-capable property route."""
+    cap: list = []
+    routes = {"/bridge/node/displayname": (200, {"error": {
+        "code": "not_found", "message": "no route"}})}
+    monkeypatch.setattr(core, "_bridge_http", _fake_bridge(routes, capture=cap))
+    with pytest.raises(core.BridgeWriteFailed):
         core.bridge_set_property(
             alpha, "Alpha", "UI/MainWindow/L1", "DisplayName", "Nice Name")
-    assert "node_attribute_not_settable" in str(e.value)
-    assert "move" in str(e.value) and "new_name" in str(e.value)
     assert not [c for c in cap if "/bridge/node/property" in c[1]]
 
 

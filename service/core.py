@@ -1267,10 +1267,14 @@ def classify_bridge_failure(cfg: Config, project: str, exc: Exception) -> dict:
 # UA node ATTRIBUTES (DisplayName, BrowseName, ...) exist as CLR properties on
 # every node proxy but are NOT UA child variables — materializing one via the
 # bridge fabricated an orphan variable and Studio access-violated on the next
-# render (crash confirmed live 2026-08-16, agent set DisplayName). Bridge 1.0.6
+# render (crash confirmed live 2026-08-16, agent set DisplayName). Bridge 1.0.6+
 # rejects them too (node_attribute_not_settable); this pre-dispatch refusal is
 # the stale-bridge defense — the .cs is hand-pasted into Studio, so an older
-# bridge build can never see the request.
+# bridge build can never see the request. DisplayName is the one exception:
+# set_property routes it to the bridge's dedicated ATTRIBUTE endpoint
+# (/bridge/node/displayname, bridge 1.0.7) which assigns the real attribute and
+# never touches variable materialization; bind/attach still refuse it (an
+# attribute can't carry a DynamicLink or converter).
 _NODE_ATTRIBUTE_NAMES = frozenset(
     {"DisplayName", "BrowseName", "Description", "NodeId", "NodeClass"})
 
@@ -1280,7 +1284,8 @@ def _reject_node_attribute(verb: str, name: str) -> None:
         raise BridgeWriteFailed(
             f"bridge {verb} rejected: node_attribute_not_settable — {name!r} is "
             f"a node attribute, not a settable property; writing it can crash "
-            f"Studio. To rename a node, use the rename op "
+            f"Studio. DisplayName is settable via set_property only; to rename "
+            f"a node, use the rename op "
             f"({{op: 'rename', path: ..., new_name: ...}}) or move with new_name."
         )
 
@@ -1303,6 +1308,13 @@ def bridge_set_property(
     that intent, so reject it here too — before dispatch — so a bridge running an
     older build can never see it.
     """
+    if name == "DisplayName":
+        # Attribute route (bridge 1.0.7+). A 1.0.5/1.0.6 bridge answers the
+        # unknown route with not_found — a clean per-op failure, never a crash.
+        return _bridge_write(
+            cfg, project, "set_displayname", "/bridge/node/displayname",
+            {"path": node_path, "value": value, "locale": locale},
+        )
     _reject_node_attribute("set_property", name)
     probe = value
     if isinstance(probe, str) and probe.lstrip().startswith("["):

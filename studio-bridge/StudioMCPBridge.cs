@@ -644,6 +644,14 @@ public class StudioMCPBridge : BaseNetLogic
                     body = WriteWidgetInline(firstLine);
                     status = "200 OK";
                 }
+                else if (firstLine.StartsWith("POST /bridge/node/displayname"))
+                {
+                    // DisplayName ATTRIBUTE set - deliberately its own route, not a
+                    // set_property branch: attributes are not UA child variables and
+                    // must never touch the GetOrCreateVariable path (orphan crash).
+                    body = SetDisplayNameInline(firstLine);
+                    status = "200 OK";
+                }
                 else if (firstLine.StartsWith("POST /bridge/node/property"))
                 {
                     // GENERIC property set - NOT per-component plumbing. Every
@@ -1315,6 +1323,12 @@ public class StudioMCPBridge : BaseNetLogic
     private string DeclaredPropertyGuard(IUANode node, string name)
     {
         if (node.GetVariable(name) != null) return null;   // already materialized
+        if (IsNodeAttributeName(name))
+            return "{\"error\":{\"code\":\"node_attribute_not_settable\",\"message\":\"" +
+                   JsonEscape(name + " is a node attribute, not a UA child property - " +
+                       "materializing it as a variable crashes Studio. DisplayName is " +
+                       "settable ONLY via set_property (dedicated attribute route); to " +
+                       "rename a node use the rename op (or move with new_name).") + "\"}}";
         if (node.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance)
                 .Any(p => p.Name == name)) return null;    // type-declared -> safe
         // Mirror the wire_event reject-with-valid-list: hand back the authoritative
@@ -2063,6 +2077,43 @@ public class StudioMCPBridge : BaseNetLogic
     // Resolves the property variable and assigns .Value coerced by its DataType.
     // One endpoint for ALL properties (Text/Color/Width/Model-var/...), no
     // per-component code. Coercion mirrors the cheatsheet's uniform .Value model.
+    // POST /bridge/node/displayname?path=X&value=Y[&locale=en-US]
+    // Set a node's DisplayName ATTRIBUTE (LocalizedText). This is a direct
+    // node-attribute assignment - NOT the variable-materialization path that
+    // crashed Studio (that fabricated an orphan UA variable named "DisplayName";
+    // this writes the real attribute the proxy setter fronts). BrowseName stays
+    // rename-only: it is the node's IDENTITY (paths, links, bindings key on it),
+    // so it goes through move/new_name re-authoring, never in-place mutation.
+    private string SetDisplayNameInline(string firstLine)
+    {
+        string path = QueryParam(firstLine, "path");
+        string raw = QueryParam(firstLine, "value");
+        string locale = QueryParam(firstLine, "locale") ?? "en-US";
+        if (string.IsNullOrEmpty(path) || raw == null)
+            return ErrorJson("bad_query", "required query params: path, value");
+        try
+        {
+            var node = ResolveNode(path);
+            if (node == null)
+                return ErrorJson("node_not_found", "no node at: " + path);
+            string before = null;
+            try { var d = node.DisplayName; if (d != null) before = d.Text; } catch { }
+            node.DisplayName = new LocalizedText(raw, locale);
+            return "{\"ok\":true,\"path\":\"" + JsonEscape(path) +
+                   "\",\"attribute\":\"DisplayName\"" +
+                   ",\"locale\":\"" + JsonEscape(locale) + "\"" +
+                   (before != null ? ",\"was\":\"" + JsonEscape(before) + "\"" : "") +
+                   ",\"value\":\"" + JsonEscape(raw) +
+                   "\",\"note\":\"browse_name (paths/links) is unchanged - Studio's " +
+                   "tree label may follow BrowseName, verify visually\"" +
+                   ",\"mode\":\"inline\",\"thread\":\"http-bg\"}";
+        }
+        catch (Exception ex)
+        {
+            return "{\"ok\":false,\"error\":\"" + JsonEscape(ExcMsg(ex)) + "\"}";
+        }
+    }
+
     private string SetPropertyInline(string firstLine)
     {
         string path = QueryParam(firstLine, "path");
@@ -2070,6 +2121,11 @@ public class StudioMCPBridge : BaseNetLogic
         string raw  = QueryParam(firstLine, "value") ?? "";
         if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(name))
             return ErrorJson("bad_query", "required query params: path, name");
+        // DisplayName rides the set_property surface for caller convenience but
+        // is handled by the attribute route - it must never reach the
+        // variable-materialization path below.
+        if (name == "DisplayName")
+            return SetDisplayNameInline(firstLine);
         var fmtErr = FormatSpecifierError(name, raw);
         if (fmtErr != null) return ErrorJson("bad_value", fmtErr);
         try
@@ -2496,6 +2552,17 @@ public class StudioMCPBridge : BaseNetLogic
         if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(name))
         {
             addErr(idx, "bad_op", verb + " requires \"path\" and \"name\"", null);
+            return;
+        }
+        // set_property DisplayName is the attribute route (SetDisplayNameInline),
+        // valid on any node - it must not fall into the child-variable guards
+        // below (which would refuse it as a node attribute). Deleted-node check
+        // still applies; everything else about it needs no validation.
+        if (verb == "set_property" && name == "DisplayName")
+        {
+            if (deleted.Contains(path))
+                addErr(idx, "modifies_deleted_node",
+                       verb + " targets '" + path + "', deleted earlier in this batch", null);
             return;
         }
         var fmtErr = FormatSpecifierError(name, value);

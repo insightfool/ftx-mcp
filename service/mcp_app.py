@@ -2553,11 +2553,13 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         rename, reorder, wire_event, attach_expression, add_translation.
 
         RENAME: {"op": "rename", "path": "UI/Screens/Foo", "new_name": "Bar"}
-        renames a node (the name shown in Studio's tree). Do NOT set
-        DisplayName/BrowseName via set_property — node attributes are not
-        settable and the attempt is refused (writing them crashed Studio).
-        Rename re-authors the node in place, so it gets a NEW NodeId; inbound
-        references from elsewhere are not rewritten.
+        renames a node (the name shown in Studio's tree). Rename re-authors
+        the node in place, so it gets a NEW NodeId; inbound references from
+        elsewhere are not rewritten. set_property with name=DisplayName sets
+        the node's DisplayName ATTRIBUTE (LocalizedText; dedicated safe
+        route) — note Studio's tree label follows BrowseName, so use rename
+        for the visible tree name. BrowseName itself is never settable
+        directly (it is the node's identity) — the attempt is refused.
 
         WHY BATCH: the bridge validates the ENTIRE list before anything is
         written, against a hypothetical model that accumulates this batch's
