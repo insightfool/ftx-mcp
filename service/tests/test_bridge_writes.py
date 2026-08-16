@@ -896,6 +896,53 @@ def test_bridge_edit_reports_partial_application_honestly(alpha, monkeypatch):
     assert "not atomic" in out["nudge"]
 
 
+# --- rename sugar op (lowered to move: same parent + new_name) ---
+
+def test_rename_op_lowers_to_move_before_validation(alpha, monkeypatch):
+    """The C# validator never sees 'rename' — it validates the lowered move op,
+    and apply dispatches the same lowered op."""
+    seen: list = []
+    applied: list = []
+    monkeypatch.setattr(core, "_bridge_post_body",
+                        _fake_validate(_OK_REPORT, seen=seen))
+    monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_apply_one_edit",
+                        lambda cfg, project, op: applied.append(op))
+
+    out = core.bridge_edit(alpha, "Alpha", [
+        {"op": "rename", "path": "UI/Screens/Foo", "new_name": "Bar"}])
+
+    assert out["state"] == "succeeded"
+    sent = seen[0][1]["ops"][0]
+    assert sent == {"op": "move", "path": "UI/Screens/Foo",
+                    "new_parent": "UI/Screens", "new_name": "Bar"}
+    assert applied == [sent]
+
+
+def test_rename_op_requires_path_and_new_name(alpha, monkeypatch):
+    monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    with pytest.raises(core.BridgeWriteFailed) as e:
+        core.bridge_edit(alpha, "Alpha", [{"op": "rename", "path": "UI/X"}])
+    assert "requires path and new_name" in str(e.value)
+
+
+def test_rename_op_refuses_top_level_node(alpha, monkeypatch):
+    monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    with pytest.raises(core.BridgeWriteFailed) as e:
+        core.bridge_edit(alpha, "Alpha",
+                         [{"op": "rename", "path": "UI", "new_name": "GUI"}])
+    assert "top-level" in str(e.value)
+
+
+def test_rename_op_refuses_noop_same_name(alpha, monkeypatch):
+    monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    with pytest.raises(core.BridgeWriteFailed) as e:
+        core.bridge_edit(alpha, "Alpha",
+                         [{"op": "rename", "path": "UI/Screens/Foo",
+                           "new_name": "Foo"}])
+    assert "already named" in str(e.value)
+
+
 def test_bridge_edit_sends_ops_and_strict_in_the_body(alpha, monkeypatch):
     seen: list = []
     monkeypatch.setattr(core, "_bridge_post_body",

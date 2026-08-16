@@ -1280,8 +1280,8 @@ def _reject_node_attribute(verb: str, name: str) -> None:
         raise BridgeWriteFailed(
             f"bridge {verb} rejected: node_attribute_not_settable — {name!r} is "
             f"a node attribute, not a settable property; writing it can crash "
-            f"Studio. To rename a node, use the move op with new_name "
-            f"(same parent = in-place rename)."
+            f"Studio. To rename a node, use the rename op "
+            f"({{op: 'rename', path: ..., new_name: ...}}) or move with new_name."
         )
 
 
@@ -1969,6 +1969,11 @@ _BRIDGE_EDIT_OPS: dict[str, tuple[str, tuple[str, ...], dict[str, str]]] = {
     "add_translation":   ("bridge_add_translation", ("key", "value"), {"locale": "locale"}),
 }
 
+# Verbs accepted at the batch surface. `rename` is sugar — _normalize_edit_op
+# lowers it to `move` (same parent + new_name) before validation, so it never
+# reaches _BRIDGE_EDIT_OPS dispatch or the C# validator under its own name.
+BRIDGE_EDIT_VERBS: frozenset[str] = frozenset(_BRIDGE_EDIT_OPS) | {"rename"}
+
 # The op key that carries the node path differs per noun (path / screen /
 # parent_path); the first positional of each core call is whatever that noun
 # names it, so map the op dict onto positionals by name.
@@ -2043,9 +2048,31 @@ def _normalize_edit_op(op: dict) -> dict:
     Returns the SAME object when nothing needs fixing (identity preserved), else
     a shallow copy — caller op dicts are never mutated. REGRESSION-CITE: keep
     these seams reconciled here (or in a bridge rebuild) — do not re-split the
-    validator/applier/tool field names."""
+    validator/applier/tool field names.
+
+    Also lowers the `rename` sugar op into `move` (same parent + new_name) —
+    the only safe rename mechanism; node attributes (DisplayName/BrowseName)
+    are not writable (they crashed Studio — see _reject_node_attribute). The
+    lowering happens BEFORE validation so the C# validator sees a verb it
+    knows instead of warning unknown_op."""
     if not isinstance(op, dict):
         return op
+    if op.get("op") == "rename":
+        path = op.get("path") or op.get("node_path") or ""
+        new_name = op.get("new_name") or op.get("name") or ""
+        if not path or not new_name:
+            raise BridgeWriteFailed(
+                "op 'rename' requires path and new_name")
+        if "/" not in path:
+            raise BridgeWriteFailed(
+                f"op 'rename' cannot rename top-level node {path!r} — no parent "
+                f"to re-author under")
+        parent, old_name = path.rsplit("/", 1)
+        if new_name == old_name:
+            raise BridgeWriteFailed(
+                f"op 'rename': {path!r} is already named {new_name!r}")
+        return {"op": "move", "path": path, "new_parent": parent,
+                "new_name": new_name}
     needs_path = bool(op.get("node_path")) and not op.get("path")
     prop = None
     if op.get("op") == "attach_expression":

@@ -42,14 +42,23 @@ never listed.
 Studio NetLogic node, so a stale 1.0.5 bridge is a live possibility — an
 older bridge can never see the request.
 
-## Renaming a node, the supported way
+## New — `rename` op
 
-Rename was never `set BrowseName` — it is the `move` op with `new_name`
-and the node's current parent as `new_parent`. Move re-authors a copy and
-deletes the original (the only mutation pattern proven safe against the
-2026-07-17 re-parenting crash class), so the renamed node has a **new
-NodeId**: outbound links are re-created, inbound references from
-elsewhere are not rewritten.
+Renaming no longer requires knowing the move-with-`new_name` trick.
+`optix_bridge_edit` now accepts:
+
+```json
+{"op": "rename", "path": "UI/Screens/Foo", "new_name": "Bar"}
+```
+
+It is sugar: the service lowers it to the `move` op with the node's own
+parent as `new_parent` before validation, so the bridge (any version)
+sees a verb it already knows. Move re-authors a copy and deletes the
+original (the only mutation pattern proven safe against the 2026-07-17
+re-parenting crash class), so the renamed node has a **new NodeId**:
+outbound links are re-created, inbound references from elsewhere are not
+rewritten. Renaming a top-level node (no parent) is refused, as is a
+rename to the same name.
 
 ## Upgrading
 

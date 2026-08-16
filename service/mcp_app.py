@@ -2532,7 +2532,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     # generates a schema some MCP clients mangle, and the flat shape is the
     # robust-and-shipping one. The per-noun optix_bridge_* tools stay as-is;
     # this batches them, it does not replace them.
-    _EDIT_OPS = tuple(sorted(core._BRIDGE_EDIT_OPS))
+    _EDIT_OPS = tuple(sorted(core.BRIDGE_EDIT_VERBS))
 
     @mcp.tool(annotations=_RW_DESTRUCTIVE)
     @_with_project
@@ -2550,7 +2550,14 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         "path": "UI/MainWindow/Gauge1", "name": "Width", "value": "120"}].
         Valid ops: set_property, bind, create_widget, create_variable,
         create_folder, create_object, create_type, create_alias, delete, move,
-        reorder, wire_event, attach_expression, add_translation.
+        rename, reorder, wire_event, attach_expression, add_translation.
+
+        RENAME: {"op": "rename", "path": "UI/Screens/Foo", "new_name": "Bar"}
+        renames a node (the name shown in Studio's tree). Do NOT set
+        DisplayName/BrowseName via set_property — node attributes are not
+        settable and the attempt is refused (writing them crashed Studio).
+        Rename re-authors the node in place, so it gets a NEW NodeId; inbound
+        references from elsewhere are not rewritten.
 
         WHY BATCH: the bridge validates the ENTIRE list before anything is
         written, against a hypothetical model that accumulates this batch's
@@ -2587,7 +2594,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         bad = [
             {"index": i, "op": o.get("op") if isinstance(o, dict) else None}
             for i, o in enumerate(ops)
-            if not isinstance(o, dict) or o.get("op") not in core._BRIDGE_EDIT_OPS
+            if not isinstance(o, dict) or o.get("op") not in core.BRIDGE_EDIT_VERBS
         ]
         if bad:
             return {
