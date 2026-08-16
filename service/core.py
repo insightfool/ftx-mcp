@@ -1264,6 +1264,27 @@ def classify_bridge_failure(cfg: Config, project: str, exc: Exception) -> dict:
     }
 
 
+# UA node ATTRIBUTES (DisplayName, BrowseName, ...) exist as CLR properties on
+# every node proxy but are NOT UA child variables — materializing one via the
+# bridge fabricated an orphan variable and Studio access-violated on the next
+# render (crash confirmed live 2026-08-16, agent set DisplayName). Bridge 1.0.6
+# rejects them too (node_attribute_not_settable); this pre-dispatch refusal is
+# the stale-bridge defense — the .cs is hand-pasted into Studio, so an older
+# bridge build can never see the request.
+_NODE_ATTRIBUTE_NAMES = frozenset(
+    {"DisplayName", "BrowseName", "Description", "NodeId", "NodeClass"})
+
+
+def _reject_node_attribute(verb: str, name: str) -> None:
+    if name in _NODE_ATTRIBUTE_NAMES:
+        raise BridgeWriteFailed(
+            f"bridge {verb} rejected: node_attribute_not_settable — {name!r} is "
+            f"a node attribute, not a settable property; writing it can crash "
+            f"Studio. To rename a node, use the move op with new_name "
+            f"(same parent = in-place rename)."
+        )
+
+
 def bridge_set_property(
     cfg: Config, project: str, node_path: str, name: str, value: str,
     locale: str = "en-US",
@@ -1282,6 +1303,7 @@ def bridge_set_property(
     that intent, so reject it here too — before dispatch — so a bridge running an
     older build can never see it.
     """
+    _reject_node_attribute("set_property", name)
     probe = value
     if isinstance(probe, str) and probe.lstrip().startswith("["):
         try:
@@ -1673,6 +1695,7 @@ def bridge_bind_property(
     RUNTIME, never at bind time. This is the alias/template late-binding
     mechanism; a resolvable source_path through an alias is a contradiction.
     """
+    _reject_node_attribute("bind_property", name)
     if bool(source_path) == bool(raw_path):
         raise BridgeWriteFailed(
             "bridge bind_property rejected: pass exactly one of source_path "
@@ -1885,6 +1908,7 @@ def bridge_attach_expression(
     bound to the `sources` (comma-separated model/node paths) in order. e.g.
     expression='if({0} > 40, 0xFFFF0000, 0xFF00FF00)', sources='Model/Speed' on a
     FillColor. Subsumes ConditionalConverter/Linear/etc. Live-model write."""
+    _reject_node_attribute("attach_expression", prop_name)
     params: dict[str, str] = {"path": node_path, "name": prop_name, "expression": expression}
     if sources:
         params["sources"] = sources

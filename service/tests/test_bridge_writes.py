@@ -400,6 +400,65 @@ def test_classify_array_write_failure_does_not_blame_connection(alpha):
     assert "unsupported_array_write" in out["detail"]
 
 
+# --- node_attribute_not_settable (2026-08-16: agent set DisplayName; bridge
+# --- fabricated an orphan variable and the Studio PROCESS access-violated) ---
+
+def test_set_property_display_name_rejected_before_dispatch(alpha, monkeypatch):
+    """DisplayName never reaches the bridge — even a healthy one (the crash
+    fired on a bridge whose guard false-accepted node attributes)."""
+    cap: list = []
+    monkeypatch.setattr(core, "_bridge_http", _fake_bridge({}, capture=cap))
+    with pytest.raises(core.BridgeWriteFailed) as e:
+        core.bridge_set_property(
+            alpha, "Alpha", "UI/MainWindow/L1", "DisplayName", "Nice Name")
+    assert "node_attribute_not_settable" in str(e.value)
+    assert "move" in str(e.value) and "new_name" in str(e.value)
+    assert not [c for c in cap if "/bridge/node/property" in c[1]]
+
+
+def test_set_property_browse_name_rejected_before_dispatch(alpha, monkeypatch):
+    cap: list = []
+    monkeypatch.setattr(core, "_bridge_http", _fake_bridge({}, capture=cap))
+    with pytest.raises(core.BridgeWriteFailed) as e:
+        core.bridge_set_property(
+            alpha, "Alpha", "UI/MainWindow/L1", "BrowseName", "NewName")
+    assert "node_attribute_not_settable" in str(e.value)
+    assert not [c for c in cap if "/bridge/node/property" in c[1]]
+
+
+def test_bind_property_node_attribute_rejected_before_dispatch(alpha, monkeypatch):
+    cap: list = []
+    monkeypatch.setattr(core, "_bridge_http", _fake_bridge({}, capture=cap))
+    with pytest.raises(core.BridgeWriteFailed) as e:
+        core.bridge_bind_property(
+            alpha, "Alpha", "UI/MainWindow/L1", "DisplayName",
+            source_path="Model/Name")
+    assert "node_attribute_not_settable" in str(e.value)
+    assert not [c for c in cap if "/bridge/node/bind" in c[1]]
+
+
+def test_attach_expression_node_attribute_rejected_before_dispatch(alpha, monkeypatch):
+    cap: list = []
+    monkeypatch.setattr(core, "_bridge_http", _fake_bridge({}, capture=cap))
+    with pytest.raises(core.BridgeWriteFailed) as e:
+        core.bridge_attach_expression(
+            alpha, "Alpha", "UI/MainWindow/L1", "DisplayName", "{0}",
+            sources="Model/Name")
+    assert "node_attribute_not_settable" in str(e.value)
+    assert not [c for c in cap if "/bridge/node/attach-expression" in c[1]]
+
+
+def test_classify_node_attribute_failure_does_not_blame_connection(alpha):
+    """Per-op rejection: bridge stays up, nudge must not say restart Studio."""
+    exc = core.BridgeWriteFailed(
+        "bridge set_property rejected: node_attribute_not_settable — "
+        "'DisplayName' is a node attribute, not a settable property.")
+    out = core.classify_bridge_failure(alpha, "Alpha", exc)
+    assert out["reason_code"] == "write_failed"
+    assert out["bridge"]["reachable"] is True
+    assert "node_attribute_not_settable" in out["detail"]
+
+
 # --- structural authoring family (folder/object/type/convert — 2026-07-17) ---
 
 def test_create_folder_posts(alpha, monkeypatch):
