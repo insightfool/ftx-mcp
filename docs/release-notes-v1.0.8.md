@@ -50,6 +50,44 @@ sleeping through all 3 attempts; only a genuine transient failure (e.g. a
 timeout while Studio is busy) still gets the original retry-with-backoff
 treatment.
 
+## Fixed — the retry-skip fast-path never actually fired, and the scan was sequential
+
+Two follow-on issues turned up while verifying the fix above against a real
+machine (found before this release shipped, so folded in rather than saved
+for a v1.0.9):
+
+1. The "skip the retry loop on a definitive refusal" fast-path added
+   alongside the pre-check removal checked `isinstance(e.__cause__,
+   ConnectionRefusedError)` — but `_bridge_http` raises
+   `BridgeUnavailable(...) from e` where `e` is the `urllib.error.URLError`
+   `urlopen` raises, and `urlopen` stashes the *actual* socket exception in
+   `URLError.reason`, not as the `URLError` itself. The check was therefore
+   always `False`, and every unarmed port silently paid the full 3-attempt,
+   sleep-padded retry cost regardless. Fixed with a small helper,
+   `_is_connection_refused()`, that checks both `exc` and `exc.reason`.
+2. `list_bridges()` scanned the port range one port at a time. On a machine
+   where a refused connection isn't near-instant — this dev box measured
+   ~2s per refusal even to `127.0.0.1`, plausibly endpoint security
+   inspecting outbound TCP before letting the RST through — a sequential
+   scan of a fully-unarmed 4-port range took **30+ seconds**, and because
+   that's longer than the 2s per-port cache TTL, a second scanner later in
+   the same `/ui/stats` request (`doctor()`'s bridge check, then
+   `ui_stats()`'s own `list_bridges()` call) found the earliest ports'
+   cache entries already stale and re-scanned them. Measured before/after
+   on that same box, one `/ui/stats` call with nothing armed: **~102s → 16s**
+   with the fast-path fix alone, **→ well under that** once the scan itself
+   ran concurrently. `list_bridges()` now fans the per-port checks out
+   across a `ThreadPoolExecutor` sized to the port count instead of looping;
+   `ThreadPoolExecutor.map` preserves input order in its results regardless
+   of which port answers first, so `bridge_state()`'s "first in port order"
+   contract is unaffected.
+
+Neither of these caused Studio Output warnings on their own — they're
+latency-only, surfaced by testing the fix above against a real machine
+rather than only against mocks — but a `/ui` dashboard that takes 30+
+seconds to load on a cold cache miss is its own regression from 1.0.7, so
+it's fixed here rather than left for later.
+
 ## Upgrade notes
 
 Python-only fix — no `StudioMCPBridge.cs` changes in this release, so there

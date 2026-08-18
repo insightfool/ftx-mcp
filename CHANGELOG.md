@@ -29,6 +29,22 @@ notes: `docs/release-notes-v1.0.8.md`.
   A definitively-refused connection (nothing listening at all) still fails
   fast without the retry-loop's `time.sleep`s, so a cold scan of an
   otherwise-empty range isn't meaningfully slower.
+- **The fast-path in the fix above wasn't actually firing.** `_bridge_http`
+  raises `BridgeUnavailable(...) from e` where `e` is the caught
+  `urllib.error.URLError`, not the raw socket exception — `urlopen` stashes
+  a refused connection in `URLError.reason`, so the retry loop's
+  `isinstance(e.__cause__, ConnectionRefusedError)` check was always False
+  and every dead port still paid the full 3-attempt retry-with-sleep cost.
+  New helper `_is_connection_refused()` checks both `exc` and `exc.reason`.
+- **The port-range scan was sequential.** On a box where a refused
+  connection isn't near-instant (observed here: ~2s per refusal, endpoint
+  security intercepting even loopback traffic is one plausible cause),
+  scanning 4 ports one at a time took 30+ seconds, and by the time the scan
+  finished the first port's cache entry had already gone stale — so a
+  second caller in the same request (`doctor()` then `ui_stats()`, both
+  behind `/ui/stats`) re-scanned the whole range again. `list_bridges()` now
+  fans the per-port checks out across a small thread pool (`ThreadPoolExecutor`,
+  order-preserving) instead of looping.
 
 ## [1.0.7]
 

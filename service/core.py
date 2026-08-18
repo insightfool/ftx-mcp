@@ -2231,6 +2231,28 @@ def _bridge_url_at(port: int) -> str:
     return f"http://127.0.0.1:{port}"
 
 
+def _is_connection_refused(exc: BaseException | None) -> bool:
+    """True when `exc` (typically a caught BridgeUnavailable's __cause__) is,
+    or wraps, a ConnectionRefusedError -- i.e. the OS gave a definitive "no
+    -one is listening on that port" answer, as opposed to a timeout or some
+    other transport failure.
+
+    AInsightfool (v1.0.8): `_bridge_http` raises `BridgeUnavailable(...) from
+    e` where `e` is the `urllib.error.URLError`/`OSError` it caught -- NOT
+    the raw socket exception directly. `urllib.request.urlopen` wraps a bare
+    `ConnectionRefusedError` in a `URLError`, stashing the original exception
+    in `.reason` rather than re-raising it, so `isinstance(cause,
+    ConnectionRefusedError)` is always False for a refused connection; only
+    `isinstance(cause.reason, ConnectionRefusedError)` catches it. Walk both
+    shapes so the caller's fast-path (skip the retry-with-sleep loop for a
+    definitively dead port) actually fires.
+    """
+    if isinstance(exc, ConnectionRefusedError):
+        return True
+    reason = getattr(exc, "reason", None)
+    return isinstance(reason, ConnectionRefusedError)
+
+
 def _bridge_health_at(cfg: Config, port: int, force: bool = False) -> dict:
     """Cached /bridge/health snapshot for ONE specific port.
 
@@ -2310,7 +2332,7 @@ def _bridge_health_at(cfg: Config, port: int, force: bool = False) -> dict:
                 # range where most ports are typically unarmed. Only sleep
                 # and retry for other transport failures (e.g. a timeout),
                 # which is what the retry loop exists for.
-                if isinstance(e.__cause__, ConnectionRefusedError):
+                if _is_connection_refused(e.__cause__):
                     break
                 if i < 2:
                     time.sleep(0.4)
@@ -2329,12 +2351,27 @@ def list_bridges(cfg: Config, force: bool = False) -> list[dict]:
     the /ui dashboard, and is what _find_bridge_for scans to route a project to
     its specific bridge.
     """
-    out = []
-    for port in _bridge_ports(cfg):
-        st = _bridge_health_at(cfg, port, force=force)
-        if st["available"]:
-            out.append(st)
-    return out
+    ports = _bridge_ports(cfg)
+    if len(ports) <= 1:
+        results = [_bridge_health_at(cfg, ports[0], force=force)] if ports else []
+    else:
+        # AInsightfool (v1.0.8): scan the range CONCURRENTLY, not one port at
+        # a time. Each _bridge_health_at() call on an unarmed port costs a
+        # full real HTTP connection attempt now that the (buggy) raw-socket
+        # pre-check is gone -- on a box where a refused connection isn't
+        # near-instant (observed here: ~2s per refusal, likely endpoint
+        # security intercepting outbound TCP even on loopback), a sequential
+        # scan of an otherwise-empty 4-port range took 30+ seconds, and by
+        # the time it finished the FIRST port's 2s cache entry was already
+        # stale, so a second sequential caller (doctor() then ui_stats() in
+        # the same /ui/stats request) re-scanned the whole range again.
+        # ThreadPoolExecutor.map preserves input order in its results
+        # regardless of completion order, so callers that assume "port
+        # order" (bridge_state() takes results[0]) are unaffected.
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(ports)) as ex:
+            results = list(ex.map(lambda p: _bridge_health_at(cfg, p, force=force), ports))
+    return [st for st in results if st["available"]]
 
 
 def bridge_state(cfg: Config, force: bool = False) -> dict:
