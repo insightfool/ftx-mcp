@@ -2190,11 +2190,18 @@ def ui_stats(cfg: Config) -> dict:
         # Studio's own type system, not per-project) — the primary bridge's
         # port is a fine source for it, no need to ask each one.
         primary_port = out.get("bridge", {}).get("port")
-        bcfg = dataclasses.replace(cfg, bridge_url=_bridge_url_at(primary_port)) if primary_port else cfg
-        status, data = _bridge_get_json(bcfg, "/bridge/types/ui")
-        types = data.get("types", []) if status == 200 else []
-        out["capabilities"]["widget_types"] = len(types)
-        out["capabilities"]["gallery"] = [t.get("browse_name") for t in types[:60] if t.get("browse_name")]
+        # AInsightfool (v1.0.8): skip this call entirely when NOTHING is
+        # armed anywhere -- we already know from the `bridges` scan above
+        # that there's no listener to ask, so a call here (previously it
+        # fell back to cfg's default single bridge_url and asked anyway)
+        # was a guaranteed-to-fail, guaranteed-to-cost-a-real-refused-
+        # connection round trip on every single /ui/stats poll.
+        if primary_port:
+            bcfg = dataclasses.replace(cfg, bridge_url=_bridge_url_at(primary_port))
+            status, data = _bridge_get_json(bcfg, "/bridge/types/ui")
+            types = data.get("types", []) if status == 200 else []
+            out["capabilities"]["widget_types"] = len(types)
+            out["capabilities"]["gallery"] = [t.get("browse_name") for t in types[:60] if t.get("browse_name")]
     except Exception:
         pass
     try:

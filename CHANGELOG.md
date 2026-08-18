@@ -45,6 +45,11 @@ notes: `docs/release-notes-v1.0.8.md`.
   behind `/ui/stats`) re-scanned the whole range again. `list_bridges()` now
   fans the per-port checks out across a small thread pool (`ThreadPoolExecutor`,
   order-preserving) instead of looping.
+- **`ui_stats()` asked for the widget-type catalog even with nothing armed.**
+  With no bridge answering anywhere, `primary_port` is `None` — the code
+  fell back to `cfg`'s default single `bridge_url` and asked anyway, a
+  guaranteed-to-fail real network round trip on every `/ui/stats` poll. Now
+  skipped entirely when `primary_port` is `None`.
 
 ## [1.0.7]
 
