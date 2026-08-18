@@ -267,6 +267,78 @@ def test_runner_default_fn_is_tree_kill_aware() -> None:
     assert core.Runner().fn is core._run_subprocess_with_tree_kill
 
 
+def test_run_subprocess_with_tree_kill_suppresses_console_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AInsightfool (v1.0.6) lock-in: every child spawned through here
+    (taskkill/tasklist/netstat/powershell/...) is a console-subsystem tool.
+    Under a windowless pythonw.exe parent (no console of its own — the
+    scheduled task's actual runtime mode, via bootstrap/run_hidden.py),
+    Windows allocates a brand-new console for each one, which flashes on
+    screen for the call's duration — the "PowerShell keeps popping up and
+    closing" bug. creationflags=CREATE_NO_WINDOW must be set by default on
+    Windows so no future call site (or refactor of this function) can drop
+    it silently. A caller that explicitly passes its own creationflags is
+    respected (setdefault, not overwrite).
+    """
+    monkeypatch.setattr(core.os, "name", "nt")
+    monkeypatch.setattr(core.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["kwargs"] = kwargs
+        return core.subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+    monkeypatch.setattr(core.subprocess, "run", fake_run)
+    core._run_subprocess_with_tree_kill(["powershell", "-NoProfile", "-Command", "1"])
+    assert captured["kwargs"]["creationflags"] == 0x08000000
+
+
+def test_run_subprocess_with_tree_kill_respects_explicit_creationflags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller-supplied creationflags must win over the CREATE_NO_WINDOW
+    default (setdefault, not an unconditional overwrite) — a caller that
+    genuinely needs a visible console (or a different flag combination)
+    can still opt out."""
+    monkeypatch.setattr(core.os, "name", "nt")
+    monkeypatch.setattr(core.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["kwargs"] = kwargs
+        return core.subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+    monkeypatch.setattr(core.subprocess, "run", fake_run)
+    core._run_subprocess_with_tree_kill(["cmd"], creationflags=0x00000010)
+    assert captured["kwargs"]["creationflags"] == 0x00000010
+
+
+def test_tree_kill_taskkill_suppresses_console_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Companion lock-in for _tree_kill's own taskkill call, which bypasses
+    Runner/_run_subprocess_with_tree_kill entirely (it's the timeout-kill
+    path, not a normal shell-out) and so needs the same flag applied
+    directly rather than inherited from the shared wrapper."""
+    monkeypatch.setattr(core.os, "name", "nt")
+    monkeypatch.setattr(core.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return core.subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(core.subprocess, "run", fake_run)
+    core._tree_kill(4242)
+    assert captured["cmd"][0] == "taskkill"
+    assert captured["kwargs"]["creationflags"] == 0x08000000
+
+
 def test_atomic_swap_replaces_existing_runtime_tree(
     cfg: core.Config, projects_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

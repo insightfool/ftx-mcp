@@ -205,9 +205,14 @@ def _tree_kill(pid: int) -> None:
     """
     if os.name == "nt":
         try:
+            # AInsightfool: creationflags stops this taskkill from flashing a
+            # console window under the windowless pythonw.exe service (see
+            # _run_subprocess_with_tree_kill below for the full explanation —
+            # same root cause, same fix).
             subprocess.run(
                 ["taskkill", "/T", "/F", "/PID", str(pid)],
                 capture_output=True, check=False, timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
         except (OSError, subprocess.TimeoutExpired):
             pass
@@ -232,6 +237,21 @@ def _run_subprocess_with_tree_kill(cmd: list[str], **kwargs: Any) -> subprocess.
     timeout (TerminateProcess), so Studio export children outlive
     deploy_timeout_seconds by minutes (phase2-roadmap Finding 2).
     """
+    if os.name == "nt":
+        # AInsightfool: every child spawned through here (taskkill, tasklist,
+        # netstat, powershell, ...) is a console-subsystem tool. Under a
+        # console parent (python.exe) it just attaches to the already-open
+        # console, invisibly. Under a windowless parent (pythonw.exe, which
+        # the scheduled task runs under via bootstrap/run_hidden.py) Windows
+        # has nowhere to attach it and pops a brand-new console that flashes
+        # on screen for the call's duration — visible as a repeating
+        # cmd/PowerShell-window flash from anything that polls status on an
+        # interval (e.g. the /ui dashboard hitting /health or optix_doctor
+        # repeatedly). Suppress unconditionally; a caller that genuinely
+        # needs a visible console can still override by passing its own
+        # creationflags.
+        kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
+
     timeout = kwargs.pop("timeout", None)
     if timeout is None:
         return subprocess.run(cmd, **kwargs)
@@ -617,8 +637,24 @@ def _now_iso(ts: float | None = None) -> str:
     return when.isoformat(timespec="seconds")
 
 
+# AInsightfool: dropped the old outright rejection of "/" and "\\" in
+# `project` (only ".." is still rejected up front). That extra check blocked
+# every legitimately nested project name (e.g. "RCB/CELL 4/RCB_LV2_...")
+# even though the real security boundary — the is_relative_to(root) check
+# below, after .resolve() — already prevents escaping projects_root. Needed
+# so users can reorganize project folders into subdirectories without
+# breaking the MCP.
 def resolve_project(cfg: Config, project: str) -> Path:
-    if "/" in project or "\\" in project or ".." in project:
+    """Resolve a project name — which may be a subpath, e.g. a project nested
+    several folders under projects_root ("RCB/CELL 4/RCB_LV2_...") — to its
+    directory. ".." is rejected outright (cheap, early); an absolute path
+    (a drive letter, UNC, or leading slash) is rejected by the is_relative_to
+    check below, since joining projects_root with an absolute path just
+    replaces it entirely (pathlib behavior) rather than escaping character by
+    character. That is_relative_to check is the actual security boundary —
+    the ".." check is defense in depth, not the only guard.
+    """
+    if ".." in project:
         raise ProjectNotFound(f"invalid project name: {project!r}")
     project_dir = (cfg.projects_root / project).resolve()
     root = cfg.projects_root.resolve()
@@ -661,16 +697,58 @@ def health(cfg: Config) -> dict:
     }
 
 
+_LIST_PROJECTS_SKIP_DIRS = {
+    ".git", "__pycache__", "node_modules", "$RECYCLE.BIN",
+    "System Volume Information",
+}
+_LIST_PROJECTS_MAX_DEPTH = 4  # folders under projects_root a project may be nested
+
+
+# AInsightfool: rewrote from a flat, single-level iterdir() to a recursive
+# walk (capped at _LIST_PROJECTS_MAX_DEPTH, skipping _LIST_PROJECTS_SKIP_DIRS)
+# so projects organized into subfolders (e.g. RCB/CELL 4/<project>) actually
+# show up. Companion fix to the resolve_project relaxation above — both were
+# needed to support arbitrarily nested project directories without an
+# unhandled exception.
 def list_projects(cfg: Config) -> list[dict]:
+    """Every project under projects_root, however deep it's nested (up to
+    _LIST_PROJECTS_MAX_DEPTH folders). `name` is the project's path relative
+    to projects_root with forward slashes (e.g. "RCB/CELL 4/RCB_LV2_..."),
+    which resolve_project accepts directly — a top-level project's name is
+    unchanged from before (just its own folder name), so this is backward
+    compatible with every existing caller.
+
+    Once a directory is identified as a project (it directly contains an
+    .optix file) its subtree is NOT walked further — a project's own Nodes/
+    ProjectFiles/ folders are never mistaken for nested projects.
+    """
     if not cfg.projects_root.is_dir():
         return []
+    root = cfg.projects_root.resolve()
     out: list[dict] = []
-    for entry in sorted(cfg.projects_root.iterdir()):
-        if not entry.is_dir():
-            continue
-        optix_files = sorted(entry.glob("*.optix"))
+
+    def _walk(dir_path: Path, depth: int) -> None:
+        try:
+            entries = sorted(dir_path.iterdir())
+        except OSError:
+            return
+        optix_files = sorted(e for e in entries if e.is_file() and e.suffix == ".optix")
         if optix_files:
-            out.append({"name": entry.name, "optix_file": optix_files[0].name})
+            rel = dir_path.relative_to(root)
+            name = rel.as_posix() if str(rel) != "." else ""
+            out.append({"name": name, "optix_file": optix_files[0].name})
+            return  # a project's own internals are never nested projects
+        if depth >= _LIST_PROJECTS_MAX_DEPTH:
+            return
+        for entry in entries:
+            if (entry.is_dir() and entry.name not in _LIST_PROJECTS_SKIP_DIRS
+                    and not entry.name.startswith(".")):
+                _walk(entry, depth + 1)
+
+    for entry in sorted(root.iterdir()):
+        if (entry.is_dir() and entry.name not in _LIST_PROJECTS_SKIP_DIRS
+                and not entry.name.startswith(".")):
+            _walk(entry, 1)
     return out
 
 
@@ -1363,9 +1441,15 @@ def _untrusted(value: object, source: str) -> str:
     return f'<untrusted source="{source}">{safe}</untrusted>'
 
 
+# AInsightfool: added the `timeout` kwarg (default None -> unchanged 8s
+# behavior). Discovered live: invoke_method calling a slow built-in method
+# (FindBrokenDynamicLink scanning a whole project) blew past the 8s default
+# and came back as a false "bridge unreachable" — the bridge was fine, the
+# call was just still running when the client gave up. Generic invoke needs
+# to let slow methods run longer.
 def _bridge_write(
     cfg: Config, project: str, op: str, endpoint: str, params: dict,
-    *, method: str = "POST",
+    *, method: str = "POST", timeout: float | None = None,
 ) -> dict:
     """Guard + (POST|GET) a bridge authoring endpoint + interpret the result.
 
@@ -1381,10 +1465,11 @@ def _bridge_write(
     # literal, so a plain "hello from cowork" arrived as "hello+from+cowork". %20
     # round-trips to a real space.
     qs = urlencode(params, quote_via=quote)
+    kwargs = {} if timeout is None else {"timeout": timeout}
     if method == "GET":
-        status, data = _bridge_get_json(cfg, f"{endpoint}?{qs}")
+        status, data = _bridge_get_json(cfg, f"{endpoint}?{qs}", **kwargs)
     else:
-        status, data = _bridge_post_json(cfg, f"{endpoint}?{qs}")
+        status, data = _bridge_post_json(cfg, f"{endpoint}?{qs}", **kwargs)
     try:
         out = _bridge_write_result(op, status, data)
     except Exception as exc:
@@ -1669,6 +1754,51 @@ def bridge_delete_node(cfg: Config, project: str, node_path: str) -> dict:
     """Delete a node (and its outbound references) from the live model."""
     return _bridge_write(
         cfg, project, "delete_node", "/bridge/node/delete", {"path": node_path},
+    )
+
+
+# AInsightfool: new — generic wrapper around the bridge's new
+# /bridge/node/invoke endpoint (IUAObject.ExecuteMethod), added so any
+# exported NetLogic method — including Optix's own built-in
+# SearchBrokenDynamicLinks/FixAliasDynamicLinkMode tools — can be triggered
+# from here instead of requiring a manual right-click -> Execute in Studio.
+def bridge_invoke_method(
+    cfg: Config, project: str, node_path: str, method_name: str,
+    args: str | None = None, timeout: float = 60.0,
+) -> dict:
+    """Execute an exported UAMethod on an IUAObject node in the live model.
+
+    `node_path` is the object hosting the method (e.g. a NetLogic node);
+    `method_name` is the exported method name. `args`, if given, is a
+    comma-separated string of input argument values (positional). Uses
+    IUAObject.ExecuteMethod under the hood. Live-model op; requires Studio
+    open + the bridge.
+
+    `timeout` (seconds) defaults to 60, well above the 8s default every
+    other bridge write uses (AInsightfool): unlike a property set, an
+    arbitrary NetLogic method's runtime is unknowable — e.g. Optix's own
+    SearchBrokenDynamicLinks scans the whole project and can legitimately
+    run long on a large one. Raise it further via this param for a method
+    known to be even slower.
+
+    CONFIRMED HAZARD (AInsightfool): calling Optix's own
+    SearchBrokenDynamicLinks.FindBrokenDynamicLink through this endpoint has
+    been observed to kill the entire FTOptixStudio.exe process outright —
+    reproduced twice, across two separate Studio sessions, with no exception
+    ever surfacing. Believed to be a thread-affinity crash: this endpoint
+    calls ExecuteMethod from a background thread, not Studio's main/UI
+    thread, and that built-in tool likely assumes it's driven by the UI's
+    own Execute gesture. Until the bridge adds proper main-thread marshaling
+    for ExecuteMethod, treat ANY call through this endpoint as able to crash
+    Studio, not just this one method. For broken-link finding/fixing
+    specifically, use Studio's own right-click Execute instead.
+    """
+    params: dict[str, str] = {"path": node_path, "method": method_name}
+    if args is not None:
+        params["args"] = args
+    return _bridge_write(
+        cfg, project, "invoke_method", "/bridge/node/invoke", params,
+        timeout=timeout,
     )
 
 

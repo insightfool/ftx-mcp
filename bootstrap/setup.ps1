@@ -325,6 +325,10 @@ if (-not (Test-Path $venvDir)) {
 }
 
 $venvPython = Join-Path $venvDir "Scripts\python.exe"
+# AInsightfool: added -- the scheduled task now launches via pythonw.exe
+# (see the task-action block below) instead of python.exe, so the
+# installer needs this path too.
+$venvPythonW = Join-Path $venvDir "Scripts\pythonw.exe"
 & $venvPython -m pip install --quiet --upgrade pip
 # [visual] extra = Pillow, the pixel gate for optix_cdp_diff. Cheap pure
 # wheel; installed by default in the full local setup (the lean base matters
@@ -402,9 +406,21 @@ if ($NoServiceRegister) {
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
     }
 
+    # AInsightfool: changed this action from `python.exe -m service` to
+    # pythonw.exe + run_hidden.py, and baked it into the installer itself
+    # (not just a manually-patched live task) so a fresh install/reinstall
+    # on any PC gets the windowless behavior without extra steps.
+    # pythonw.exe (not python.exe) + bootstrap\run_hidden.py: the task runs
+    # in the operator's interactive logon session, so a console-subsystem
+    # python.exe pops a visible window there (and so does every console
+    # tool -- taskkill, tasklist, powershell -- the service shells out to
+    # for status/health checks). pythonw.exe never allocates a console;
+    # run_hidden.py exists solely to give it real stdout/stderr file handles
+    # first, since pythonw's are None and the service's first log line would
+    # otherwise crash it silently (nowhere to show the traceback).
     $action = New-ScheduledTaskAction `
-        -Execute $venvPython `
-        -Argument "-m service" `
+        -Execute $venvPythonW `
+        -Argument "bootstrap\run_hidden.py" `
         -WorkingDirectory $RepoRoot
     # No -Trigger: the task is manual-only by design; start via
     # bootstrap/services.ps1 start (or Start-ScheduledTask). This keeps a

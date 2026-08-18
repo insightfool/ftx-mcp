@@ -4,6 +4,51 @@ All notable changes to ftx-mcp. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Per-release detail lives in
 `docs/release-notes-v<version>.md`.
 
+## [1.0.6]
+
+Theme: windowless means windowless. Full notes: `docs/release-notes-v1.0.6.md`.
+
+### Fixed
+- **PowerShell/console windows flashing under the windowless service**
+  (AInsightfool). Every subprocess shell-out (`optix_doctor`,
+  `optix_services_status`, `optix_studio_version`, emulator/CDP status
+  checks, ...) is a console-subsystem tool; running under a windowless
+  `pythonw.exe` parent with no console of its own, Windows allocated a
+  brand-new console for each one and it flashed on screen — most visibly as
+  a repeating flash while the `/ui` dashboard was open and polling.
+  `Runner`'s subprocess wrapper (`service/core.py`) now defaults every
+  Windows child to `creationflags=CREATE_NO_WINDOW`. Also adds
+  `bootstrap/run_hidden.py`, the windowless launcher `setup.ps1`'s scheduled
+  task now runs under (`pythonw.exe` instead of `python.exe`), with stdout/
+  stderr redirected to log files since `pythonw` has neither.
+- **Nested project directories were unusable.** `resolve_project` rejected
+  any project name containing `/` or `\`, so a project reorganized into a
+  subfolder (e.g. `RCB/CELL 4/RCB_LV2_...`) could never resolve even though
+  the real security boundary (the post-`.resolve()` `is_relative_to` check)
+  already prevented escaping `projects_root`. `list_projects` now walks
+  recursively (capped depth, common junk dirs skipped) so nested projects
+  are discoverable too.
+- **`describe_node` reported populated dynamic-link/alias paths as empty
+  strings.** `ValueString` (`studio-bridge/StudioMCPBridge.cs`) called
+  `UAValue.ToString()` unconditionally, which returns blank for a
+  NodePath-boxed value — read as a false "broken link" on properties Studio's
+  own Properties panel showed fully populated. Now unwraps `UAValue.Value`
+  as a string first (matching the project-map tree's existing, correct
+  extraction), falling back to `ToString()` only for genuine value types.
+
+### Added
+- **`optix_bridge_invoke_method`** — a generic wrapper around
+  `IUAObject.ExecuteMethod`, exposed via a new `/bridge/node/invoke` bridge
+  endpoint, so any exported NetLogic method (including Optix's own built-in
+  library tools) can be triggered without a manual Studio right-click ->
+  Execute. **Confirmed hazard:** calling
+  `SearchBrokenDynamicLinks.FindBrokenDynamicLink` through this endpoint has
+  been observed to crash `FTOptixStudio.exe` outright (believed thread-
+  affinity related — this call runs off Studio's main/UI thread). Treat any
+  call through this tool as able to crash Studio until the bridge gets
+  proper main-thread marshaling for `ExecuteMethod`. Never gated (no
+  `optix_bridge_edit` op verb covers it).
+
 ## [1.0.5]
 
 Theme: an installer that installs. Full notes: `docs/release-notes-v1.0.5.md`.

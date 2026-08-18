@@ -328,7 +328,7 @@ TOOL_SCOPES: dict[str, str] = {
     "optix_cdp_find_text": "read",
     "optix_cdp_diff": "read",
     "optix_observe": "read",  # U14 consolidated read-side CDP capture
-    # ---- author (34): mutates project / previews / drives canvas ----
+    # ---- author (35): mutates project / previews / drives canvas ----
     # U16 batched authoring: `author`, same as every per-noun bridge write it
     # dispatches to. It can only do what those tools can do — batching does not
     # widen the surface, so it must not need a wider scope.
@@ -359,6 +359,7 @@ TOOL_SCOPES: dict[str, str] = {
     "optix_bridge_move_node": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
     "optix_bridge_convert_to_type": "author",
     "optix_bridge_delete_node": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
+    "optix_bridge_invoke_method": "author",  # AInsightfool: live-model bridge write, never gated
     "optix_cdp_click": "author",
     "optix_cdp_fill": "author",
     "optix_cdp_type": "author",

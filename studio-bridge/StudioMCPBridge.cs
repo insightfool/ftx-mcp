@@ -26,7 +26,7 @@ using FTOptix.CoreBase;
 // "MCPBridge" Optix library (component "StudioMCPBridge") for drag-in reuse.
 public class StudioMCPBridge : BaseNetLogic
 {
-    private const string BridgeVersion = "1.0.5";
+    private const string BridgeVersion = "1.0.6";
     // Cross-ALC stop signal: at design time Studio runs each [ExportMethod] in an
     // ISOLATED AssemblyLoadContext, so StartBridge and StopBridge share NO managed
     // state (neither instance NOR static - both were tried and failed).
@@ -409,6 +409,13 @@ public class StudioMCPBridge : BaseNetLogic
                     body = WireEventInline(firstLine);
                     status = "200 OK";
                 }
+                // AInsightfool: new dispatcher branch, paired with
+                // InvokeMethodInline() below -- the generic UAMethod-invoke endpoint.
+                else if (firstLine.StartsWith("POST /bridge/node/invoke"))
+                {
+                    body = InvokeMethodInline(firstLine);
+                    status = "200 OK";
+                }
                 else if (firstLine.StartsWith("POST /bridge/setup/web-engine"))
                 {
                     // Ensure a Web presentation engine exists so the runtime serves a
@@ -454,6 +461,8 @@ public class StudioMCPBridge : BaseNetLogic
         "POST /bridge/node/convert-to-type", "POST /bridge/node/reorder",
         "POST /bridge/node/delete", "POST /bridge/node/event",
         "POST /bridge/node/attach-expression",
+        // AInsightfool: added for the generic invoke endpoint below.
+        "POST /bridge/node/invoke",
     };
 
     private void MaybeLogMutation(string firstLine, string body)
@@ -2841,6 +2850,103 @@ public class StudioMCPBridge : BaseNetLogic
         catch (Exception ex) { return "{\"ok\":false,\"error\":\"" + JsonEscape(ExcMsg(ex)) + "\"}"; }
     }
 
+    // AInsightfool: new method. Verified against the real installed SDK
+    // (UAManagedCore.dll / UAManagedCoreCommon.dll via .NET reflection) that
+    // IUAObject.ExecuteMethod(name, inArgs, out outArgs) is the correct API before
+    // writing this, and compile-checked it in isolation since two of the project's
+    // other referenced DLLs wouldn't load cleanly in an ad-hoc build context.
+    // POST /bridge/node/invoke?path=<node>&method=<name>[&args=v1,v2,...] - execute an
+    // exported UAMethod (an [ExportMethod] C# method, or a built-in library method such
+    // as FTOptix's SearchBrokenDynamicLinks/FixAliasDynamicLinkMode) that isn't already
+    // covered by a dedicated bridge verb. This is the generic escape hatch: right-click
+    // "Execute" in Studio's UI does exactly this under the hood (IUAObject.ExecuteMethod),
+    // so this exposes the same capability remotely instead of requiring a human at the
+    // keyboard for every method Studio ships or a project author writes.
+    //
+    // args, if present, is a comma-separated list (matching this file's existing
+    // convention for list-shaped query params, e.g. attach-expression's "sources") -
+    // each element is passed through as a plain string. Methods that need typed,
+    // numeric, or array arguments are out of scope for this generic endpoint; the
+    // input arg marshaling here is intentionally minimal.
+    //
+    // Output arguments (if the method has any) come back as output_args, each
+    // stringified best-effort - good enough to report a result/count/summary, not a
+    // substitute for a typed read.
+    //
+    // Same trust model as every other write verb in this file (set-property,
+    // delete-node, convert-to-type, ...): no allow-list, no confirmation step. This
+    // runs at Studio DESIGN TIME against Project.Current, not a live runtime/PLC - the
+    // blast radius is "the open project", the same as any other bridge write.
+    //
+    // AInsightfool: CONFIRMED HAZARD, not theoretical. Calling
+    // SearchBrokenDynamicLinks' FindBrokenDynamicLink through this endpoint killed
+    // the whole FTOptixStudio.exe process outright - reproduced twice, across two
+    // separate Studio sessions (crash, user relaunched Studio + StartBridge, called
+    // it again, crashed again). No exception was ever caught by the try/catch below;
+    // the process just died, which on .NET means something fatal happened on a
+    // thread this handler doesn't control (most likely: this TcpListener accept
+    // thread is NOT Studio's main/UI thread, and this particular built-in tool -
+    // presumably written assuming it's driven by the UI's own Execute gesture -
+    // touches something UI-thread-affine and crashes hard off-thread). This file's
+    // OWN _bridge_write docstring already documents this exact class of problem for
+    // property writes ("Several target endpoints require the bridge's
+    // main-thread-marshaled write path... until that ships the bridge replies
+    // not_implemented") - ExecuteMethod needs the same treatment, which it does NOT
+    // have yet. Until proper main-thread marshaling is added here, treat EVERY call
+    // through this endpoint as able to crash Studio, not just this one method - a
+    // custom, UI-free [ExportMethod] may well be fine, but that has not been
+    // verified either. For finding/fixing broken links specifically, use Studio's
+    // own right-click Execute instead (the safe, supported path) until this is
+    // fixed properly.
+    private string InvokeMethodInline(string firstLine)
+    {
+        string path = QueryParam(firstLine, "path");
+        string methodName = QueryParam(firstLine, "method");
+        if (string.IsNullOrEmpty(path))
+            return ErrorJson("bad_query", "missing required query param: path");
+        if (string.IsNullOrEmpty(methodName))
+            return ErrorJson("bad_query", "missing required query param: method");
+
+        var node = ResolveNode(path);
+        if (node == null)
+            return ErrorJson("node_not_found", "no node at path: " + path);
+
+        var obj = node as IUAObject;
+        if (obj == null)
+            return ErrorJson("not_invokable",
+                "node at " + path + " is a " + node.GetType().Name +
+                " - only IUAObject nodes host invokable methods");
+
+        string argsParam = QueryParam(firstLine, "args");
+        object[] inputArgs = string.IsNullOrEmpty(argsParam)
+            ? new object[0]
+            : argsParam.Split(',').Select(s => (object)s).ToArray();
+
+        object[] outputArgs;
+        try
+        {
+            obj.ExecuteMethod(methodName, inputArgs, out outputArgs);
+        }
+        catch (Exception ex)
+        {
+            return ErrorJson("execution_failed", ExcMsg(ex));
+        }
+
+        var outSb = new StringBuilder();
+        if (outputArgs != null)
+        {
+            for (int i = 0; i < outputArgs.Length; i++)
+            {
+                if (i > 0) outSb.Append(",");
+                var v = outputArgs[i];
+                outSb.Append("\"" + JsonEscape(v == null ? "null" : v.ToString()) + "\"");
+            }
+        }
+        return "{\"ok\":true,\"path\":\"" + JsonEscape(path) +
+               "\",\"method\":\"" + JsonEscape(methodName) +
+               "\",\"output_args\":[" + outSb + "]}";
+    }
+
     // Wire a UI event on a node (EventHandler graph, reverse-engineered from
     // FTRemoteAccessWidgetSetupLogic.cs + the NetLogic_CheatSheet). Node-model ops only.
     // TWO modes (use ONE):
@@ -3661,9 +3767,29 @@ public class StudioMCPBridge : BaseNetLogic
         return DataTypeName(v) + (IsArrayVariable(v) ? "[]" : "");
     }
 
+    // AInsightfool: root-cause fix for a false "broken link" diagnosis.
+    // describe_node (NodeJson) called this for EVERY property, including
+    // DynamicLink/Alias children, via UAValue.ToString() - which returns
+    // blank for a NodePath-boxed value (confirmed live: Studio's own
+    // Properties panel showed VFD_2411's INPUT_PATH/OUTPUT_PATH/SETTINGS_PATH
+    // fully populated with template-placeholder paths like
+    // ".../VFD_{#id}&:I@NodeId", while describe_node reported them as empty
+    // strings, 3 aliases x 9 VFD instances - a tooling bug, not a project
+    // defect). MapDeref (used by the project-map tree) already had the correct
+    // extraction for this exact case: unwrap UAValue.Value as a string FIRST
+    // (works for NodePath/String-backed values), and only fall back to
+    // ToString() for value types (Int32, Boolean, enums, ...) where ToString()
+    // is correct. Copying that proven pattern here instead of leaving
+    // describe_node on the broken path.
     private string ValueString(IUAVariable v)
     {
-        try { return v.Value == null ? "null" : v.Value.ToString(); }
+        try
+        {
+            if (v.Value == null) return "null";
+            var raw = v.Value.Value as string;
+            if (raw != null) return raw;
+            return v.Value.ToString();
+        }
         catch { return "unreadable"; }
     }
 

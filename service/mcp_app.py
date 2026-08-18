@@ -1161,6 +1161,66 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         return _bridge_guarded(project, lambda: core.bridge_delete_node(
             cfg, project, node_path))
 
+    # AInsightfool: new tool, registered alongside the new
+    # core.bridge_invoke_method wrapper -- exposes the bridge's generic
+    # /bridge/node/invoke endpoint so any exported NetLogic method can be
+    # triggered from here (originally requested to run Optix's built-in
+    # broken-link finder/fixer without a manual Studio Execute click).
+    @mcp.tool(annotations=_RW_DESTRUCTIVE)
+    @_with_project
+    def optix_bridge_invoke_method(
+        node_path: str, method_name: str, args: str | None = None,
+        timeout_seconds: float = 60.0,
+        project: str | None = None,
+    ) -> dict:
+        """Execute an exported UAMethod on a live-model object via the bridge.
+
+        Calls IUAObject.ExecuteMethod(method_name, args) on the object at
+        `node_path` — the generic way to trigger any [ExportMethod] NetLogic
+        method remotely instead of right-click -> Execute in Studio. `args`, if
+        given, is a comma-separated string of positional input argument values
+        (numbers/strings/bools as literal text; leave unset for no-arg methods).
+        Live-model op; requires Studio open + the bridge. Whatever the method
+        does is NOT undoable by this tool — review the method's own behavior
+        first if you didn't write it.
+
+        CONFIRMED HAZARD (AInsightfool): calling Optix's own
+        SearchBrokenDynamicLinks.FindBrokenDynamicLink through this tool killed
+        the entire FTOptixStudio.exe process outright — reproduced twice across
+        two separate Studio sessions, no exception ever surfaced. Root cause is
+        believed to be a thread-affinity crash (this endpoint calls
+        ExecuteMethod from a background thread, not Studio's main/UI thread;
+        this built-in tool likely assumes it's driven by the UI's own Execute
+        gesture). Until the bridge adds proper main-thread marshaling for
+        ExecuteMethod, treat ANY call through this tool as able to crash
+        Studio — not just this one method, though only this one has been
+        confirmed so far. For broken-link finding/fixing specifically, use
+        Studio's own right-click Execute instead; it's unaffected by this bug.
+
+        `timeout_seconds` defaults to 60 (AInsightfool: raised from the 8s
+        every other bridge write uses — an arbitrary method's runtime is
+        unknowable, e.g. Optix's own SearchBrokenDynamicLinks scans the whole
+        project). A `bridge_unreachable_studio_open` "timed out" error from
+        this tool specifically often means the method is still running, not
+        that the bridge is actually down — raise this value and retry rather
+        than assuming failure.
+
+        Use this when:
+          - triggering built-in Optix library tooling (e.g. broken-link finder/
+            fixer NetLogic methods) that has no dedicated bridge endpoint
+          - running your own [ExportMethod] NetLogic logic on demand
+
+        Do NOT use this when:
+          - a dedicated bridge_* wrapper already covers the operation (prefer
+            the specific tool — it's better validated)
+          - you don't know what the method does (check the NetLogic source /
+            ask the user first — this can mutate the model or runtime state)
+          - Studio is closed (no live model to invoke against)
+        """
+        return _bridge_guarded(project, lambda: core.bridge_invoke_method(
+            cfg, project, node_path, method_name, args=args,
+            timeout=timeout_seconds))
+
     @mcp.tool(annotations=_RW)
     @_with_project
     def optix_bridge_reorder(
@@ -2583,9 +2643,11 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     # doesn't already cover (a one-op list is a single edit). The composite
     # wrappers (add_label / add_bound_widget / add_navigation_panel_item),
     # optix_bridge_convert_to_type, optix_bridge_ensure_web_engine,
-    # optix_bridge_validate_expression, optix_bridge_status, and
-    # optix_bridge_edit itself are NEVER gated -- they either have no
-    # optix_bridge_edit-op equivalent or ARE the batch tool. Any other value
+    # optix_bridge_validate_expression, optix_bridge_status,
+    # optix_bridge_invoke_method (AInsightfool: no optix_bridge_edit op verb
+    # invokes an arbitrary NetLogic method), and optix_bridge_edit itself are
+    # NEVER gated -- they either have no optix_bridge_edit-op equivalent or
+    # ARE the batch tool. Any other value
     # (unset / "0" / anything != "1") keeps them popped, mirroring the
     # FTXMCP_LEGACY_TOOLS gate's "1" opt-in shape above.
     _BRIDGE_PRIMITIVES = (

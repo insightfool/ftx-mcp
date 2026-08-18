@@ -1,6 +1,6 @@
 # Tool reference
 
-28 tools registered by default, grouped by where they sit in the loop
+29 tools registered by default, grouped by where they sit in the loop
 (gate env vars can add more — see the notes below each table). Every tool's
 docstring carries "Use when / Do NOT use when" guidance for the model, and MCP
 annotations (`readOnlyHint`/`destructiveHint`) so hosts can auto-run reads
@@ -44,6 +44,7 @@ note below the table).
 | `optix_bridge_ensure_web_engine` | Ensure the web presentation engine exists so a deploy has a canvas to serve |
 | `optix_bridge_convert_to_type` | Promote an existing instance to a reusable ObjectType (Studio's "Convert to Type", with a link audit) |
 | `optix_bridge_validate_expression` | Syntax-check a formula before wiring it |
+| `optix_bridge_invoke_method` | Execute an exported NetLogic method (`IUAObject.ExecuteMethod`) — the generic escape hatch for anything with no dedicated bridge verb. **Confirmed hazard:** can crash `FTOptixStudio.exe` for some built-in methods (e.g. `SearchBrokenDynamicLinks`) — see the CHANGELOG/release notes before use |
 
 **Per-noun bridge primitives (gated, off by default).** The 14 tools that are
 1:1 with an `optix_bridge_edit` op verb — `optix_bridge_set_property`,
