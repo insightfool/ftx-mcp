@@ -21,6 +21,7 @@ def _no_bridge_by_default(monkeypatch) -> None:
     """Existing save tests exercise the no-bridge (first-window) path. Force it
     hermetically so they never depend on a live listener; §7 tests override."""
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: False)
+    monkeypatch.setattr(core, "_bridge_cfg_for", lambda cfg, project: None)
 
 
 def _project_with_yaml(projects_root: Path, name: str = "Alpha") -> Path:
@@ -121,6 +122,7 @@ def test_save_targets_bridge_instance(
     pdir = _project_with_yaml(projects_root, "Alpha")
     yaml = pdir / "Nodes" / "UI" / "UI.yaml"
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_bridge_cfg_for", lambda cfg, project: cfg)
     monkeypatch.setattr(core, "_bridge_owner_pid", lambda cfg, runner=None: 4242)
 
     def handler(cmd, kwargs):
@@ -140,6 +142,7 @@ def test_save_ps_targets_pid_when_bridge_serves(
 ) -> None:
     _project_with_yaml(projects_root, "Alpha")
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_bridge_cfg_for", lambda cfg, project: cfg)
     monkeypatch.setattr(core, "_bridge_owner_pid", lambda cfg, runner=None: 4242)
     runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "FOCUSED=True PID=4242"))
     core.save(cfg, "Alpha", timeout=0.1, runner=runner)
@@ -153,6 +156,7 @@ def test_save_bridge_studio_no_window(
 ) -> None:
     _project_with_yaml(projects_root, "Alpha")
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_bridge_cfg_for", lambda cfg, project: cfg)
     monkeypatch.setattr(core, "_bridge_owner_pid", lambda cfg, runner=None: 4242)
     runner = make_fake_runner(
         lambda cmd, kw: FakeProc(returncode=4, stdout="NO_TARGET_WINDOW PID=4242")
@@ -170,6 +174,7 @@ def test_save_bridge_owner_unresolved_falls_back(
     # bridge serves the project but its listener pid can't be resolved -> first-window
     _project_with_yaml(projects_root, "Alpha")
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_bridge_cfg_for", lambda cfg, project: cfg)
     monkeypatch.setattr(core, "_bridge_owner_pid", lambda cfg, runner=None: None)
     runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "FOCUSED=True PID=1"))
     out = core.save(cfg, "Alpha", timeout=0.1, runner=runner)
@@ -221,6 +226,7 @@ def test_run_emulator_f5_is_gentle_by_default(cfg: core.Config, projects_root: P
     """The F5 path must not resize Studio either (pre-1.3 it hardcoded gentle=False)."""
     monkeypatch.delenv("FTX_SAVE_GENTLE_FOCUS", raising=False)
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: False)
+    monkeypatch.setattr(core, "_bridge_cfg_for", lambda cfg, project: None)
     make_project(projects_root, "Alpha")
     runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "FOCUSED=True PID=1"))
     core.run_emulator(cfg, "Alpha", wait_ready=False, runner=runner)

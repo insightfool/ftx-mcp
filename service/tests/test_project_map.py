@@ -32,7 +32,15 @@ TREE = {
 
 @pytest.fixture(autouse=True)
 def _bridge_up(monkeypatch):
+    # AInsightfool: get_project_map now resolves its OWN bridge routing via
+    # _require_bridge_for (multi-instance, v1.0.7) instead of the old
+    # guard-then-call-cfg-unchanged pattern _use_bridge_for used to gate —
+    # patching _use_bridge_for alone no longer has any effect on it. Patch
+    # _require_bridge_for to pass `cfg` straight through unchanged (same
+    # bypass semantics as the old True-return: "a bridge is up, serving this
+    # project", using the SAME cfg the test's _bridge_get_json fakes expect).
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_require_bridge_for", lambda cfg, project: cfg)
 
 
 def test_map_outline_rendering(cfg: core.Config, monkeypatch) -> None:

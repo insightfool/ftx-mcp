@@ -89,7 +89,27 @@ def cfg(projects_root: Path, state_dir: Path, runtime_dir: Path, tmp_path: Path)
         cdp_autoheal=False,  # heal path is exercised by dedicated tests, not implicitly
         enable_deploy=True,  # tests exercise the full surface; the default-off
                              # gate has its own dedicated tests
+        # AInsightfool: v1.0.7 multi-instance bridge support made single-bridge
+        # tests (nearly the whole suite — they monkeypatch core._bridge_http
+        # for ONE URL) potentially probe a whole port RANGE instead. Pinning
+        # here keeps this shared fixture on the legacy single-URL bridge path
+        # (bridge_url's one port, no range-scan) so every existing test's
+        # behavior is unchanged. Multi-instance scanning/routing itself is
+        # exercised by dedicated tests using the `multi_bridge_cfg` fixture
+        # below (bridge_url_pinned=False) instead of this one.
+        bridge_url_pinned=True,
     )
+
+
+@pytest.fixture
+def multi_bridge_cfg(cfg: core.Config) -> core.Config:
+    """`cfg`, but with range-scanning ON (bridge_url_pinned=False) — for tests
+    that specifically exercise multi-instance bridge discovery/routing across
+    several simultaneously-armed ports, rather than the single pinned bridge
+    the base `cfg` fixture models."""
+    import dataclasses
+    return dataclasses.replace(cfg, bridge_url_pinned=False,
+                                bridge_port_base=8768, bridge_port_range=4)
 
 
 def make_project(projects_root: Path, name: str = "TestProj") -> Path:

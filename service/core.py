@@ -17,6 +17,7 @@ import re
 import subprocess
 import time
 from collections.abc import Callable
+import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -444,6 +445,19 @@ class Config:
     bridge_url: str = "http://127.0.0.1:8768"  # :8768 since bridge v0.5.0 (was :8767)
     bridge_token: str | None = None
     bridge_enabled: bool = True
+    # AInsightfool: multi-instance bridge support (v1.0.7). StudioMCPBridge.cs no
+    # longer exclusively owns :8768 - each Studio instance self-binds the first
+    # free port in [bridge_port_base, bridge_port_base + bridge_port_range), so
+    # up to `bridge_port_range` projects can have an armed bridge AT THE SAME
+    # TIME. `bridge_url` stays as the LEGACY single-bridge override: when
+    # OPTIX_BRIDGE_URL is explicitly set (see from_env), it pins the service to
+    # that one URL and disables range-scanning entirely - the documented escape
+    # hatch for a rebound bridge port stays intact. Otherwise `bridge_url` is
+    # unused at rest; every bridge call resolves a project-specific URL from the
+    # scanned range (see _bridge_cfg_for / list_bridges).
+    bridge_url_pinned: bool = False
+    bridge_port_base: int = 8768
+    bridge_port_range: int = 4  # ports 8768..8771 by default
     # Studio-open corruption-guard mode. "blanket" (default) = the original
     # 2026-03 behavior: any running FTOptixStudio.exe blocks every project's
     # reads/writes with no per-project attribution (see docs/studio-open-detection.md
@@ -565,7 +579,14 @@ class Config:
                 if os.environ.get("OPTIX_TOKENS_PATH")
                 else state_dir / "secrets" / "tokens.json.dpapi",
             cdp_url=os.environ.get("OPTIX_CDP_URL", "http://127.0.0.1:9222"),
+            # AInsightfool: OPTIX_BRIDGE_URL explicitly set = the legacy
+            # single-bridge pin (bridge_url_pinned=True), which skips
+            # range-scanning entirely and always talks to that one URL —
+            # unset = the new default, multi-instance range-scan mode.
             bridge_url=os.environ.get("OPTIX_BRIDGE_URL", "http://127.0.0.1:8768"),
+            bridge_url_pinned="OPTIX_BRIDGE_URL" in os.environ,
+            bridge_port_base=int(os.environ.get("OPTIX_BRIDGE_PORT_BASE", "8768")),
+            bridge_port_range=int(os.environ.get("OPTIX_BRIDGE_PORT_RANGE", "4")),
             bridge_token=os.environ.get("OPTIX_BRIDGE_TOKEN"),
             bridge_enabled=os.environ.get("OPTIX_BRIDGE_ENABLED", "true").strip().lower()
                 in ("1", "true", "yes", "on"),
@@ -778,6 +799,16 @@ def _attributed_studio_pass(
     """
     if cfg.studio_guard_mode != "attributed":
         return None
+    # AInsightfool: NOT relaxed for multi-instance bridging (v1.0.7). With
+    # several Studio PIDs open, attribution would need to map EACH running PID
+    # to the specific bridge (if any) it owns — bridge_state()/list_bridges()
+    # alone don't carry PID, only served-project — and getting that wrong here
+    # risks a false "safe to write" downgrade of a CORRUPTION guard. Left
+    # conservative on purpose: attributed mode still requires exactly one
+    # Studio PID, even though several bridges can now be armed at once. Every
+    # multi-instance project still gets protection from the default "blanket"
+    # guard_mode regardless (unaffected either way — it never consults the
+    # bridge). Revisit only with real PID-per-bridge attribution wired in.
     if len(state["studio"]["pids"]) != 1:
         return None
     try:
@@ -929,8 +960,11 @@ def find_in_project(
     # property name+value), which is the query shape callers reach `find` for while
     # authoring. When the bridge is down or serving a different project, fall through
     # to the file scan unchanged.
-    if _use_bridge_for(cfg, project):
-        return _bridge_find(cfg, project, query, max_results, case_sensitive)
+    # AInsightfool: rebind to the bridge SERVING this project (one of possibly
+    # several simultaneously armed) rather than the old implicit single cfg.bridge_url.
+    _bridge_cfg = _bridge_cfg_for(cfg, project)
+    if _bridge_cfg is not None:
+        return _bridge_find(_bridge_cfg, project, query, max_results, case_sensitive)
     project_dir = resolve_project(cfg, project)
     require_editors_closed(cfg, project_dir)
     context_lines = max(0, min(int(context_lines), 10))
@@ -1009,8 +1043,14 @@ def find_in_project(
 # (studio_guard is non-attributable): the bridge serving on its port IS the
 # open-project identity.
 
-_bridge_cache: dict | None = None
-_bridge_cache_at: float = 0.0
+# AInsightfool: multi-instance bridge support (v1.0.7). This USED TO be a single
+# {available, project, ...} snapshot for the one well-known bridge at
+# cfg.bridge_url. Now that up to cfg.bridge_port_range Studio instances can each
+# have an armed bridge on their own self-assigned port, the cache is keyed by
+# bridge URL instead — see _bridge_health_at, the per-URL building block
+# bridge_state/list_bridges/_find_bridge_for are all built on.
+_bridge_cache: dict[str, dict] = {}
+_bridge_cache_at: dict[str, float] = {}
 _BRIDGE_CACHE_TTL = 2.0
 
 
@@ -1117,15 +1157,17 @@ def _bridge_write_result(op: str, status: int, data: dict) -> dict:
     raise BridgeWriteFailed(f"bridge {op} failed: {msg}")
 
 
-def _bridge_write_guard(cfg: Config, project: str) -> None:
+def _bridge_write_guard(cfg: Config, project: str) -> Config:
     """Raise BridgeUnavailable unless the bridge is serving `project` (writes
-    mutate the live model — there is no file fallback)."""
-    if not _use_bridge_for(cfg, project):
-        st = bridge_state(cfg)
-        raise BridgeUnavailable(
-            f"bridge not serving {project!r} (state: {st.get('reason')}, "
-            f"serving={st.get('project')!r})"
-        )
+    mutate the live model — there is no file fallback); else return `cfg`
+    rebound to that SPECIFIC bridge's URL.
+
+    AInsightfool: now just _require_bridge_for under its original write-path
+    name — with multi-instance support the caller MUST use the returned,
+    rebound cfg for its bridge calls (`cfg = _bridge_write_guard(cfg, project)`),
+    not the cfg it passed in, or it'll target whichever bridge happens to be
+    first in port order instead of the one actually serving `project`."""
+    return _require_bridge_for(cfg, project)
 
 
 def classify_bridge_failure(cfg: Config, project: str, exc: Exception) -> dict:
@@ -1161,22 +1203,36 @@ def classify_bridge_failure(cfg: Config, project: str, exc: Exception) -> dict:
         }
 
     # BridgeUnavailable → probe health directly for a precise classification.
-    reachable, serving, model_loaded = False, None, None
-    try:
-        status, data = _bridge_get_json(cfg, "/bridge/health")
-        reachable = status == 200
-        serving = data.get("project")
-        model_loaded = bool(data.get("model_loaded"))
-    except BridgeUnavailable:
-        reachable = False
+    # AInsightfool: scan every port in range, not just cfg.bridge_url's base
+    # port — with several bridges potentially armed, the base port alone can
+    # be unbound while a DIFFERENT port is serving the WRONG project (or is
+    # the RIGHT one, mid-transient-failure); probing only the base port would
+    # misclassify either case as "Studio closed." Uses _bridge_health_at
+    # directly (not list_bridges, which filters to available=True only — a
+    # port that answers but hasn't loaded its model yet is "reachable" for
+    # classification purposes even though it isn't "available").
+    probed = [_bridge_health_at(cfg, port, force=True) for port in _bridge_ports(cfg)]
+    responded = [p for p in probed if p.get("responded")]
+    reachable = bool(responded)
+    serving = None
+    model_loaded = None
+    matched = next((p for p in responded if _bridge_name_match(p.get("project"), project)), None)
+    if matched is not None:
+        serving = matched.get("project")
+        model_loaded = bool(matched.get("available"))
+    elif responded:
+        serving = responded[0].get("project")
+        model_loaded = bool(responded[0].get("available"))
 
     if reachable:
         norm = (serving or "").strip().lower()
         if norm and norm not in ("unknown", "") and norm != project.strip().lower():
             code = "bridge_wrong_project"
-            nudge = (f"FactoryTalk Optix Studio's bridge is serving {serving!r}, not "
+            others = ", ".join(repr(p.get("project")) for p in responded)
+            nudge = (f"{len(responded)} bridge(s) are reachable, serving {others} — none is "
                      f"{project!r}. Ask the user to open {project!r} in Studio (and run "
-                     f"StartBridge if the bridge doesn't come up).")
+                     f"StartBridge if its bridge doesn't come up); other projects' bridges "
+                     f"can stay armed at the same time, no need to StopBridge them first.")
         elif not model_loaded:
             code = "bridge_model_loading"
             nudge = ("The design-time bridge is up but the project isn't loaded yet — "
@@ -1459,7 +1515,7 @@ def _bridge_write(
     and this raises BridgeWriteFailed with the message (no crash).
     """
     from urllib.parse import urlencode, quote
-    _bridge_write_guard(cfg, project)
+    cfg = _bridge_write_guard(cfg, project)
     # quote_via=quote (percent-encoding, space -> %20) NOT the default quote_plus
     # (space -> +): the bridge's C# query parser percent-decodes but treats '+' as a
     # literal, so a plain "hello from cowork" arrived as "hello+from+cowork". %20
@@ -1923,7 +1979,7 @@ def bridge_validate_ops(
     `{"error":{"code":"not_found"}}`), so a caller can degrade rather than
     mistake "cannot validate" for "validated clean".
     """
-    _bridge_write_guard(cfg, project)
+    cfg = _bridge_write_guard(cfg, project)
     status, data = _bridge_post_body(
         cfg, "/bridge/validate_ops", {"ops": ops, "strict": bool(strict)}
     )
@@ -2087,19 +2143,29 @@ def ui_stats(cfg: Config) -> dict:
     except Exception:
         pass
     try:
-        st = bridge_state(cfg)
+        # AInsightfool: multi-instance (v1.0.7) — `bridges` is the full list of
+        # everything currently armed (one entry per port answering), so the
+        # dashboard can show every open project instead of assuming there's
+        # only one. `out["bridge"]` stays as the PRIMARY (first-in-port-order)
+        # single-bridge summary for back-compat with the pre-1.0.7 dashboard
+        # fields — with more than one armed, prefer `bridges` for the full
+        # picture; `bridge` alone doesn't say which project it's describing.
+        bridges = list_bridges(cfg)
+        for b in bridges:
+            proj = b.get("project")
+            if proj:
+                try:
+                    b["last_saved_epoch"] = _project_max_mtime(resolve_project(cfg, proj))
+                except Exception:
+                    pass
+        out["bridges"] = bridges
+        st = bridges[0] if bridges else bridge_state(cfg)
         out["bridge"] = {"reachable": bool(st.get("available")),
                          "version": st.get("bridge_version"),
                          "project": st.get("project"),
-                         "model_loaded": st.get("model_loaded", st.get("available"))}
-        # Last-saved marker for the served project (newest node-YAML mtime) so the
-        # dashboard can show "saved Ns ago" next to the Save control.
-        proj = st.get("project")
-        if proj:
-            try:
-                out["bridge"]["last_saved_epoch"] = _project_max_mtime(resolve_project(cfg, proj))
-            except Exception:
-                pass
+                         "port": st.get("port"),
+                         "model_loaded": st.get("model_loaded", st.get("available")),
+                         "last_saved_epoch": st.get("last_saved_epoch")}
     except Exception:
         pass
 
@@ -2120,7 +2186,12 @@ def ui_stats(cfg: Config) -> dict:
     except Exception:
         pass
     try:
-        status, data = _bridge_get_json(cfg, "/bridge/types/ui")
+        # The widget-type catalog is identical across every armed bridge (it's
+        # Studio's own type system, not per-project) — the primary bridge's
+        # port is a fine source for it, no need to ask each one.
+        primary_port = out.get("bridge", {}).get("port")
+        bcfg = dataclasses.replace(cfg, bridge_url=_bridge_url_at(primary_port)) if primary_port else cfg
+        status, data = _bridge_get_json(bcfg, "/bridge/types/ui")
         types = data.get("types", []) if status == 200 else []
         out["capabilities"]["widget_types"] = len(types)
         out["capabilities"]["gallery"] = [t.get("browse_name") for t in types[:60] if t.get("browse_name")]
@@ -2142,21 +2213,62 @@ def ui_stats(cfg: Config) -> dict:
     return out
 
 
-def bridge_state(cfg: Config, force: bool = False) -> dict:
-    """Cached snapshot of the design-time bridge.
+def _bridge_ports(cfg: Config) -> list[int]:
+    """Candidate bridge ports to probe, in order.
 
-    Returns {available, project, bridge_version, reason}. `available` is True
-    only when the bridge is enabled, answers /bridge/health 200, AND reports
-    model_loaded. Cached ~2s (reads arrive in bursts). Never raises — an
-    unreachable bridge is a normal "unavailable", not an error.
+    AInsightfool: a single port when cfg.bridge_url_pinned (OPTIX_BRIDGE_URL was
+    set explicitly — the documented legacy escape hatch for a rebound bridge
+    port), else the whole configured range [bridge_port_base,
+    bridge_port_base + bridge_port_range).
+    """
+    if cfg.bridge_url_pinned:
+        from urllib.parse import urlparse
+        return [urlparse(cfg.bridge_url).port or cfg.bridge_port_base]
+    return list(range(cfg.bridge_port_base, cfg.bridge_port_base + cfg.bridge_port_range))
+
+
+def _bridge_url_at(port: int) -> str:
+    return f"http://127.0.0.1:{port}"
+
+
+def _bridge_health_at(cfg: Config, port: int, force: bool = False) -> dict:
+    """Cached /bridge/health snapshot for ONE specific port.
+
+    Returns {available, project, bridge_version, port, reason}. `available` is
+    True only when the bridge is enabled, answers /bridge/health 200, AND
+    reports model_loaded. Cached ~2s per port (reads arrive in bursts). Never
+    raises — an unreachable bridge is a normal "unavailable", not an error.
+
+    AInsightfool: this is the per-port building block bridge_state /
+    list_bridges / _find_bridge_for are all built on — see the module-level
+    _bridge_cache comment for why the cache moved from one global snapshot to
+    one per port.
     """
     global _bridge_cache, _bridge_cache_at
+    url = _bridge_url_at(port)
     now = time.time()
-    if not force and _bridge_cache is not None and (now - _bridge_cache_at) < _BRIDGE_CACHE_TTL:
-        return _bridge_cache
+    cached_at = _bridge_cache_at.get(url, 0.0)
+    if not force and url in _bridge_cache and (now - cached_at) < _BRIDGE_CACHE_TTL:
+        return _bridge_cache[url]
     if not cfg.bridge_enabled:
-        state = {"available": False, "project": None, "bridge_version": None, "reason": "disabled"}
+        state = {"available": False, "responded": False, "project": None,
+                  "bridge_version": None, "port": port, "reason": "disabled"}
+    elif not cfg.bridge_url_pinned and not _tcp_probe("127.0.0.1", port, timeout=0.2):
+        # AInsightfool: fast pre-check, range-scan mode only (skipped when
+        # bridge_url_pinned — there's only ever one port to check there, so
+        # there's nothing to save by pre-checking, and it's the legacy path
+        # every existing single-bridge test exercises). Scanning
+        # bridge_port_range ports on every cache miss means MOST of them
+        # typically have nothing listening (only as many projects as you're
+        # actually bridging are armed at once) — a bare TCP connect fails
+        # near-instantly (ECONNREFUSED) on an unbound port, so this skips the
+        # slower retry-with-sleep HTTP health check below for every port
+        # that's obviously not a bridge, keeping a cold-cache scan of the
+        # whole range fast.
+        state = {"available": False, "responded": False, "project": None,
+                  "bridge_version": None, "port": port, "reason": "unreachable"}
     else:
+        bcfg = dataclasses.replace(cfg, bridge_url=url)
         # The single-threaded listener can briefly stop accepting connections while
         # Studio does heavy designer work (e.g. materializing a ScreenType), so a
         # lone health probe can TIME OUT even though the bridge is fine and every
@@ -2164,49 +2276,108 @@ def bridge_state(cfg: Config, force: bool = False) -> dict:
         # TRANSPORT-failure path a few times with a short timeout so a transient block
         # isn't cached as "down". A well-formed HTTP response (even model_loaded=False)
         # means the listener is up -> decide immediately, no retry.
-        state = {"available": False, "project": None, "bridge_version": None, "reason": "unreachable"}
+        state = {"available": False, "responded": False, "project": None,
+                  "bridge_version": None, "port": port, "reason": "unreachable"}
         for i in range(3):
             try:
-                status, data = _bridge_get_json(cfg, "/bridge/health", timeout=2.5)
+                status, data = _bridge_get_json(bcfg, "/bridge/health", timeout=2.5)
                 if status == 200 and data.get("model_loaded"):
                     state = {
                         "available": True,
+                        "responded": True,
                         "project": data.get("project"),
                         "bridge_version": data.get("bridge_version"),
+                        "port": data.get("port", port),
                         "reason": "ok",
                     }
                 else:
                     state = {
                         "available": False,
+                        "responded": True,
                         "project": data.get("project"),
                         "bridge_version": data.get("bridge_version"),
+                        "port": data.get("port", port),
                         "reason": f"health status={status} model_loaded={data.get('model_loaded')}",
                     }
                 break  # got a response -> listener is up, don't retry
             except BridgeUnavailable as e:
-                state = {"available": False, "project": None, "bridge_version": None, "reason": str(e)}
+                state = {"available": False, "responded": False, "project": None,
+                          "bridge_version": None, "port": port, "reason": str(e)}
                 if i < 2:
                     time.sleep(0.4)
-    _bridge_cache, _bridge_cache_at = state, now
+    _bridge_cache[url] = state
+    _bridge_cache_at[url] = now
     return state
+
+
+def list_bridges(cfg: Config, force: bool = False) -> list[dict]:
+    """Every bridge currently answering across the configured port range.
+
+    AInsightfool: the multi-instance replacement for what used to be a single
+    bridge_state() snapshot. Returns one entry per port that answers
+    available=True: [{available, project, bridge_version, port, reason}, ...],
+    in port order. Empty when nothing's armed. Drives optix_bridge_status and
+    the /ui dashboard, and is what _find_bridge_for scans to route a project to
+    its specific bridge.
+    """
+    out = []
+    for port in _bridge_ports(cfg):
+        st = _bridge_health_at(cfg, port, force=force)
+        if st["available"]:
+            out.append(st)
+    return out
+
+
+def bridge_state(cfg: Config, force: bool = False) -> dict:
+    """Back-compat single-bridge view: the FIRST available bridge in port
+    order, or a summary {available:False, reason} when none answer.
+
+    AInsightfool: kept for callers that only care "is anything up at all"
+    (classify_bridge_failure's unreachable-studio branch, the legacy single-
+    bridge dashboard fields) — prefer list_bridges() for anything that needs
+    to reason about MULTIPLE simultaneously-armed bridges.
+    """
+    bridges = list_bridges(cfg, force=force)
+    if bridges:
+        return bridges[0]
+    if not cfg.bridge_enabled:
+        return {"available": False, "project": None, "bridge_version": None,
+                "port": None, "reason": "disabled"}
+    # Nothing in the range answered — report against the first candidate port
+    # (or the pinned one) so the `reason` reflects a real probe, matching the
+    # pre-multi-instance single-bridge behavior when bridge_url_pinned.
+    ports = _bridge_ports(cfg)
+    return _bridge_health_at(cfg, ports[0], force=force) if ports else {
+        "available": False, "project": None, "bridge_version": None,
+        "port": None, "reason": "no ports configured",
+    }
 
 
 def reset_bridge_cache() -> None:
     """Test hook: drop the bridge-state TTL cache between cases."""
     global _bridge_cache, _bridge_cache_at
-    _bridge_cache, _bridge_cache_at = None, 0.0
+    _bridge_cache, _bridge_cache_at = {}, {}
 
 
 def default_project(cfg: Config) -> str | None:
-    """The project the design-time bridge is currently serving, if any.
+    """The project the design-time bridge is currently serving, if exactly
+    ONE bridge is armed.
 
     Lets a caller OMIT `project` and act on the open project — the common
     single-seat flow — instead of naming it every time (and without a
     list_projects round-trip). None when no bridge is serving one.
+
+    AInsightfool: with multi-instance support, more than one bridge can be
+    armed at once — in that case there is no longer a single "the" project to
+    default to, so this now deliberately returns None and requires an
+    explicit `project=` rather than guessing which of several open projects
+    the caller meant. optix_bridge_status / list_bridges lists what's armed.
     """
     try:
-        st = bridge_state(cfg)
-        return st.get("project") if st.get("available") else None
+        bridges = list_bridges(cfg)
+        if len(bridges) == 1:
+            return bridges[0].get("project")
+        return None
     except Exception:
         return None
 
@@ -2214,35 +2385,84 @@ def default_project(cfg: Config) -> str | None:
 def _bridge_name_match(served: object, want: str) -> bool:
     """Case-insensitive, whitespace-trimmed BrowseName ↔ dir-name compare.
 
-    The single comparison both `_use_bridge_for` and the attributed
-    studio-guard (`_attributed_studio_pass`) use to decide whether the
-    bridge's Project.Current.BrowseName names a given on-disk project dir.
+    The single comparison both `_find_bridge_for` and the attributed
+    studio-guard (`_attributed_studio_pass`) use to decide whether a bridge's
+    Project.Current.BrowseName names a given on-disk project dir.
     """
     return str(served or "").strip().lower() == want.strip().lower()
 
 
-def _use_bridge_for(cfg: Config, project: str) -> bool:
-    """True iff the bridge is available AND serving THE requested project.
-
-    The bridge reports Project.Current.BrowseName; match it against the resolved
-    project dir name (standard Optix projects name the dir after the project). A
-    bridge serving a DIFFERENT project must NOT answer for this one.
-    """
-    st = bridge_state(cfg)
-    if not st["available"] or not st.get("project"):
-        return False
+def _bridge_want_name(cfg: Config, project: str) -> str | None:
+    """The name to match a bridge's served-project against for `project`, or
+    None for an invalid name (no path separators / no traversal — junk never
+    matches). Shared by _find_bridge_for and the old single-bridge callers."""
     try:
-        want = resolve_project(cfg, project).name
+        return resolve_project(cfg, project).name
     except CoreError:
         # Studio can open a project from ANYWHERE (e.g. the Desktop), not only
         # under projects_root. The bridge serves Project.Current regardless of
         # on-disk location, so live-model access must not require the project to
         # resolve under projects_root — fall back to the requested name itself.
-        # Keep the invalid-name guard (no path separators) so junk never matches.
         if not project or "/" in project or "\\" in project or ".." in project:
-            return False
-        want = project
-    return _bridge_name_match(st["project"], want)
+            return None
+        return project
+
+
+def _find_bridge_for(cfg: Config, project: str) -> dict | None:
+    """The bridge (with its resolved `port`) currently serving `project`,
+    searching every port in the configured range. None if no armed bridge
+    matches.
+
+    AInsightfool: this is the routing step that makes multi-instance work —
+    with several bridges armed simultaneously, each on its own port, THIS is
+    what picks the right one for a given project instead of assuming there's
+    only one to check."""
+    want = _bridge_want_name(cfg, project)
+    if want is None:
+        return None
+    for st in list_bridges(cfg):
+        if _bridge_name_match(st.get("project"), want):
+            return st
+    return None
+
+
+def _bridge_cfg_for(cfg: Config, project: str) -> Config | None:
+    """`cfg` rebound to the SPECIFIC bridge URL serving `project`, or None if
+    no armed bridge serves it.
+
+    AInsightfool: the choke point every bridge call site uses. Every
+    _bridge_get_json/_bridge_post_json/_bridge_post_body/_bridge_write call
+    downstream reads cfg.bridge_url unchanged — rebinding it HERE, once, is
+    what makes the rest of the bridge plumbing (unchanged since before
+    multi-instance) automatically target the right one of several
+    simultaneously-armed bridges. Reassign the local `cfg` in the caller
+    (`cfg = _bridge_cfg_for(cfg, project)` or via _require_bridge_for below) so
+    every subsequent bridge call in that function body picks it up for free.
+    """
+    b = _find_bridge_for(cfg, project)
+    if b is None:
+        return None
+    return dataclasses.replace(cfg, bridge_url=_bridge_url_at(b["port"]))
+
+
+def _require_bridge_for(cfg: Config, project: str) -> Config:
+    """`_bridge_cfg_for`, but raises BridgeUnavailable instead of returning
+    None — the single choke point every bridge READ call site uses in place of
+    the old `if not _use_bridge_for(cfg, project): raise ...` guard."""
+    bcfg = _bridge_cfg_for(cfg, project)
+    if bcfg is None:
+        st = bridge_state(cfg)
+        raise BridgeUnavailable(
+            f"bridge not serving {project!r} (state: {st.get('reason')}, "
+            f"serving={st.get('project')!r})"
+        )
+    return bcfg
+
+
+def _use_bridge_for(cfg: Config, project: str) -> bool:
+    """True iff SOME armed bridge is serving THE requested project (searching
+    every port in the configured range — see _find_bridge_for)."""
+    return _find_bridge_for(cfg, project) is not None
 
 
 # Standard Optix top-level roots under Project.Current (the bridge's ResolveNode is
@@ -2338,12 +2558,7 @@ def describe_node(cfg: Config, project: str, path: str) -> dict:
     BridgeUnavailable rather than falling back.
     """
     from urllib.parse import quote
-    if not _use_bridge_for(cfg, project):
-        st = bridge_state(cfg)
-        raise BridgeUnavailable(
-            f"bridge not serving {project!r} (state: {st.get('reason')}, "
-            f"serving={st.get('project')!r})"
-        )
+    cfg = _require_bridge_for(cfg, project)
     status, data = _bridge_get_json(cfg, f"/bridge/nodes?path={quote(path, safe='/')}")
     if status == 404:
         raise NodeNotFound(f"no node at path {path!r} in the live model")
@@ -2379,11 +2594,7 @@ def list_ui_types(cfg: Config, project: str) -> dict:
     two genuinely differ. `count` still reflects the full catalog size.
     Bridge-only (the catalog lives in Studio's type system, not on disk).
     """
-    if not _use_bridge_for(cfg, project):
-        st = bridge_state(cfg)
-        raise BridgeUnavailable(
-            f"bridge not serving {project!r} (state: {st.get('reason')})"
-        )
+    cfg = _require_bridge_for(cfg, project)
     status, data = _bridge_get_json(cfg, "/bridge/types/ui")
     if status != 200 or "types" not in data:
         raise BridgeUnavailable(f"bridge /bridge/types/ui returned status={status}")
@@ -2406,11 +2617,7 @@ def describe_type(cfg: Config, project: str, type_name: str) -> dict:
     when Studio/the bridge is down, NodeNotFound for an unknown type.
     """
     from urllib.parse import quote
-    if not _use_bridge_for(cfg, project):
-        st = bridge_state(cfg)
-        raise BridgeUnavailable(
-            f"bridge not serving {project!r} (state: {st.get('reason')})"
-        )
+    cfg = _require_bridge_for(cfg, project)
     status, data = _bridge_get_json(cfg, f"/bridge/types/schema?type={quote(type_name, safe='')}")
     if status == 404:
         raise NodeNotFound(f"no builtin UI type {type_name!r}")
@@ -2471,11 +2678,7 @@ def get_project_map(
     mode = "detail" if depth is not None else "auto"
     if depth is None:
         depth = 6
-    if not _use_bridge_for(cfg, project):
-        st = bridge_state(cfg)
-        raise BridgeUnavailable(
-            f"bridge not serving {project!r} (state: {st.get('reason')})"
-        )
+    cfg = _require_bridge_for(cfg, project)
     q = (f"/bridge/map?depth={int(depth)}&max={int(max_nodes)}"
          f"&ids={1 if ids else 0}&mode={mode}")
     if match:
@@ -2687,8 +2890,9 @@ def list_screens(cfg: Config, project: str, glob: str = "Nodes/UI/**/*.yaml") ->
     including require_editors_closed, which still refuses if Studio is open with
     no bridge. The `source` field ("bridge"|"file") records which path answered.
     """
-    if _use_bridge_for(cfg, project):
-        return _bridge_list_screens(cfg, project)
+    _bridge_cfg = _bridge_cfg_for(cfg, project)
+    if _bridge_cfg is not None:
+        return _bridge_list_screens(_bridge_cfg, project)
 
     from . import optix_model
 
@@ -3058,14 +3262,20 @@ def save(
     project_dir = resolve_project(cfg, project)
     deadline_s = float(timeout) if timeout is not None else 12.0
     before = _project_max_mtime(project_dir)
-    # When the bridge serves THIS project, target Ctrl+S at the exact Studio
-    # instance hosting the bridge (the PID owning its listener) instead of the first
-    # Studio window — with two Studio instances open, "first window" can save the
-    # WRONG project silently. When no bridge (target_pid stays 0), behaviour is
-    # unchanged: the first focus-able Studio window.
+    # When A bridge serves THIS project (one of possibly several simultaneously
+    # armed, each on its own port), target Ctrl+S at the exact Studio instance
+    # hosting THAT bridge (the PID owning its listener) instead of the first
+    # Studio window — with several Studio instances open, "first window" can
+    # save the WRONG project silently. When no bridge serves this project
+    # (target_pid stays 0), behaviour is unchanged: the first focus-able Studio
+    # window — AInsightfool: this is also the multi-instance fix for "the
+    # wrong project's emulator/save got targeted" — arming a bridge for every
+    # open project (see StudioMCPBridge.cs's port range) means target_pid is
+    # resolvable for each of them instead of falling back to a guess.
     target_pid = 0
-    if _use_bridge_for(cfg, project):
-        bp = _bridge_owner_pid(cfg, runner)
+    _bridge_cfg = _bridge_cfg_for(cfg, project)
+    if _bridge_cfg is not None:
+        bp = _bridge_owner_pid(_bridge_cfg, runner)
         if bp:
             target_pid = bp
     proc = runner.run_powershell(
@@ -3252,14 +3462,44 @@ def resolve_active_target(cfg: Config, bridge_pid: int | None = None) -> dict:
     return studio_active_deployment_target(cfg)
 
 
-def active_target(cfg: Config, runner: Runner = _DEFAULT_RUNNER) -> dict:
+def active_target(
+    cfg: Config, project: str | None = None, runner: Runner = _DEFAULT_RUNNER,
+) -> dict:
     """Read the selected deploy target: the live per-window UIA read off the
     bridge's Studio window, with the Configuration.xml advisory as fallback.
 
     Convenience wrapper over resolve_active_target that resolves the bridge-owner
     PID first. `source` is "uia_live" when the live toolbar was read (definitive,
-    Windows + bridge + session-1), else the config-file path (lazy, may be stale)."""
-    bp = _bridge_owner_pid(cfg, runner)
+    Windows + bridge + session-1), else the config-file path (lazy, may be stale).
+
+    AInsightfool: multi-instance-aware. Pass `project` to target a SPECIFIC
+    armed bridge's Studio window. Without it: zero or exactly one bridge armed
+    behaves as before (no bridge -> config-file fallback; one bridge -> that
+    one). With SEVERAL bridges armed and no `project` given, this refuses to
+    guess and returns {known:False, reason:"ambiguous_bridge",
+    armed_projects:[...]} instead — silently picking "whichever bridge happens
+    to be on the base port" would be exactly the wrong-window bug this release
+    is fixing, just moved into this tool.
+    """
+    if project is not None:
+        bcfg = _bridge_cfg_for(cfg, project)
+        bp = _bridge_owner_pid(bcfg, runner) if bcfg is not None else None
+        return resolve_active_target(cfg, bridge_pid=bp)
+    bridges = list_bridges(cfg)
+    if len(bridges) > 1:
+        return {
+            "known": False, "reason": "ambiguous_bridge",
+            "armed_projects": [b.get("project") for b in bridges],
+            "hint": (
+                "Several bridges are armed at once — pass project= to read "
+                "a specific one's toolbar target."
+            ),
+        }
+    # 0 or 1 armed: rebind to that one bridge's OWN port (not cfg.bridge_url's
+    # default/base port, which may not be the port the sole armed bridge
+    # actually landed on if a lower port in the range was stale/taken).
+    bcfg = dataclasses.replace(cfg, bridge_url=_bridge_url_at(bridges[0]["port"])) if bridges else cfg
+    bp = _bridge_owner_pid(bcfg, runner)
     return resolve_active_target(cfg, bridge_pid=bp)
 
 
@@ -3306,11 +3546,17 @@ def run_emulator(
             ),
         }
     # Resolve the bridge-owner PID FIRST — the live UIA target read needs it, and
-    # the F5 keystroke below aims at the SAME instance (with two Studio windows
-    # open, "first window" can F5 the wrong project). Computed once, reused.
+    # the F5 keystroke below aims at the SAME instance (with several Studio
+    # windows open, "first window" can F5 the wrong project). Computed once,
+    # reused. AInsightfool: this is the crux of the wrong-project-emulator fix —
+    # arming a bridge for EVERY open project (StudioMCPBridge.cs now supports
+    # several at once, each on its own port) means target_pid resolves for
+    # whichever project was actually asked for, instead of only ever being
+    # resolvable for the one project that happened to hold the sole global port.
     target_pid = 0
-    if _use_bridge_for(cfg, project):
-        bp = _bridge_owner_pid(cfg, runner)
+    _bridge_cfg = _bridge_cfg_for(cfg, project)
+    if _bridge_cfg is not None:
+        bp = _bridge_owner_pid(_bridge_cfg, runner)
         if bp:
             target_pid = bp
     # F5 GUARD: F5 runs Studio's SELECTED deployment target, which is only the

@@ -4,6 +4,41 @@ All notable changes to ftx-mcp. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Per-release detail lives in
 `docs/release-notes-v<version>.md`.
 
+## [1.0.7]
+
+Theme: bridge more than one Studio at once. Full notes:
+`docs/release-notes-v1.0.7.md`.
+
+### Added
+- **Multi-instance design-time bridge (AInsightfool).** Up to 4 Studio
+  instances can now each have an ARMED bridge SIMULTANEOUSLY — no more
+  manual StopBridge-on-one-to-free-it-for-another when switching between
+  projects. `StudioMCPBridge.cs` self-binds the first free port in
+  `8768..8771` instead of exclusively owning `:8768`; the service discovers
+  which project lives on which port by scanning the range
+  (`OPTIX_BRIDGE_PORT_BASE`/`OPTIX_BRIDGE_PORT_RANGE`). Every bridge-routed
+  tool (`optix_describe_node`, `optix_bridge_edit`, `optix_save`,
+  `optix_emulator`, ...) now resolves the SPECIFIC bridge serving the
+  `project` you asked for, instead of assuming there's only one.
+  `optix_bridge_status` lists every currently-armed bridge (project + port),
+  and the `/ui` dashboard shows all of them.
+- **Fixes the "emulator started for the wrong (non-bridged) project" bug.**
+  Root cause: `optix_emulator`/`optix_save` already targeted the exact
+  Studio window owning the bridge serving a project — but with only one
+  bridge slot to go around, any project WITHOUT the bridge fell back to
+  "first focus-able Studio window," an arbitrary pick with several
+  instances open. Arming a bridge per open project (this release) gives
+  every one of them a resolvable target, eliminating the guess.
+
+### Changed
+- `optix_active_target()` takes an optional `project` param; with several
+  bridges armed and no `project` given, it now returns
+  `{known:false, reason:"ambiguous_bridge", armed_projects:[...]}` instead
+  of silently reading whichever bridge happens to be on the lowest port.
+- A caller that relies on the "act on whatever's open" convenience (omitting
+  `project`) now gets that only when exactly ONE bridge is armed — with
+  several armed at once, `project` must be passed explicitly.
+
 ## [1.0.6]
 
 Theme: windowless means windowless. Full notes: `docs/release-notes-v1.0.6.md`.

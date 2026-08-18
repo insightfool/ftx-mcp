@@ -80,6 +80,12 @@
       <div class="row"><span class="k">model loaded</span><span class="v" id="b_model">—</span></div>
       <div class="row"><span class="k">last saved</span><span class="v" id="b_saved">—</span></div>
       <div class="row"><span class="k">thread</span><span class="v accent">http-bg (inline)</span></div>
+      <!-- AInsightfool (v1.0.7): multi-instance bridge support — several Studio
+           instances can be armed at once, one per port. This chip list shows
+           every one of them (hidden when 0 or 1, since the fields above
+           already cover that case); Controls' project picker below reads
+           from the same d.bridges list. -->
+      <div class="chips" id="b_all" style="margin-top:8px"></div>
     </div>
 
     <div class="card">
@@ -102,7 +108,8 @@
     </div>
 
     <div class="card wide">
-      <h2>Controls · <span id="ctl_proj" class="accent">—</span></h2>
+      <h2>Controls · <span id="ctl_proj" class="accent">—</span>
+        <select id="ctl_select" style="display:none;margin-left:6px"></select></h2>
       <div class="btns">
         <button class="act primary" id="btn_save">Save</button>
         <button class="act" id="btn_emu">Run emulator</button>
@@ -215,7 +222,30 @@ function render(d){
   $('f_deploy').innerHTML = f.deploy_configured?`<span class="ok">${f.deploy_ip||''} ✓</span>`:'<span class="warn">not configured</span>';
   // bridge last-saved + control target
   $('b_saved').textContent = fmtAge(b.last_saved_epoch);
-  curProj = (b.reachable && b.project) ? b.project : null;
+  // AInsightfool (v1.0.7): multi-instance — d.bridges lists EVERY armed
+  // bridge (project + port), not just the primary one `b` echoes for
+  // back-compat. Chip list + a project picker when more than one is up;
+  // below that, curProj resolution collapses to the pre-1.0.7 single-bridge
+  // behavior automatically since bridges.length<=1 in that case.
+  const bridges = d.bridges || (b.reachable ? [b] : []);
+  const escb=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+  $('b_all').innerHTML = bridges.length > 1
+    ? bridges.map(x=>`<span class="chip on">${escb(x.project||'?')} · :${x.port}</span>`).join('')
+    : '';
+  const sel = $('ctl_select');
+  if(bridges.length > 1){
+    const prev = sel.value;
+    sel.innerHTML = bridges.map(x=>`<option value="${escb(x.project||'')}">${escb(x.project||'?')} · :${x.port}</option>`).join('');
+    if(bridges.some(x=>x.project===prev)) sel.value = prev;
+    sel.style.display = '';
+    sel.onchange = () => { curProj = sel.value; syncButtons(); };
+    curProj = sel.value || bridges[0].project;
+    $('ctl_proj').style.display = 'none';
+  } else {
+    sel.style.display = 'none';
+    $('ctl_proj').style.display = '';
+    curProj = (b.reachable && b.project) ? b.project : null;
+  }
   $('ctl_proj').textContent = curProj || 'no bridge';
   // adaptive emulator button — F5 toggles, so show Stop only when the
   // EMULATOR is up (a deployed app on the same port must not flip it)

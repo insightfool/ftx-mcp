@@ -499,21 +499,32 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
     @mcp.tool(annotations=_RO)
     def optix_bridge_status() -> dict:
-        """Status of the design-time read-bridge (NetLogic HTTP listener in Studio).
+        """Status of the design-time read-bridge(s) (NetLogic HTTP listener(s)
+        in Studio).
 
-        `available` is True only when the bridge answers /bridge/health and a
-        project model is loaded; `project` is the one it's serving (self-
-        attribution — the OS-level Studio-open guard can't name it, the bridge can).
+        AInsightfool: multi-instance (v1.0.7) — up to several Studio instances
+        can each have an armed bridge SIMULTANEOUSLY, one per project, so this
+        now returns `bridges`: a list, one entry per port currently answering
+        {available, project, bridge_version, port, reason}, plus `count`.
+        `bridges[0]` (or {} when count==0) is echoed at the top level under the
+        pre-1.0.7 single-bridge field names (`available`/`project`/
+        `bridge_version`/`port`/`reason`) so an existing caller reading those
+        still gets a sane single answer — but with more than one bridge armed,
+        read `bridges` for the full picture; the top-level fields alone don't
+        say WHICH project they describe among several.
 
         Use this when:
           - deciding whether live-model reads will work, or you're file-only
-          - the user asks "is the bridge up / what project is open in Studio?"
+          - the user asks "is the bridge up / what project(s) are open in
+            Studio?" or "which projects can I currently author against?"
 
         Do NOT use this when:
           - you just want to read a node — call optix_describe_node and handle
             the bridge_unavailable error instead of pre-checking
         """
-        return core.bridge_state(cfg)
+        bridges = core.list_bridges(cfg)
+        primary = bridges[0] if bridges else core.bridge_state(cfg)
+        return {**primary, "bridges": bridges, "count": len(bridges)}
 
     @mcp.tool(annotations=_RO)
     @_with_project
@@ -1474,7 +1485,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         return core.runtime_log_tail(cfg, proj, lines=lines, contains=contains)
 
     @mcp.tool(annotations=_RO)
-    def optix_active_target() -> dict:
+    def optix_active_target(project: str | None = None) -> dict:
         """Which deployment target Studio's dropdown has selected — the thing an
         F5 (optix_emulator action="run") would actually run.
 
@@ -1483,6 +1494,14 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         (it can say Emulator while the toolbar is really on a hardware panel).
         `source`="uia_live" is the definitive live read; the config-file path
         is the lazy fallback (off-Windows, no bridge, or non-interactive session).
+
+        AInsightfool: multi-instance (v1.0.7) — pass `project` to read a
+        SPECIFIC armed bridge's Studio window when several are up at once.
+        Omitted: resolves cleanly when 0 or 1 bridge is armed (unchanged
+        behavior); with MORE than one armed and no `project`, this refuses to
+        guess and returns {known:False, reason:"ambiguous_bridge",
+        armed_projects:[...]} instead of silently reading whichever bridge
+        happens to be on the lowest port.
 
         Use this when:
           - checking whether F5 is safe (is_emulator) BEFORE
@@ -1493,7 +1512,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         Do NOT use this when:
           - you want emulator PROCESS state (optix_emulator action="status")
         """
-        return core.active_target(cfg)
+        return core.active_target(cfg, project=project)
 
     @mcp.tool(annotations=_RW_DESTRUCTIVE)
     def optix_deploy_updatesvc(

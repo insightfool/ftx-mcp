@@ -26,15 +26,50 @@ using FTOptix.CoreBase;
 // "MCPBridge" Optix library (component "StudioMCPBridge") for drag-in reuse.
 public class StudioMCPBridge : BaseNetLogic
 {
-    private const string BridgeVersion = "1.0.6";
+    private const string BridgeVersion = "1.0.7";
+    // AInsightfool: multi-instance support (v1.0.7). Port is no longer a single
+    // fixed const - each Studio instance self-assigns the first free port in
+    // BasePort..BasePort+PortRangeSize-1, so up to PortRangeSize projects can
+    // run this NetLogic (StartBridge'd) AT THE SAME TIME, each on its own port,
+    // instead of exclusively fighting over :8768. The Python service discovers
+    // which project lives on which port by probing the whole range (see
+    // service/core.py's bridge registry). PortRangeSize=4 covers 4 simultaneous
+    // Studio instances; raise it if you routinely run more.
+    private const int BasePort = 8768;
+    private const int PortRangeSize = 4;   // ports 8768..8771
+
     // Cross-ALC stop signal: at design time Studio runs each [ExportMethod] in an
     // ISOLATED AssemblyLoadContext, so StartBridge and StopBridge share NO managed
     // state (neither instance NOR static - both were tried and failed).
     // A named kernel event IS shared across ALCs in the process; StopBridge sets it and
     // the accept loop (in whichever ALC owns the listener) polls it and closes the socket.
-    private const string StopEventName = "Local\\StudioMCPBridge_Stop_p8768";
-    private const int Port = 8768;   // loopback bridge port (client cfg.bridge_url)
+    //
+    // AInsightfool: the event name USED TO be a single compile-time constant
+    // (".._p8768"), which worked precisely because it needed no runtime state -
+    // every ALC agreed on the same literal string. Now that the port is chosen
+    // at runtime (per instance), the name has to be too - but StopBridge runs in
+    // a FRESH ALC that never ran StartListener, so it cannot read a static field
+    // to learn which port THIS Studio process bound. Environment.SetEnvironmentVariable
+    // (default target = Process) is the one piece of state that DOES survive an
+    // ALC reload within the same process without being visible to *other*
+    // Studio.exe processes - so it's what carries the bound port from
+    // StartListener to a later StopBridge, keeping StopBridge scoped to only
+    // this instance's own bridge, never a sibling Studio's.
+    private const string BoundPortEnvVar = "FTX_STUDIOBRIDGE_BOUND_PORT";
+
+    private static string StopEventNameFor(int port) => "Local\\StudioMCPBridge_Stop_p" + port;
+
     private const int MaxItems = 500;
+    // AInsightfool: unlike the bridge's own TCP port (self-assigned per instance,
+    // see BasePort/PortRangeSize above), the Web presentation engine port is a
+    // PROJECT setting, persisted into the project's own model by SetupProject -
+    // it does NOT auto-negotiate at bridge-start time. Every project SetupProject
+    // has ever been run against defaults to this SAME port, so running more than
+    // one project's EMULATOR at once (not just bridging them) needs each project
+    // reconfigured to a distinct port first, e.g. by pairing it with the bridge
+    // port: 8768<->8081 (this default), 8769<->8082, 8770<->8083, 8771<->8084.
+    // Pass an explicit port to SetupProject/EnsureWebEngineCore (or POST
+    // /bridge/setup/web-engine?port=N) to assign one of those to a project.
     private const int WebEnginePort = 8081;   // default Web presentation engine port
     private const int WebEngineMaxConnections = 5;   // Studio's default; 0/absent = no serve
     // Studio's default AllowedLocalSources allow-list; a fresh MakeObject leaves it
@@ -50,6 +85,10 @@ public class StudioMCPBridge : BaseNetLogic
     // reload orphans still require the Studio closed.
     private static TcpListener _listener;
     private static volatile bool _running;
+    // AInsightfool: the port THIS running listener bound to (or -1 if none is
+    // running). Valid within the ALC/thread epoch that started it; StopBridge
+    // (a fresh ALC) uses BoundPortEnvVar instead, not this field, to learn it.
+    private static volatile int _boundPort = -1;
 
     // Opportunistic probe: design-time Start() is NOT expected to auto-fire.
     public override void Start()
@@ -104,56 +143,115 @@ public class StudioMCPBridge : BaseNetLogic
     public void SetupProject()
     {
         Log.Info("StudioBridge", "SetupProject: " + EnsureWebEngineCore(WebEnginePort, "0.0.0.0"));
+        // AInsightfool: this instance's bridge landed on a non-default port (i.e.
+        // :8768 was already taken by another project's bridge), which is a
+        // reasonable signal you're running more than one project at once - flag
+        // that the just-assigned web-engine port (8081) will collide with any
+        // OTHER project also left at 8081 if their emulators run simultaneously,
+        // and name this project's paired suggestion (see the WebEnginePort
+        // comment above for the full 8768<->8081.. table).
+        if (_boundPort > BasePort)
+        {
+            int suggested = WebEnginePort + (_boundPort - BasePort);
+            Log.Warning("StudioBridge", "SetupProject: this project's bridge is on port " +
+                _boundPort + " (not the default " + BasePort + "), suggesting more than one " +
+                "project is in play - the web-engine port just set is still the default " +
+                WebEnginePort + ", which will COLLIDE with any other project also left at " +
+                WebEnginePort + " if both emulators run at the same time. Re-run with an " +
+                "explicit port (POST /bridge/setup/web-engine?port=" + suggested +
+                ") to give this project its own.");
+        }
     }
 
-    // Create-or-open the process-global stop event (ManualReset). Shared across ALCs
-    // by name, so a StopBridge in one ALC can signal a listener loop in another.
-    private static EventWaitHandle OpenStopEvent()
+    // Create-or-open the process-global stop event (ManualReset) for a specific
+    // port. Shared across ALCs by name, so a StopBridge in one ALC can signal a
+    // listener loop in another - as long as both agree on the port, which is why
+    // StartListener/StopListener resolve it through BoundPortEnvVar rather than a
+    // static field (see the AInsightfool comment on BoundPortEnvVar above).
+    private static EventWaitHandle OpenStopEvent(int port)
     {
-        return new EventWaitHandle(false, EventResetMode.ManualReset, StopEventName);
+        return new EventWaitHandle(false, EventResetMode.ManualReset, StopEventNameFor(port));
     }
 
+    // AInsightfool: tries each port in BasePort..BasePort+PortRangeSize-1 in turn
+    // and binds the first free one, instead of exclusively owning a single fixed
+    // port. This is what lets PortRangeSize Studio instances each run their own
+    // armed bridge simultaneously (no more manual StopBridge-on-one-to-free-it-
+    // for-another). The bound port is recorded in BoundPortEnvVar (process-scoped,
+    // survives the ALC reload) so a later StopBridge call - which runs in a fresh
+    // ALC with none of this method's static state - can recover exactly which
+    // port THIS Studio instance is using and signal only that one.
     private void StartListener(string via)
     {
-        // Clear any prior stop-signal so the fresh loop doesn't exit immediately.
-        try { using (var ev = OpenStopEvent()) ev.Reset(); } catch { /* ignore */ }
-        try
+        for (int port = BasePort; port < BasePort + PortRangeSize; port++)
         {
-            var listener = new TcpListener(IPAddress.Loopback, Port);
-            listener.Start();               // exclusive bind (no SO_REUSEADDR - a clear
-                                            // "in use" beats a silent double-bind)
-            _listener = listener;
-            _running = true;
-            new Thread(Loop) { IsBackground = true, Name = "StudioBridge" }.Start();
-            Log.Info("StudioBridge", "listening on http://127.0.0.1:" + Port +
-                     " (started via " + via + ")");
+            // Clear any prior stop-signal for THIS port so a fresh loop on it
+            // doesn't exit immediately.
+            try { using (var ev = OpenStopEvent(port)) ev.Reset(); } catch { /* ignore */ }
+            try
+            {
+                var listener = new TcpListener(IPAddress.Loopback, port);
+                listener.Start();           // exclusive bind (no SO_REUSEADDR - a clear
+                                            // "in use" beats a silent double-bind); a
+                                            // SocketException here just means THIS port
+                                            // is taken (by another instance's bridge) -
+                                            // try the next one in the range.
+                _listener = listener;
+                _boundPort = port;
+                Environment.SetEnvironmentVariable(BoundPortEnvVar, port.ToString());
+                _running = true;
+                new Thread(() => Loop(port)) { IsBackground = true, Name = "StudioBridge" }.Start();
+                Log.Info("StudioBridge", "listening on http://127.0.0.1:" + port +
+                         " (started via " + via + ")");
+                return;
+            }
+            catch (SocketException)
+            {
+                _running = false; _listener = null; _boundPort = -1;
+                continue;   // this port's taken; try the next one in the range
+            }
+            catch (Exception ex)
+            {
+                _running = false; _listener = null; _boundPort = -1;
+                Log.Error("StudioBridge", "failed to start on port " + port + ": " + ex.Message);
+                return;
+            }
         }
-        catch (SocketException ex)
-        {
-            _running = false; _listener = null;
-            Log.Error("StudioBridge", "cannot bind 127.0.0.1:" + Port + " (" + ex.Message +
-                "). Another bridge still holds it - StopBridge (any project) frees it, or " +
-                "close+reopen that Studio to drop an orphaned-reload listener.");
-        }
-        catch (Exception ex)
-        {
-            _running = false; _listener = null;
-            Log.Error("StudioBridge", "failed to start on port " + Port + ": " + ex.Message);
-        }
+        Log.Error("StudioBridge", "cannot bind any port in " + BasePort + "-" +
+            (BasePort + PortRangeSize - 1) + " - " + PortRangeSize +
+            " bridges are already running, or a stale one holds a port. StopBridge on an " +
+            "idle project frees one, or close+reopen that Studio to drop an orphaned-reload " +
+            "listener. Raise PortRangeSize in StudioMCPBridge.cs if you routinely need more " +
+            "than " + PortRangeSize + " simultaneous bridges.");
     }
 
     private void StopListener() { StopListener(false); }
 
     private void StopListener(bool quiet)
     {
-        // The cross-ALC signal (the only thing that reliably reaches the running loop).
-        try { using (var ev = OpenStopEvent()) ev.Set(); }
-        catch (Exception ex) { Log.Warning("StudioBridge", "stop-signal failed: " + ex.Message); }
+        // Recover the port THIS Studio instance's bridge is (or was) bound to.
+        // Can't read _boundPort here - StopBridge runs in a fresh ALC where that
+        // static was never set - so read the process-env var StartListener wrote
+        // instead (see BoundPortEnvVar).
+        string portStr = Environment.GetEnvironmentVariable(BoundPortEnvVar);
+        int port;
+        if (!string.IsNullOrEmpty(portStr) && int.TryParse(portStr, out port))
+        {
+            // The cross-ALC signal (the only thing that reliably reaches the running loop).
+            try { using (var ev = OpenStopEvent(port)) ev.Set(); }
+            catch (Exception ex) { Log.Warning("StudioBridge", "stop-signal failed: " + ex.Message); }
+            if (!quiet) Log.Info("StudioBridge", "stop signalled (port " + port + " releasing)");
+        }
+        else if (!quiet)
+        {
+            Log.Info("StudioBridge", "stop signalled (no bridge port on record for this " +
+                "instance - was it ever started via StartBridge?)");
+        }
         // Best-effort same-ALC teardown too (harmless when state isn't shared).
         _running = false;
-        var l = _listener; _listener = null;
+        var l = _listener; _listener = null; _boundPort = -1;
         try { l?.Stop(); } catch { /* ignore */ }
-        if (!quiet) Log.Info("StudioBridge", "stop signalled (port " + Port + " releasing)");
+        try { Environment.SetEnvironmentVariable(BoundPortEnvVar, null); } catch { /* ignore */ }
     }
 
     // NOTE: main-thread marshaling via DelayedTask(0, node) was tried and REMOVED -
@@ -166,10 +264,16 @@ public class StudioMCPBridge : BaseNetLogic
     // the loop stays responsive to a StopBridge from another ALC (a blocking
     // AcceptTcpClient could only be broken by our own ALC's Stop(), which StopBridge
     // can't reach). On stop, close the listener so the port is freed.
-    private void Loop()
+    // AInsightfool: takes `port` as a parameter (closed over by the lambda
+    // StartListener spawns this thread with) rather than reading the static
+    // _boundPort - Loop always runs within the SAME ALC/thread epoch as the
+    // StartListener call that spawned it, so either would work here, but the
+    // parameter makes that independence from ALC-surviving state explicit and
+    // matches OpenStopEvent's new per-port signature.
+    private void Loop(int port)
     {
         EventWaitHandle stopEv = null;
-        try { stopEv = OpenStopEvent(); } catch { /* poll _running only */ }
+        try { stopEv = OpenStopEvent(port); } catch { /* poll _running only */ }
         try
         {
             while (_running)
@@ -193,8 +297,10 @@ public class StudioMCPBridge : BaseNetLogic
             _running = false;
             try { _listener?.Stop(); } catch { /* ignore */ }
             _listener = null;
+            _boundPort = -1;
+            try { Environment.SetEnvironmentVariable(BoundPortEnvVar, null); } catch { /* ignore */ }
             try { stopEv?.Dispose(); } catch { /* ignore */ }
-            Log.Info("StudioBridge", "listener loop exited; port " + Port + " released");
+            Log.Info("StudioBridge", "listener loop exited; port " + port + " released");
         }
     }
 
@@ -512,9 +618,14 @@ public class StudioMCPBridge : BaseNetLogic
         {
             Log.Warning("StudioBridge", "Project.Current unavailable: " + ex.Message);
         }
+        // AInsightfool: "port" lets the Python service, which now probes a whole
+        // port RANGE (see StartListener), confirm which port answered rather
+        // than assuming the well-known 8768 - and is handy for a human reading
+        // the raw JSON while debugging which Studio instance is which.
         return "{\"bridge_version\":\"" + BridgeVersion +
                "\",\"project\":\"" + JsonEscape(project) +
-               "\",\"model_loaded\":" + Bool(modelLoaded) + "}";
+               "\",\"model_loaded\":" + Bool(modelLoaded) +
+               ",\"port\":" + _boundPort + "}";
     }
 
     private string NodeJson(string path, IUANode node)

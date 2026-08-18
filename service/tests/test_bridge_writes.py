@@ -751,6 +751,12 @@ def test_bridge_edit_applies_after_a_clean_report(alpha, monkeypatch):
     applied: list = []
     monkeypatch.setattr(core, "_bridge_post_body", _fake_validate(_OK_REPORT))
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    # AInsightfool: bridge_edit's write path resolves its OWN routing via
+    # _bridge_write_guard/_require_bridge_for (multi-instance, v1.0.7) instead
+    # of the old guard-then-call-cfg-unchanged _use_bridge_for gated — patch it
+    # too, passing cfg straight through (same bypass semantics as the True
+    # return above, using the SAME cfg this test's fakes expect).
+    monkeypatch.setattr(core, "_bridge_write_guard", lambda cfg, project: cfg)
     monkeypatch.setattr(core, "_apply_one_edit",
                         lambda cfg, project, op: applied.append(op["op"]))
 
@@ -765,6 +771,12 @@ def test_bridge_edit_applies_nothing_when_validation_fails(alpha, monkeypatch):
     applied: list = []
     monkeypatch.setattr(core, "_bridge_post_body", _fake_validate(_BAD_REPORT))
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    # AInsightfool: bridge_edit's write path resolves its OWN routing via
+    # _bridge_write_guard/_require_bridge_for (multi-instance, v1.0.7) instead
+    # of the old guard-then-call-cfg-unchanged _use_bridge_for gated — patch it
+    # too, passing cfg straight through (same bypass semantics as the True
+    # return above, using the SAME cfg this test's fakes expect).
+    monkeypatch.setattr(core, "_bridge_write_guard", lambda cfg, project: cfg)
     monkeypatch.setattr(core, "_apply_one_edit",
                         lambda cfg, project, op: applied.append(op["op"]))
 
@@ -782,6 +794,12 @@ def test_bridge_edit_dry_run_short_circuits_a_clean_batch(alpha, monkeypatch):
     applied: list = []
     monkeypatch.setattr(core, "_bridge_post_body", _fake_validate(_OK_REPORT))
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    # AInsightfool: bridge_edit's write path resolves its OWN routing via
+    # _bridge_write_guard/_require_bridge_for (multi-instance, v1.0.7) instead
+    # of the old guard-then-call-cfg-unchanged _use_bridge_for gated — patch it
+    # too, passing cfg straight through (same bypass semantics as the True
+    # return above, using the SAME cfg this test's fakes expect).
+    monkeypatch.setattr(core, "_bridge_write_guard", lambda cfg, project: cfg)
     monkeypatch.setattr(core, "_apply_one_edit",
                         lambda cfg, project, op: applied.append(op["op"]))
 
@@ -797,6 +815,12 @@ def test_bridge_edit_reports_partial_application_honestly(alpha, monkeypatch):
     applied=1 + failed_op rather than implying the batch was a no-op."""
     monkeypatch.setattr(core, "_bridge_post_body", _fake_validate(_OK_REPORT))
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    # AInsightfool: bridge_edit's write path resolves its OWN routing via
+    # _bridge_write_guard/_require_bridge_for (multi-instance, v1.0.7) instead
+    # of the old guard-then-call-cfg-unchanged _use_bridge_for gated — patch it
+    # too, passing cfg straight through (same bypass semantics as the True
+    # return above, using the SAME cfg this test's fakes expect).
+    monkeypatch.setattr(core, "_bridge_write_guard", lambda cfg, project: cfg)
 
     def flaky(cfg, project, op):
         if op["op"] == "set_property":
@@ -818,6 +842,12 @@ def test_bridge_edit_sends_ops_and_strict_in_the_body(alpha, monkeypatch):
     monkeypatch.setattr(core, "_bridge_post_body",
                         _fake_validate(_OK_REPORT, seen=seen))
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    # AInsightfool: bridge_edit's write path resolves its OWN routing via
+    # _bridge_write_guard/_require_bridge_for (multi-instance, v1.0.7) instead
+    # of the old guard-then-call-cfg-unchanged _use_bridge_for gated — patch it
+    # too, passing cfg straight through (same bypass semantics as the True
+    # return above, using the SAME cfg this test's fakes expect).
+    monkeypatch.setattr(core, "_bridge_write_guard", lambda cfg, project: cfg)
     monkeypatch.setattr(core, "_apply_one_edit", lambda cfg, project, op: None)
 
     core.bridge_edit(alpha, "Alpha", _TWO_OPS, strict=True)
@@ -840,6 +870,12 @@ def test_bridge_edit_reconciles_attach_expression_name_and_prop_name(alpha, monk
     monkeypatch.setattr(core, "_bridge_post_body",
                         _fake_validate(_OK_REPORT, seen=seen))
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    # AInsightfool: bridge_edit's write path resolves its OWN routing via
+    # _bridge_write_guard/_require_bridge_for (multi-instance, v1.0.7) instead
+    # of the old guard-then-call-cfg-unchanged _use_bridge_for gated — patch it
+    # too, passing cfg straight through (same bypass semantics as the True
+    # return above, using the SAME cfg this test's fakes expect).
+    monkeypatch.setattr(core, "_bridge_write_guard", lambda cfg, project: cfg)
     monkeypatch.setattr(core, "_apply_one_edit",
                         lambda cfg, project, op: applied.append(op))
     ops = [
@@ -913,6 +949,12 @@ def test_bridge_edit_treats_a_missing_endpoint_as_unavailable(alpha, monkeypatch
     BridgeUnavailable — never be mistaken for 'validated clean' and applied."""
     applied: list = []
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    # AInsightfool: bridge_edit's write path resolves its OWN routing via
+    # _bridge_write_guard/_require_bridge_for (multi-instance, v1.0.7) instead
+    # of the old guard-then-call-cfg-unchanged _use_bridge_for gated — patch it
+    # too, passing cfg straight through (same bypass semantics as the True
+    # return above, using the SAME cfg this test's fakes expect).
+    monkeypatch.setattr(core, "_bridge_write_guard", lambda cfg, project: cfg)
     monkeypatch.setattr(core, "_apply_one_edit",
                         lambda cfg, project, op: applied.append(op["op"]))
     monkeypatch.setattr(
@@ -927,6 +969,12 @@ def test_bridge_edit_treats_a_missing_endpoint_as_unavailable(alpha, monkeypatch
 
 def test_bridge_edit_rejects_an_empty_batch(alpha, monkeypatch):
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    # AInsightfool: bridge_edit's write path resolves its OWN routing via
+    # _bridge_write_guard/_require_bridge_for (multi-instance, v1.0.7) instead
+    # of the old guard-then-call-cfg-unchanged _use_bridge_for gated — patch it
+    # too, passing cfg straight through (same bypass semantics as the True
+    # return above, using the SAME cfg this test's fakes expect).
+    monkeypatch.setattr(core, "_bridge_write_guard", lambda cfg, project: cfg)
     with pytest.raises(core.BridgeWriteFailed):
         core.bridge_edit(alpha, "Alpha", [])
 

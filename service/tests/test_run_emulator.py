@@ -14,6 +14,11 @@ from service.tests.conftest import FakeProc, make_fake_runner, make_project
 @pytest.fixture(autouse=True)
 def _no_bridge_by_default(monkeypatch) -> None:
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: False)
+    # AInsightfool: run_emulator resolves its OWN bridge routing via
+    # _bridge_cfg_for (multi-instance, v1.0.7) instead of the old
+    # _use_bridge_for-then-cfg-unchanged gate — patch it too so "no bridge" by
+    # default still holds (target_pid stays 0, matching pre-1.0.7 behavior).
+    monkeypatch.setattr(core, "_bridge_cfg_for", lambda cfg, project: None)
 
 
 def _proj(projects_root: Path) -> None:
@@ -296,6 +301,7 @@ def test_run_emulator_no_spawn_names_blocking_dialog(
     _proj(projects_root)
     runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "FOCUSED=True PID=1"))
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_bridge_cfg_for", lambda cfg, project: cfg)
     monkeypatch.setattr(core, "_bridge_owner_pid", lambda cfg, runner=None: 4242)
     monkeypatch.setattr(core, "emulator_status",
                         lambda c, runner=None: {"state": "not_running"})
@@ -318,6 +324,7 @@ def _no_spawn_hint(cfg, projects_root, monkeypatch, *, live: bool) -> str:
     _proj(projects_root)
     runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "FOCUSED=True PID=1"))
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_bridge_cfg_for", lambda cfg, project: cfg)
     monkeypatch.setattr(core, "_bridge_owner_pid", lambda cfg, runner=None: 4242)
     monkeypatch.setattr(core, "emulator_status",
                         lambda c, runner=None: {"state": "not_running"})
@@ -363,6 +370,7 @@ def test_run_emulator_no_spawn_no_dialog_visible(
     _proj(projects_root)
     runner = make_fake_runner(lambda cmd, kw: FakeProc(0, "FOCUSED=True PID=1"))
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_bridge_cfg_for", lambda cfg, project: cfg)
     monkeypatch.setattr(core, "_bridge_owner_pid", lambda cfg, runner=None: 4242)
     monkeypatch.setattr(core, "emulator_status",
                         lambda c, runner=None: {"state": "not_running"})
@@ -427,6 +435,7 @@ def _with_bridge(monkeypatch, pid: int = 4242) -> None:
     bridge_pid into resolve_active_target (the autouse fixture disables bridges).
     Later monkeypatch wins over the autouse _no_bridge_by_default."""
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    monkeypatch.setattr(core, "_bridge_cfg_for", lambda cfg, project: cfg)
     monkeypatch.setattr(core, "_bridge_owner_pid", lambda cfg, runner=None: pid)
 
 

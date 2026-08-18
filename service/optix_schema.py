@@ -65,11 +65,10 @@ def fetch_schema_dump(
     """
     if get_json is None:
         get_json = core._bridge_get_json
-        if not core._use_bridge_for(cfg, project):
-            st = core.bridge_state(cfg)
-            raise core.BridgeUnavailable(
-                f"bridge not serving {project!r} (state: {st.get('reason')})"
-            )
+        # AInsightfool: rebind to the SPECIFIC bridge serving `project` (one of
+        # possibly several simultaneously armed, each on its own port) rather
+        # than the old implicit single cfg.bridge_url.
+        cfg = core._require_bridge_for(cfg, project)
     status, data = get_json(cfg, SCHEMA_DUMP_ROUTE)
     if status != 200 or "types" not in data or "studio_version" not in data:
         raise core.BridgeUnavailable(
