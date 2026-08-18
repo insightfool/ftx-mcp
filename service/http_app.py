@@ -1,6 +1,8 @@
 """FastAPI thin wrapper over service.core (see docs/architecture.md)."""
 from __future__ import annotations
 
+import threading
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel, Field
@@ -254,18 +256,38 @@ def make_app(cfg: core.Config) -> FastAPI:
     # UI can never drift from the real tool surface (names, one-line summary
     # for hover, read/write/destructive kind). Built once per process.
     _tool_catalog: list[dict] = []
+    # AInsightfool (v1.0.9): FastAPI runs a sync def route handler like this
+    # one in a worker-thread pool (starlette.concurrency.run_in_threadpool),
+    # so concurrent /ui/stats requests can call _tools_catalog() on DIFFERENT
+    # threads at the same time. The lazy-init guard below (`if not
+    # _tool_catalog`) is a classic check-then-act race: while _tool_catalog
+    # is still empty, every thread that checks it before the first one
+    # finishes appending also sees it as empty and starts its OWN append
+    # pass, so the catalog ends up with 2, 3, or more full copies of every
+    # tool -- worse the more requests overlap. This was invisible in normal
+    # use (one poller, fast responses) but became very visible while
+    # /ui/stats was slow (v1.0.7's port-range scan regression, fixed
+    # separately): a 2s dashboard poll interval racing against a 16-100s
+    # response time meant many requests were in flight at once, each racing
+    # this guard. Fixed with double-checked locking -- cheap (the lock is
+    # only taken while the list might still be empty; once populated, every
+    # later call takes the fast `if not _tool_catalog` False path with zero
+    # locking overhead).
+    _tool_catalog_lock = threading.Lock()
 
     def _tools_catalog() -> list[dict]:
         if not _tool_catalog:
-            from .mcp_app import make_mcp
-            for t in make_mcp(cfg)._tool_manager.list_tools():
-                ann = t.annotations
-                kind = ("read" if ann and ann.readOnlyHint
-                        else "destructive" if ann and ann.destructiveHint
-                        else "write")
-                summary = (t.description or "").strip().splitlines()[0] if t.description else ""
-                _tool_catalog.append({"name": t.name, "kind": kind, "summary": summary})
-            _tool_catalog.sort(key=lambda x: (x["kind"], x["name"]))
+            with _tool_catalog_lock:
+                if not _tool_catalog:
+                    from .mcp_app import make_mcp
+                    for t in make_mcp(cfg)._tool_manager.list_tools():
+                        ann = t.annotations
+                        kind = ("read" if ann and ann.readOnlyHint
+                                else "destructive" if ann and ann.destructiveHint
+                                else "write")
+                        summary = (t.description or "").strip().splitlines()[0] if t.description else ""
+                        _tool_catalog.append({"name": t.name, "kind": kind, "summary": summary})
+                    _tool_catalog.sort(key=lambda x: (x["kind"], x["name"]))
         return _tool_catalog
 
     @app.get("/ui/stats")

@@ -2150,7 +2150,14 @@ def ui_stats(cfg: Config) -> dict:
         # single-bridge summary for back-compat with the pre-1.0.7 dashboard
         # fields — with more than one armed, prefer `bridges` for the full
         # picture; `bridge` alone doesn't say which project it's describing.
-        bridges = list_bridges(cfg)
+        # AInsightfool (v1.0.9): scan ONCE via _scan_bridge_ports() and derive
+        # both `bridges` (armed only) and `sockets` (every configured port,
+        # armed or not — so the dashboard can show "4 configured, 1 armed"
+        # instead of just the 1) from the same results, instead of two
+        # separate range scans (list_bridges() + a second one for the
+        # primary-bridge fallback).
+        sockets = _scan_bridge_ports(cfg)
+        bridges = [s for s in sockets if s.get("available")]
         for b in bridges:
             proj = b.get("project")
             if proj:
@@ -2159,7 +2166,14 @@ def ui_stats(cfg: Config) -> dict:
                 except Exception:
                     pass
         out["bridges"] = bridges
-        st = bridges[0] if bridges else bridge_state(cfg)
+        out["sockets"] = sockets
+        if bridges:
+            st = bridges[0]
+        elif sockets:
+            st = sockets[0]
+        else:
+            st = {"available": False, "project": None, "bridge_version": None,
+                  "port": None, "reason": "disabled" if not cfg.bridge_enabled else "no ports configured"}
         out["bridge"] = {"reachable": bool(st.get("available")),
                          "version": st.get("bridge_version"),
                          "project": st.get("project"),
@@ -2348,6 +2362,37 @@ def _bridge_health_at(cfg: Config, port: int, force: bool = False) -> dict:
     return state
 
 
+def _scan_bridge_ports(cfg: Config, force: bool = False) -> list[dict]:
+    """Every configured port's health snapshot, in port order — armed AND
+    unarmed alike (unlike list_bridges(), which filters to available=True).
+
+    AInsightfool (v1.0.9): factored out of list_bridges() so a caller that
+    wants the FULL picture (e.g. ui_stats()'s `sockets` field, so the /ui
+    dashboard can show "4 configured, 1 armed" instead of just the 1) can get
+    it from the SAME scan list_bridges() already does, instead of a second
+    full range scan.
+    """
+    ports = _bridge_ports(cfg)
+    if len(ports) <= 1:
+        return [_bridge_health_at(cfg, ports[0], force=force)] if ports else []
+    # AInsightfool (v1.0.8): scan the range CONCURRENTLY, not one port at
+    # a time. Each _bridge_health_at() call on an unarmed port costs a
+    # full real HTTP connection attempt now that the (buggy) raw-socket
+    # pre-check is gone -- on a box where a refused connection isn't
+    # near-instant (observed here: ~2s per refusal, likely endpoint
+    # security intercepting outbound TCP even on loopback), a sequential
+    # scan of an otherwise-empty 4-port range took 30+ seconds, and by
+    # the time it finished the FIRST port's 2s cache entry was already
+    # stale, so a second sequential caller (doctor() then ui_stats() in
+    # the same /ui/stats request) re-scanned the whole range again.
+    # ThreadPoolExecutor.map preserves input order in its results
+    # regardless of completion order, so callers that assume "port
+    # order" (bridge_state() takes results[0]) are unaffected.
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(ports)) as ex:
+        return list(ex.map(lambda p: _bridge_health_at(cfg, p, force=force), ports))
+
+
 def list_bridges(cfg: Config, force: bool = False) -> list[dict]:
     """Every bridge currently answering across the configured port range.
 
@@ -2358,27 +2403,7 @@ def list_bridges(cfg: Config, force: bool = False) -> list[dict]:
     the /ui dashboard, and is what _find_bridge_for scans to route a project to
     its specific bridge.
     """
-    ports = _bridge_ports(cfg)
-    if len(ports) <= 1:
-        results = [_bridge_health_at(cfg, ports[0], force=force)] if ports else []
-    else:
-        # AInsightfool (v1.0.8): scan the range CONCURRENTLY, not one port at
-        # a time. Each _bridge_health_at() call on an unarmed port costs a
-        # full real HTTP connection attempt now that the (buggy) raw-socket
-        # pre-check is gone -- on a box where a refused connection isn't
-        # near-instant (observed here: ~2s per refusal, likely endpoint
-        # security intercepting outbound TCP even on loopback), a sequential
-        # scan of an otherwise-empty 4-port range took 30+ seconds, and by
-        # the time it finished the FIRST port's 2s cache entry was already
-        # stale, so a second sequential caller (doctor() then ui_stats() in
-        # the same /ui/stats request) re-scanned the whole range again.
-        # ThreadPoolExecutor.map preserves input order in its results
-        # regardless of completion order, so callers that assume "port
-        # order" (bridge_state() takes results[0]) are unaffected.
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(ports)) as ex:
-            results = list(ex.map(lambda p: _bridge_health_at(cfg, p, force=force), ports))
-    return [st for st in results if st["available"]]
+    return [st for st in _scan_bridge_ports(cfg, force=force) if st["available"]]
 
 
 def bridge_state(cfg: Config, force: bool = False) -> dict:

@@ -81,11 +81,16 @@
       <div class="row"><span class="k">last saved</span><span class="v" id="b_saved">—</span></div>
       <div class="row"><span class="k">thread</span><span class="v accent">http-bg (inline)</span></div>
       <!-- AInsightfool (v1.0.7): multi-instance bridge support — several Studio
-           instances can be armed at once, one per port. This chip list shows
-           every one of them (hidden when 0 or 1, since the fields above
-           already cover that case); Controls' project picker below reads
-           from the same d.bridges list. -->
-      <div class="chips" id="b_all" style="margin-top:8px"></div>
+           instances can be armed at once, one per port. Controls' project
+           picker below reads from d.bridges (armed ports only).
+           AInsightfool (v1.0.9): this chip row now ALWAYS shows every
+           CONFIGURED port (d.sockets — armed and unarmed alike), not just
+           the armed ones, so "4 sockets configured, only 1 answering" is
+           visible at a glance instead of looking identical to "nothing
+           configured". Falls back to d.bridges (armed-only) for an older
+           service payload that doesn't send d.sockets yet. -->
+      <div class="sub" style="margin-top:8px">sockets</div>
+      <div class="chips" id="b_all" style="margin-top:4px"></div>
     </div>
 
     <div class="card">
@@ -229,9 +234,17 @@ function render(d){
   // behavior automatically since bridges.length<=1 in that case.
   const bridges = d.bridges || (b.reachable ? [b] : []);
   const escb=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
-  $('b_all').innerHTML = bridges.length > 1
-    ? bridges.map(x=>`<span class="chip on">${escb(x.project||'?')} · :${x.port}</span>`).join('')
-    : '';
+  // AInsightfool (v1.0.9): d.sockets is EVERY configured port (armed and
+  // unarmed), so the chip row always shows the full range's status — falls
+  // back to bridges-only (the pre-1.0.9 payload shape) when an older
+  // service hasn't been redeployed yet.
+  const sockets = d.sockets || bridges;
+  $('b_all').innerHTML = sockets.map(x=>{
+    const on = !!x.available;
+    const label = on ? escb(x.project||'?') : 'offline';
+    const title = on ? '' : ` title="${escb(x.reason||'')}"`;
+    return `<span class="chip${on?' on':''}"${title}>:${x.port} ${label}</span>`;
+  }).join('');
   const sel = $('ctl_select');
   if(bridges.length > 1){
     const prev = sel.value;

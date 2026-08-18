@@ -4,6 +4,34 @@ All notable changes to ftx-mcp. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Per-release detail lives in
 `docs/release-notes-v<version>.md`.
 
+## [1.0.9]
+
+Theme: dashboard fixes — duplicate tool chips, and the bridge panel only
+showed what was armed. Full notes: `docs/release-notes-v1.0.9.md`.
+
+### Fixed
+- **`/ui` "Capabilities" panel showed each tool 2, 3, or more times**
+  (AInsightfool). `http_app.py`'s `_tools_catalog()` lazily builds the tool
+  list on first use and caches it in a plain `list`, guarded by `if not
+  _tool_catalog`. FastAPI runs a sync route handler like this one in a
+  worker-thread pool, so concurrent `/ui/stats` requests can call it from
+  different threads at once — a classic check-then-act race: while the list
+  is still empty, every thread that checks it before the first one finishes
+  appending also sees it as empty and starts its own append pass, so the
+  catalog ends up with N full copies of every tool. Normally invisible (one
+  poller, fast responses), but very visible while `/ui/stats` was slow
+  (the v1.0.7/1.0.8 port-scan issues, fixed separately) — a 2s poll interval
+  racing a 16-100s response time meant many requests were in flight
+  simultaneously, each hitting the race. Fixed with double-checked locking.
+
+### Added
+- **The Bridge panel now always shows every configured port's status**, not
+  just the ones currently armed. `ui_stats()` exposes a new `sockets` field
+  (every port in the range, armed or not, with a `reason` for unarmed ones)
+  alongside the existing `bridges` (armed-only); the dashboard's chip row
+  renders all of them so "4 sockets configured, 1 armed" is visible at a
+  glance instead of looking identical to "nothing configured."
+
 ## [1.0.8]
 
 Theme: the multi-instance scan shouldn't touch a live bridge's socket. Full
