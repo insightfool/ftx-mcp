@@ -2253,21 +2253,22 @@ def _bridge_health_at(cfg: Config, port: int, force: bool = False) -> dict:
     if not cfg.bridge_enabled:
         state = {"available": False, "responded": False, "project": None,
                   "bridge_version": None, "port": port, "reason": "disabled"}
-    elif not cfg.bridge_url_pinned and not _tcp_probe("127.0.0.1", port, timeout=0.2):
-        # AInsightfool: fast pre-check, range-scan mode only (skipped when
-        # bridge_url_pinned — there's only ever one port to check there, so
-        # there's nothing to save by pre-checking, and it's the legacy path
-        # every existing single-bridge test exercises). Scanning
-        # bridge_port_range ports on every cache miss means MOST of them
-        # typically have nothing listening (only as many projects as you're
-        # actually bridging are armed at once) — a bare TCP connect fails
-        # near-instantly (ECONNREFUSED) on an unbound port, so this skips the
-        # slower retry-with-sleep HTTP health check below for every port
-        # that's obviously not a bridge, keeping a cold-cache scan of the
-        # whole range fast.
-        state = {"available": False, "responded": False, "project": None,
-                  "bridge_version": None, "port": port, "reason": "unreachable"}
     else:
+        # AInsightfool (v1.0.8): a bare-connect/immediate-close TCP pre-check
+        # used to run here before the HTTP health probe, to skip the slower
+        # retry-loop below for ports that obviously have nothing listening.
+        # Removed: against a REAL listener (the C# bridge's single-threaded
+        # blocking TcpListener), a data-less probe that connects then closes
+        # can race the server's own accept/read/write cycle, so
+        # AcceptTcpClient()/NetworkStream reads or writes on that connection
+        # throw "An established connection was aborted by the software in
+        # your host machine" — logged by Loop()'s catch as a StudioBridge
+        # "request error" Warning. With a 2s cache TTL matched to the
+        # dashboard's 2s poll interval, this fired continuously against the
+        # live, armed bridge on every cache-miss scan. The HTTP retry-loop
+        # below is the only check now, for every port regardless of pinning;
+        # it costs a bit more on cold scans of genuinely-dead ports but never
+        # touches a live listener's socket without sending a real request.
         bcfg = dataclasses.replace(cfg, bridge_url=url)
         # The single-threaded listener can briefly stop accepting connections while
         # Studio does heavy designer work (e.g. materializing a ScreenType), so a
@@ -2303,6 +2304,14 @@ def _bridge_health_at(cfg: Config, port: int, force: bool = False) -> dict:
             except BridgeUnavailable as e:
                 state = {"available": False, "responded": False, "project": None,
                           "bridge_version": None, "port": port, "reason": str(e)}
+                # AInsightfool (v1.0.8): connection *refused* means nothing is
+                # listening on this port at all -- a definitive answer, not a
+                # transient block, so retrying just adds latency scanning a
+                # range where most ports are typically unarmed. Only sleep
+                # and retry for other transport failures (e.g. a timeout),
+                # which is what the retry loop exists for.
+                if isinstance(e.__cause__, ConnectionRefusedError):
+                    break
                 if i < 2:
                     time.sleep(0.4)
     _bridge_cache[url] = state

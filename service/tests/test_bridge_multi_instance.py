@@ -21,13 +21,15 @@ from service import core
 @pytest.fixture(autouse=True)
 def _clear_bridge_cache(monkeypatch) -> None:
     core.reset_bridge_cache()
-    # The multi-instance range-scan does a fast raw-socket pre-check
-    # (_tcp_probe) before the mockable HTTP layer to skip obviously-dead
-    # ports in production — nothing is really listening in this test sandbox,
-    # so without this every port would short-circuit to "unreachable" before
-    # ever reaching the _bridge_http fakes below. Force it through; the fakes
-    # themselves are what decide which ports actually answer.
-    monkeypatch.setattr(core, "_tcp_probe", lambda host, port, timeout=0.2: True)
+    # AInsightfool (v1.0.8): _bridge_health_at used to do a fast raw-socket
+    # pre-check (_tcp_probe) before the mockable HTTP layer, to skip
+    # obviously-dead ports in production. That pre-check was removed —
+    # against a real listener it could race the C# bridge's accept/read/write
+    # cycle and cause "connection aborted" errors on the live, armed bridge
+    # (see core.py's _bridge_health_at comment). Every port now goes straight
+    # through the mockable HTTP layer, so there's nothing left to force
+    # through here; keep the sleep patch so the retry loop (still present for
+    # transient transport failures) doesn't slow these tests down.
     monkeypatch.setattr(core.time, "sleep", lambda s: None)
     yield
     core.reset_bridge_cache()

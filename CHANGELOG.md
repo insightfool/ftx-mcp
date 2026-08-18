@@ -4,6 +4,32 @@ All notable changes to ftx-mcp. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Per-release detail lives in
 `docs/release-notes-v<version>.md`.
 
+## [1.0.8]
+
+Theme: the multi-instance scan shouldn't touch a live bridge's socket. Full
+notes: `docs/release-notes-v1.0.8.md`.
+
+### Fixed
+- **Multi-instance port scan aborted the live bridge's own connections**
+  (AInsightfool). `_bridge_health_at` (`service/core.py`, added in 1.0.7) did
+  a fast raw-socket pre-check (`_tcp_probe`: connect, then close immediately,
+  no data sent) against every port in the scanned range before falling back
+  to the real `/bridge/health` HTTP check — meant to skip ports with nothing
+  listening. Against a port that DID have the real, armed `StudioMCPBridge.cs`
+  listener behind it, that connect-then-abandon probe could race the C#
+  `TcpListener`'s single-threaded accept/read/write cycle: `AcceptTcpClient`
+  or the following `NetworkStream` write would throw "An established
+  connection was aborted by the software in your host machine," logged by
+  `Loop()`'s catch as a repeating `StudioBridge` "request error" Warning in
+  Studio's Output panel. Because the health cache TTL matches the `/ui`
+  dashboard's 2s poll interval, this fired continuously against the live
+  bridge for as long as the dashboard was open. The pre-check is removed —
+  every port now goes straight through the real HTTP health check, which
+  never touches a live listener's socket without sending an actual request.
+  A definitively-refused connection (nothing listening at all) still fails
+  fast without the retry-loop's `time.sleep`s, so a cold scan of an
+  otherwise-empty range isn't meaningfully slower.
+
 ## [1.0.7]
 
 Theme: bridge more than one Studio at once. Full notes:
