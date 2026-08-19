@@ -26,7 +26,15 @@ using FTOptix.CoreBase;
 // "MCPBridge" Optix library (component "StudioMCPBridge") for drag-in reuse.
 public class StudioMCPBridge : BaseNetLogic
 {
-    private const string BridgeVersion = "1.0.7";
+    // AInsightfool: kept in sync with the ftx-mcp service version (pyproject.toml /
+    // service/__init__.py / server.json) rather than left to lag behind it. Bump
+    // this alongside those whenever a change to THIS FILE actually alters bridge
+    // behavior; leave it alone for service/dashboard-only releases that never
+    // touch StudioMCPBridge.cs, since those genuinely don't change what the
+    // bridge does (a mismatch there is cosmetic - the string is just stale, not
+    // wrong about behavior). Last bumped for the StopBridge port-sweep + bind
+    // retry fix, which IS a real behavior change to this file.
+    private const string BridgeVersion = "1.0.11";
     // AInsightfool: multi-instance support (v1.0.7). Port is no longer a single
     // fixed const - each Studio instance self-assigns the first free port in
     // BasePort..BasePort+PortRangeSize-1, so up to PortRangeSize projects can
