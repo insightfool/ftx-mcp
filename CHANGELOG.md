@@ -4,6 +4,26 @@ All notable changes to ftx-mcp. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Per-release detail lives in
 `docs/release-notes-v<version>.md`.
 
+## [1.0.11]
+
+Theme: the Bridge panel's per-port chip row (added v1.0.9) showed which
+ports were armed but not what each one was actually running — the only
+version number on the whole dashboard was the single "primary" (first
+armed port) big number, ambiguous with more than one bridge up. Full
+notes: `docs/release-notes-v1.0.11.md`.
+
+### Changed
+- **Every bridge socket chip now shows its own version and last-saved
+  age**, not just its project name — `:8768 v1.0.7 RCB_LV2_...`. Hovering
+  any chip (armed or not) now gives the full per-port detail: version,
+  project, last-saved age when armed; the specific failure reason when
+  not. Previously only unarmed chips had a tooltip at all.
+- **A port that's answering HTTP but hasn't finished loading its project
+  now renders as a distinct amber "loading" chip**, instead of looking
+  identical to a port with nothing listening on it at all. Uses the
+  `responded`/`available` distinction `_scan_bridge_ports()` was already
+  computing per port — no backend change, purely a dashboard render fix.
+
 ## [1.0.10]
 
 Theme: Doctor checks were as ambiguous about the bridge as the panel v1.0.9

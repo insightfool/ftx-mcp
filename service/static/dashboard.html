@@ -40,6 +40,10 @@
   .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
   .chip{border:1px solid var(--line);border-radius:20px;padding:2px 9px;font-size:11px;color:var(--dim)}
   .chip.on{color:var(--cyan);border-color:#294}
+  /* AInsightfool (v1.0.11): a port that answers HTTP but hasn't reported
+     model_loaded=true yet (Studio still opening the project) is a distinct
+     state from "nothing listening" — amber, not just dim. */
+  .chip.loading{color:var(--amber);border-color:#6b4f1a}
 .chip.tk-destructive{border-color:#b4544a}
 .chip.tk-write{border-color:#3d6b8f} .chip.on{border-color:#1f5a52;color:var(--cyan)}
   .bar{height:6px;border-radius:6px;background:#16202c;overflow:hidden;margin-top:6px}
@@ -88,8 +92,20 @@
            the armed ones, so "4 sockets configured, only 1 answering" is
            visible at a glance instead of looking identical to "nothing
            configured". Falls back to d.bridges (armed-only) for an older
-           service payload that doesn't send d.sockets yet. -->
-      <div class="sub" style="margin-top:8px">sockets</div>
+           service payload that doesn't send d.sockets yet.
+           AInsightfool (v1.0.11): each chip now carries its OWN version and
+           last-saved age (the single big "Bridge" version number above only
+           ever reflects the primary/first-armed port, which was ambiguous
+           with >1 bridge up) — on hover every chip shows version + project +
+           last-saved for armed ports, or the specific reason for unarmed
+           ones. A port that answers HTTP but hasn't finished loading its
+           project (model_loaded=false) now renders as a distinct amber
+           "loading" chip instead of looking identical to "nothing listening
+           at all". All of this comes from data ui_stats() was already
+           computing per-port (_scan_bridge_ports' `responded`/`available`
+           fields, and the last_saved_epoch already attached to every armed
+           entry) — no backend change needed, purely a render fix. -->
+      <div class="sub" style="margin-top:8px">sockets — hover for detail</div>
       <div class="chips" id="b_all" style="margin-top:4px"></div>
     </div>
 
@@ -247,11 +263,30 @@ function render(d){
   // back to bridges-only (the pre-1.0.9 payload shape) when an older
   // service hasn't been redeployed yet.
   const sockets = d.sockets || bridges;
+  // AInsightfool (v1.0.11): three states per port, not two — `available`
+  // (fully armed) vs `responded` (HTTP answered but model_loaded=false,
+  // i.e. Studio is still opening the project) vs neither (nothing
+  // listening / refused / disabled). Version + last-saved are shown right
+  // on the chip when armed, and everything's repeated in the tooltip so a
+  // hover always gives the full per-port picture without cross-referencing
+  // Doctor Checks.
   $('b_all').innerHTML = sockets.map(x=>{
-    const on = !!x.available;
-    const label = on ? esc(x.project||'?') : 'offline';
-    const title = on ? '' : ` title="${esc(x.reason||'')}"`;
-    return `<span class="chip${on?' on':''}"${title}>:${x.port} ${label}</span>`;
+    const ver = x.bridge_version ? ('v'+x.bridge_version) : '';
+    let cls='', label, tip;
+    if(x.available){
+      cls=' on';
+      label = [ver, x.project||'?'].filter(Boolean).join(' ');
+      tip = [ver, x.project?('serving '+x.project):null, 'saved '+fmtAge(x.last_saved_epoch)]
+        .filter(Boolean).join(' — ');
+    } else if(x.responded){
+      cls=' loading';
+      label = 'loading…';
+      tip = [ver, x.project?('project '+x.project):null, x.reason].filter(Boolean).join(' — ');
+    } else {
+      label = 'offline';
+      tip = x.reason || '';
+    }
+    return `<span class="chip${cls}" title="${esc(tip)}">:${x.port} ${esc(label)}</span>`;
   }).join('');
   const sel = $('ctl_select');
   if(bridges.length > 1){
