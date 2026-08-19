@@ -55,7 +55,35 @@ public class StudioMCPBridge : BaseNetLogic
     // Studio.exe processes - so it's what carries the bound port from
     // StartListener to a later StopBridge, keeping StopBridge scoped to only
     // this instance's own bridge, never a sibling Studio's.
+    //
+    // AInsightfool (v1.0.12): this USED TO hold a single port number (whatever
+    // StartListener bound most recently), which meant StopBridge could only ever
+    // recover ONE listener. That broke down for a very ordinary sequence: edit
+    // this NetLogic's code (or just fire StartBridge again quickly after a
+    // StopBridge, before the old listener thread noticed the stop signal and
+    // actually closed its socket - see Loop's ~50ms poll) - the new StartBridge
+    // lands on a DIFFERENT port and overwrites this value, and the OLD port
+    // becomes permanently un-signallable: nothing remembers it exists anymore,
+    // even though the underlying per-port named stop-event (OpenStopEvent) would
+    // happily have stopped it if only something had asked. Confirmed live: an
+    // edited+rebuilt copy of this NetLogic left the PREVIOUS compiled listener
+    // thread serving the same project on its old port indefinitely, invisible to
+    // StopBridge, fixable only by closing Studio outright.
+    //
+    // Now holds a COMMA-SEPARATED LIST of every port this Studio PROCESS has
+    // bound and not yet confirmed torn down - appended to by StartListener,
+    // with each port removing ONLY ITSELF (never the whole list) once its own
+    // Loop() thread actually exits (see Loop's finally). StopBridge sweeps and
+    // signals every port in the list, not just one - see ReadBoundPorts /
+    // AddBoundPort / RemoveBoundPort below, and StopListener.
     private const string BoundPortEnvVar = "FTX_STUDIOBRIDGE_BOUND_PORT";
+    // Named kernel mutex guarding the list's read-modify-write cycle (parse,
+    // mutate, re-serialize) against concurrent AddBoundPort/RemoveBoundPort
+    // calls from OTHER ALCs' threads - a plain C# lock only protects callers
+    // within the SAME ALC (statics, including lock objects, don't cross ALC
+    // boundaries; see the class-level comment on _listener), so this needs the
+    // same named-kernel-object trick OpenStopEvent already relies on.
+    private const string PortListMutexName = "Local\\StudioMCPBridge_PortList_Mutex";
 
     private static string StopEventNameFor(int port) => "Local\\StudioMCPBridge_Stop_p" + port;
 
@@ -173,6 +201,76 @@ public class StudioMCPBridge : BaseNetLogic
         return new EventWaitHandle(false, EventResetMode.ManualReset, StopEventNameFor(port));
     }
 
+    // AInsightfool (v1.0.12): BoundPortEnvVar port-list helpers. See the
+    // comment on BoundPortEnvVar's declaration for why this exists (a single
+    // remembered port silently orphaned any PREVIOUS listener once a second
+    // StartBridge landed on a different port).
+    //
+    // ReadBoundPorts is an unlocked snapshot read - fine for StopListener's
+    // sweep, which just needs "recent enough" (worst case it misses a port
+    // added a moment ago and cleans it up on the next Stop). AddBoundPort /
+    // RemoveBoundPort do a locked read-modify-write via PortListMutexName so
+    // two concurrent mutations (e.g. a new StartListener adding its port at
+    // the same moment an old Loop() thread is removing its own) can't clobber
+    // each other.
+    private static List<int> ParsePortList(string raw)
+    {
+        var result = new List<int>();
+        if (string.IsNullOrEmpty(raw)) return result;
+        foreach (var tok in raw.Split(','))
+        {
+            int p;
+            if (int.TryParse(tok.Trim(), out p) && !result.Contains(p)) result.Add(p);
+        }
+        return result;
+    }
+
+    private static List<int> ReadBoundPorts()
+    {
+        return ParsePortList(Environment.GetEnvironmentVariable(BoundPortEnvVar));
+    }
+
+    private static void MutateBoundPorts(Action<List<int>> mutate)
+    {
+        using (var mtx = new Mutex(false, PortListMutexName))
+        {
+            bool owned = false;
+            try
+            {
+                // Bounded wait, not indefinite - a stuck/abandoned mutex must never
+                // hang a StartBridge/StopBridge click forever.
+                owned = mtx.WaitOne(TimeSpan.FromSeconds(2));
+                var ports = ParsePortList(Environment.GetEnvironmentVariable(BoundPortEnvVar));
+                mutate(ports);
+                Environment.SetEnvironmentVariable(BoundPortEnvVar, ports.Count == 0 ? null : string.Join(",", ports));
+            }
+            catch (AbandonedMutexException)
+            {
+                // The mutex's previous owner exited (e.g. Studio crashed) mid-update -
+                // we still got ownership; the list may be slightly stale but that's
+                // self-healing (next Add/Remove or StopBridge sweep corrects it).
+                var ports = ParsePortList(Environment.GetEnvironmentVariable(BoundPortEnvVar));
+                mutate(ports);
+                Environment.SetEnvironmentVariable(BoundPortEnvVar, ports.Count == 0 ? null : string.Join(",", ports));
+                owned = true;
+            }
+            finally
+            {
+                if (owned) { try { mtx.ReleaseMutex(); } catch { /* ignore */ } }
+            }
+        }
+    }
+
+    private static void AddBoundPort(int port)
+    {
+        MutateBoundPorts(ports => { if (!ports.Contains(port)) ports.Add(port); });
+    }
+
+    private static void RemoveBoundPort(int port)
+    {
+        MutateBoundPorts(ports => ports.Remove(port));
+    }
+
     // AInsightfool: tries each port in BasePort..BasePort+PortRangeSize-1 in turn
     // and binds the first free one, instead of exclusively owning a single fixed
     // port. This is what lets PortRangeSize Studio instances each run their own
@@ -181,6 +279,38 @@ public class StudioMCPBridge : BaseNetLogic
     // survives the ALC reload) so a later StopBridge call - which runs in a fresh
     // ALC with none of this method's static state - can recover exactly which
     // port THIS Studio instance is using and signal only that one.
+    // AInsightfool (v1.0.12): binds `port` with a few short retries before giving
+    // up on it. Absorbs the window between a StopBridge signal and the OLD
+    // listener thread actually noticing it and closing its socket (Loop polls
+    // the stop event roughly every 50ms, longer if it's mid-HandleClient) - so
+    // an ordinary "StopBridge, then StartBridge again a moment later" reclaims
+    // ITS OWN port instead of creeping down the range because of a false "port
+    // in use" from a teardown that just hadn't finished yet. Only retries on
+    // SocketException (genuinely still bound / still tearing down); anything
+    // else propagates immediately, unchanged from before this fix.
+    private bool TryBindWithRetry(int port, out TcpListener listener, out SocketException bindError)
+    {
+        bindError = null;
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            try
+            {
+                var l = new TcpListener(IPAddress.Loopback, port);
+                l.Start();               // exclusive bind (no SO_REUSEADDR - a clear
+                                         // "in use" beats a silent double-bind).
+                listener = l;
+                return true;
+            }
+            catch (SocketException ex)
+            {
+                bindError = ex;
+                if (attempt < 3) Thread.Sleep(150);   // ~450ms worst case before this port's given up on
+            }
+        }
+        listener = null;
+        return false;
+    }
+
     private void StartListener(string via)
     {
         for (int port = BasePort; port < BasePort + PortRangeSize; port++)
@@ -188,27 +318,12 @@ public class StudioMCPBridge : BaseNetLogic
             // Clear any prior stop-signal for THIS port so a fresh loop on it
             // doesn't exit immediately.
             try { using (var ev = OpenStopEvent(port)) ev.Reset(); } catch { /* ignore */ }
+            TcpListener listener;
+            SocketException bindError;
+            bool bound;
             try
             {
-                var listener = new TcpListener(IPAddress.Loopback, port);
-                listener.Start();           // exclusive bind (no SO_REUSEADDR - a clear
-                                            // "in use" beats a silent double-bind); a
-                                            // SocketException here just means THIS port
-                                            // is taken (by another instance's bridge) -
-                                            // try the next one in the range.
-                _listener = listener;
-                _boundPort = port;
-                Environment.SetEnvironmentVariable(BoundPortEnvVar, port.ToString());
-                _running = true;
-                new Thread(() => Loop(port)) { IsBackground = true, Name = "StudioBridge" }.Start();
-                Log.Info("StudioBridge", "listening on http://127.0.0.1:" + port +
-                         " (started via " + via + ")");
-                return;
-            }
-            catch (SocketException)
-            {
-                _running = false; _listener = null; _boundPort = -1;
-                continue;   // this port's taken; try the next one in the range
+                bound = TryBindWithRetry(port, out listener, out bindError);
             }
             catch (Exception ex)
             {
@@ -216,31 +331,63 @@ public class StudioMCPBridge : BaseNetLogic
                 Log.Error("StudioBridge", "failed to start on port " + port + ": " + ex.Message);
                 return;
             }
+            if (!bound)
+            {
+                _running = false; _listener = null; _boundPort = -1;
+                continue;   // still taken after the retries above; try the next port in the range
+            }
+            _listener = listener;
+            _boundPort = port;
+            // AInsightfool (v1.0.12): ADD to the process-wide port list rather than
+            // overwriting it - see BoundPortEnvVar's comment. A prior port left
+            // bound by an orphaned/edited-and-rebuilt listener stays remembered
+            // here until ITS OWN Loop() thread removes it (or a StopBridge sweep
+            // signals it to exit and it removes itself), instead of being silently
+            // forgotten the moment this new port gets recorded.
+            AddBoundPort(port);
+            _running = true;
+            new Thread(() => Loop(port)) { IsBackground = true, Name = "StudioBridge" }.Start();
+            Log.Info("StudioBridge", "listening on http://127.0.0.1:" + port +
+                     " (started via " + via + ")");
+            return;
         }
         Log.Error("StudioBridge", "cannot bind any port in " + BasePort + "-" +
             (BasePort + PortRangeSize - 1) + " - " + PortRangeSize +
-            " bridges are already running, or a stale one holds a port. StopBridge on an " +
-            "idle project frees one, or close+reopen that Studio to drop an orphaned-reload " +
-            "listener. Raise PortRangeSize in StudioMCPBridge.cs if you routinely need more " +
-            "than " + PortRangeSize + " simultaneous bridges.");
+            " bridges are already running, or a stale one holds a port. StopBridge now sweeps " +
+            "EVERY port this process has ever bound (not just the most recent), so clicking it " +
+            "once more should free any orphan left by an edited-and-rebuilt NetLogic - if it " +
+            "still doesn't, close+reopen this Studio to drop a listener from before this fix was " +
+            "applied. Raise PortRangeSize in StudioMCPBridge.cs if you routinely need more than " +
+            PortRangeSize + " simultaneous bridges.");
     }
 
     private void StopListener() { StopListener(false); }
 
     private void StopListener(bool quiet)
     {
-        // Recover the port THIS Studio instance's bridge is (or was) bound to.
-        // Can't read _boundPort here - StopBridge runs in a fresh ALC where that
-        // static was never set - so read the process-env var StartListener wrote
-        // instead (see BoundPortEnvVar).
-        string portStr = Environment.GetEnvironmentVariable(BoundPortEnvVar);
-        int port;
-        if (!string.IsNullOrEmpty(portStr) && int.TryParse(portStr, out port))
+        // Recover EVERY port THIS Studio process's bridge is (or might still be)
+        // bound to. Can't read _boundPort here - StopBridge runs in a fresh ALC
+        // where that static was never set - so read the process-env var
+        // StartListener/AddBoundPort maintain instead (see BoundPortEnvVar).
+        //
+        // AInsightfool (v1.0.12): sweep ALL of them, not just one - a NetLogic
+        // recompile (edit this file, rebuild, StartBridge again) leaves the
+        // PREVIOUS compiled listener thread alive on its own port, which used to
+        // be silently forgotten the moment the new port overwrote this value.
+        // Signalling every recorded port's named stop-event means one StopBridge
+        // click cleans up all of them - including that kind of orphan - without
+        // needing Studio closed.
+        var ports = ReadBoundPorts();
+        if (ports.Count > 0)
         {
-            // The cross-ALC signal (the only thing that reliably reaches the running loop).
-            try { using (var ev = OpenStopEvent(port)) ev.Set(); }
-            catch (Exception ex) { Log.Warning("StudioBridge", "stop-signal failed: " + ex.Message); }
-            if (!quiet) Log.Info("StudioBridge", "stop signalled (port " + port + " releasing)");
+            foreach (var port in ports)
+            {
+                // The cross-ALC signal (the only thing that reliably reaches each
+                // running loop, whichever ALC generation it belongs to).
+                try { using (var ev = OpenStopEvent(port)) ev.Set(); }
+                catch (Exception ex) { Log.Warning("StudioBridge", "stop-signal failed for port " + port + ": " + ex.Message); }
+            }
+            if (!quiet) Log.Info("StudioBridge", "stop signalled (port(s) " + string.Join(", ", ports) + " releasing)");
         }
         else if (!quiet)
         {
@@ -251,7 +398,11 @@ public class StudioMCPBridge : BaseNetLogic
         _running = false;
         var l = _listener; _listener = null; _boundPort = -1;
         try { l?.Stop(); } catch { /* ignore */ }
-        try { Environment.SetEnvironmentVariable(BoundPortEnvVar, null); } catch { /* ignore */ }
+        // NOTE: do NOT blank-clear BoundPortEnvVar here. Each Loop() thread removes
+        // ONLY ITS OWN port (see Loop's finally / RemoveBoundPort) once it actually
+        // exits, so the list stays accurate for any port that hasn't finished
+        // tearing down yet by the time this method returns, instead of being wiped
+        // out from under it.
     }
 
     // NOTE: main-thread marshaling via DelayedTask(0, node) was tried and REMOVED -
@@ -298,7 +449,12 @@ public class StudioMCPBridge : BaseNetLogic
             try { _listener?.Stop(); } catch { /* ignore */ }
             _listener = null;
             _boundPort = -1;
-            try { Environment.SetEnvironmentVariable(BoundPortEnvVar, null); } catch { /* ignore */ }
+            // AInsightfool (v1.0.12): remove ONLY this port from the shared list, not
+            // the whole thing - a blanket clear here would erase the record of any
+            // OTHER port this process still has a live (or still-orphaned) listener
+            // on, which is exactly the bug this release fixes. See BoundPortEnvVar's
+            // comment and RemoveBoundPort.
+            try { RemoveBoundPort(port); } catch { /* ignore */ }
             try { stopEv?.Dispose(); } catch { /* ignore */ }
             Log.Info("StudioBridge", "listener loop exited; port " + port + " released");
         }
