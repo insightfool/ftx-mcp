@@ -4206,11 +4206,29 @@ def doctor(cfg: Config) -> dict:
     add("projects_root", cfg.projects_root.is_dir(), cfg.projects_root,
         "Create the projects folder, or set OPTIX_PROJECTS_ROOT.", required=True)
 
-    st = bridge_state(cfg)
-    add("bridge", st["available"],
-        f"version={st.get('bridge_version')} serving={st.get('project')} ({st.get('reason')})",
-        "For LIVE authoring: open the project in Studio and right-click the "
-        "StudioBridge NetLogic -> StartBridge. Not needed for file-path edits.")
+    # AInsightfool (v1.0.9): a single "bridge" row was ambiguous once
+    # multi-instance support (v1.0.7) meant up to bridge_port_range ports
+    # could each be independently armed or not — one ok/fail couldn't say
+    # WHICH of them. Kept as exactly ONE row named "bridge" (unchanged name,
+    # for back-compat with anything reading doctor()'s checks by name — see
+    # test_doctor.py) when there's only one port to report (the legacy
+    # bridge_url_pinned path, or a range collapsed to size 1); split into one
+    # row per port, named "bridge :<port>", only when there's actually more
+    # than one to distinguish.
+    _bridge_fix = ("For LIVE authoring: open the project in Studio and right-click the "
+                   "StudioBridge NetLogic -> StartBridge. Not needed for file-path edits.")
+    _sockets = _scan_bridge_ports(cfg)
+    if len(_sockets) <= 1:
+        st = _sockets[0] if _sockets else {"available": False, "reason": "no ports configured",
+                                            "bridge_version": None, "project": None}
+        add("bridge", st["available"],
+            f"version={st.get('bridge_version')} serving={st.get('project')} ({st.get('reason')})",
+            _bridge_fix)
+    else:
+        for st in _sockets:
+            detail = (f"version={st.get('bridge_version')} serving={st.get('project')}"
+                       if st.get("available") else st.get("reason", "unreachable"))
+            add(f"bridge :{st.get('port')}", st.get("available", False), detail, _bridge_fix)
 
     try:
         from . import _cdp

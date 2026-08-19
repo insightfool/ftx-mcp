@@ -157,6 +157,9 @@
 <script>
 const $=id=>document.getElementById(id);
 let lastSeen=null, feed=[];
+// AInsightfool (v1.0.9): one shared HTML-escape, replacing three near-identical
+// inline copies (esc/escv/escb) that had accumulated across render() edits.
+function esc(x){return String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');}
 function pill(ok){return ok?'<span class="ok">● ok</span>':'<span class="bad">● down</span>';}
 function tick(){ $('clock').textContent=new Date().toLocaleTimeString(); }
 setInterval(tick,1000); tick();
@@ -197,17 +200,23 @@ function render(d){
   const dc=d.doctor||[]; const okc=dc.filter(x=>x.ok).length;
   $('s_doc').textContent=okc+'/'+dc.length+' ok';
   const mc=d.mcp_client;
-  const escv=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
   $('s_mcp').innerHTML = mc && mc.name
-    ? `<span class="ok">${escv(mc.name)}${mc.version?(' '+escv(mc.version)):''}</span>`
+    ? `<span class="ok">${esc(mc.name)}${mc.version?(' '+esc(mc.version)):''}</span>`
     : '<span class="sub">none connected</span>';
   $('s_bar').style.width=(dc.length? Math.round(100*okc/dc.length):0)+'%';
-  // checks
-  $('checks').innerHTML=dc.map(x=>`<div class="row"><span class="k">${x.name}</span><span class="v ${x.ok?'ok':'bad'}">${x.ok?'ok':'fail'}</span></div>`).join('')||'<div class="sub">no data</div>';
+  // checks — AInsightfool (v1.0.9): each row's title tooltip now surfaces
+  // `detail` (what was actually found, e.g. a version/path/URL) and `fix`
+  // (the plain-English remedy) that doctor() always computed but the UI
+  // never showed — hover any row (studio_exe, cdp, tesseract, pillow, a
+  // per-port "bridge :8768", ...) to see what it means and how to fix a
+  // failing one, instead of just an opaque ok/fail.
+  $('checks').innerHTML=dc.map(x=>{
+    const tip = [x.detail, x.ok?null:x.fix].filter(Boolean).join(' — ');
+    return `<div class="row" title="${esc(tip)}"><span class="k">${esc(x.name)}</span><span class="v ${x.ok?'ok':'bad'}">${x.ok?'ok':'fail'}</span></div>`;
+  }).join('')||'<div class="sub">no data</div>';
   // capabilities
   $('cap_types').textContent=cap.widget_types!=null?cap.widget_types:'—';
   // dynamic tool chips from the live MCP registry — hover for the summary
-  const esc=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
   const tools=cap.tools||[];
   $('cap_tools').innerHTML=tools.map(t=>
     `<span class="chip on tk-${t.kind}" title="${esc(t.summary)} [${t.kind}]">${esc(t.name.replace(/^optix_/,''))}</span>`).join('')
@@ -233,7 +242,6 @@ function render(d){
   // below that, curProj resolution collapses to the pre-1.0.7 single-bridge
   // behavior automatically since bridges.length<=1 in that case.
   const bridges = d.bridges || (b.reachable ? [b] : []);
-  const escb=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
   // AInsightfool (v1.0.9): d.sockets is EVERY configured port (armed and
   // unarmed), so the chip row always shows the full range's status — falls
   // back to bridges-only (the pre-1.0.9 payload shape) when an older
@@ -241,14 +249,14 @@ function render(d){
   const sockets = d.sockets || bridges;
   $('b_all').innerHTML = sockets.map(x=>{
     const on = !!x.available;
-    const label = on ? escb(x.project||'?') : 'offline';
-    const title = on ? '' : ` title="${escb(x.reason||'')}"`;
+    const label = on ? esc(x.project||'?') : 'offline';
+    const title = on ? '' : ` title="${esc(x.reason||'')}"`;
     return `<span class="chip${on?' on':''}"${title}>:${x.port} ${label}</span>`;
   }).join('');
   const sel = $('ctl_select');
   if(bridges.length > 1){
     const prev = sel.value;
-    sel.innerHTML = bridges.map(x=>`<option value="${escb(x.project||'')}">${escb(x.project||'?')} · :${x.port}</option>`).join('');
+    sel.innerHTML = bridges.map(x=>`<option value="${esc(x.project||'')}">${esc(x.project||'?')} · :${x.port}</option>`).join('');
     if(bridges.some(x=>x.project===prev)) sel.value = prev;
     sel.style.display = '';
     sel.onchange = () => { curProj = sel.value; syncButtons(); };

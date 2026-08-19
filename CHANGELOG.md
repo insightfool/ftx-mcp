@@ -4,6 +4,25 @@ All notable changes to ftx-mcp. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Per-release detail lives in
 `docs/release-notes-v<version>.md`.
 
+## [1.0.10]
+
+Theme: Doctor checks were as ambiguous about the bridge as the panel v1.0.9
+just fixed, and nothing explained what the feature checks meant. Full
+notes: `docs/release-notes-v1.0.10.md`.
+
+### Changed
+- **Doctor checks now report one row per configured bridge port**
+  (`bridge :8768`, `bridge :8769`, ...) instead of a single ambiguous
+  `bridge` row that only ever said "is at least one of up to 4 armed."
+  Falls back to the exact original single `bridge` row name when only one
+  port is configured (the legacy `OPTIX_BRIDGE_URL`-pinned path) — no
+  change there, preserving back-compat for anything reading checks by name.
+- **Every Doctor check row now has a hover tooltip** on the `/ui` dashboard,
+  showing the `detail` (what was actually found) and, for a failing check,
+  the `fix` (the plain-English remedy) — `doctor()` always computed both,
+  the UI just never surfaced them. Answers "what does cdp / tesseract /
+  pillow mean" directly from the panel instead of needing to ask.
+
 ## [1.0.9]
 
 Theme: dashboard fixes — duplicate tool chips, and the bridge panel only
