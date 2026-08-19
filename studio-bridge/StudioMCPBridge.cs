@@ -56,7 +56,7 @@ public class StudioMCPBridge : BaseNetLogic
     // StartListener to a later StopBridge, keeping StopBridge scoped to only
     // this instance's own bridge, never a sibling Studio's.
     //
-    // AInsightfool (v1.0.12): this USED TO hold a single port number (whatever
+    // AInsightfool: this USED TO hold a single port number (whatever
     // StartListener bound most recently), which meant StopBridge could only ever
     // recover ONE listener. That broke down for a very ordinary sequence: edit
     // this NetLogic's code (or just fire StartBridge again quickly after a
@@ -201,7 +201,7 @@ public class StudioMCPBridge : BaseNetLogic
         return new EventWaitHandle(false, EventResetMode.ManualReset, StopEventNameFor(port));
     }
 
-    // AInsightfool (v1.0.12): BoundPortEnvVar port-list helpers. See the
+    // AInsightfool: BoundPortEnvVar port-list helpers. See the
     // comment on BoundPortEnvVar's declaration for why this exists (a single
     // remembered port silently orphaned any PREVIOUS listener once a second
     // StartBridge landed on a different port).
@@ -279,7 +279,7 @@ public class StudioMCPBridge : BaseNetLogic
     // survives the ALC reload) so a later StopBridge call - which runs in a fresh
     // ALC with none of this method's static state - can recover exactly which
     // port THIS Studio instance is using and signal only that one.
-    // AInsightfool (v1.0.12): binds `port` with a few short retries before giving
+    // AInsightfool: binds `port` with a few short retries before giving
     // up on it. Absorbs the window between a StopBridge signal and the OLD
     // listener thread actually noticing it and closing its socket (Loop polls
     // the stop event roughly every 50ms, longer if it's mid-HandleClient) - so
@@ -338,7 +338,7 @@ public class StudioMCPBridge : BaseNetLogic
             }
             _listener = listener;
             _boundPort = port;
-            // AInsightfool (v1.0.12): ADD to the process-wide port list rather than
+            // AInsightfool: ADD to the process-wide port list rather than
             // overwriting it - see BoundPortEnvVar's comment. A prior port left
             // bound by an orphaned/edited-and-rebuilt listener stays remembered
             // here until ITS OWN Loop() thread removes it (or a StopBridge sweep
@@ -370,7 +370,7 @@ public class StudioMCPBridge : BaseNetLogic
         // where that static was never set - so read the process-env var
         // StartListener/AddBoundPort maintain instead (see BoundPortEnvVar).
         //
-        // AInsightfool (v1.0.12): sweep ALL of them, not just one - a NetLogic
+        // AInsightfool: sweep ALL of them, not just one - a NetLogic
         // recompile (edit this file, rebuild, StartBridge again) leaves the
         // PREVIOUS compiled listener thread alive on its own port, which used to
         // be silently forgotten the moment the new port overwrote this value.
@@ -449,7 +449,7 @@ public class StudioMCPBridge : BaseNetLogic
             try { _listener?.Stop(); } catch { /* ignore */ }
             _listener = null;
             _boundPort = -1;
-            // AInsightfool (v1.0.12): remove ONLY this port from the shared list, not
+            // AInsightfool: remove ONLY this port from the shared list, not
             // the whole thing - a blanket clear here would erase the record of any
             // OTHER port this process still has a live (or still-orphaned) listener
             // on, which is exactly the bug this release fixes. See BoundPortEnvVar's
