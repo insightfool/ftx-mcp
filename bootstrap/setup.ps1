@@ -76,6 +76,7 @@ param(
     [switch]$EnableAuth,
     [switch]$NoAuthPrompt,
     [switch]$NoServiceRegister,
+    [switch]$HideConsole,
     [string]$RepoRoot
 )
 
@@ -325,10 +326,6 @@ if (-not (Test-Path $venvDir)) {
 }
 
 $venvPython = Join-Path $venvDir "Scripts\python.exe"
-# added -- the scheduled task now launches via pythonw.exe
-# (see the task-action block below) instead of python.exe, so the
-# installer needs this path too.
-$venvPythonW = Join-Path $venvDir "Scripts\pythonw.exe"
 & $venvPython -m pip install --quiet --upgrade pip
 # [visual] extra = Pillow, the pixel gate for optix_cdp_diff. Cheap pure
 # wheel; installed by default in the full local setup (the lean base matters
@@ -406,21 +403,20 @@ if ($NoServiceRegister) {
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
     }
 
-    # changed this action from `python.exe -m service` to
-    # pythonw.exe + run_hidden.py, and baked it into the installer itself
-    # (not just a manually-patched live task) so a fresh install/reinstall
-    # on any PC gets the windowless behavior without extra steps.
-    # pythonw.exe (not python.exe) + bootstrap\run_hidden.py: the task runs
-    # in the operator's interactive logon session, so a console-subsystem
-    # python.exe pops a visible window there (and so does every console
-    # tool -- taskkill, tasklist, powershell -- the service shells out to
-    # for status/health checks). pythonw.exe never allocates a console;
-    # run_hidden.py exists solely to give it real stdout/stderr file handles
-    # first, since pythonw's are None and the service's first log line would
-    # otherwise crash it silently (nowhere to show the traceback).
+    # ONE launcher: console-subsystem python.exe, always. Windows fixes
+    # console attachment from the exe SUBSYSTEM, so the windowless variant
+    # would mean a second launcher (pythonw.exe) with two costs -- no
+    # stdout/stderr at all, and no console for children to inherit, so every
+    # shell-out allocates a fresh one and flashes. -HideConsole instead asks
+    # the service to hide the console it already owns (service/main.py,
+    # _hide_console_if_asked): real streams kept, children inherit a hidden
+    # window and draw nothing. The operator can also set OPTIX_HIDE_CONSOLE=1
+    # to get it on every start without re-registering the task.
+    $svcArgs = "-m service"
+    if ($HideConsole) { $svcArgs = "-m service --hide-console" }
     $action = New-ScheduledTaskAction `
-        -Execute $venvPythonW `
-        -Argument "bootstrap\run_hidden.py" `
+        -Execute $venvPython `
+        -Argument $svcArgs `
         -WorkingDirectory $RepoRoot
     # No -Trigger: the task is manual-only by design; start via
     # bootstrap/services.ps1 start (or Start-ScheduledTask). This keeps a

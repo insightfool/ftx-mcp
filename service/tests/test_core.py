@@ -272,8 +272,7 @@ def test_run_subprocess_with_tree_kill_suppresses_console_on_windows(
 ) -> None:
     """lock-in: every child spawned through here
     (taskkill/tasklist/netstat/powershell/...) is a console-subsystem tool.
-    Under a windowless pythonw.exe parent (no console of its own — the
-    scheduled task's actual runtime mode, via bootstrap/run_hidden.py),
+    Under any parent with no console of its own,
     Windows allocates a brand-new console for each one, which flashes on
     screen for the call's duration — the "PowerShell keeps popping up and
     closing" bug. creationflags=CREATE_NO_WINDOW must be set by default on
@@ -567,3 +566,24 @@ class TestDefaultStudioExe:
 
         assert core._default_studio_exe() == newest
 
+
+
+def test_hide_console_is_opt_in_via_flag_or_env(monkeypatch) -> None:
+    """The console is hidden ONLY on explicit request. Locks in the
+    single-launcher decision: the scheduled task always runs console-subsystem
+    python.exe, so the service itself must hide the window -- and must not do
+    it uninvited, because the default start is meant to keep the console."""
+    from service.main import _should_hide_console
+
+    monkeypatch.delenv("OPTIX_HIDE_CONSOLE", raising=False)
+    assert _should_hide_console([]) is False              # default: visible
+    assert _should_hide_console(["--hide-console"]) is True
+
+    for truthy in ("1", "true", "YES", "on"):
+        monkeypatch.setenv("OPTIX_HIDE_CONSOLE", truthy)
+        assert _should_hide_console([]) is True, truthy
+    for falsy in ("0", "false", "", "no"):
+        monkeypatch.setenv("OPTIX_HIDE_CONSOLE", falsy)
+        assert _should_hide_console([]) is False, falsy
+        # the flag still wins over an explicit off
+        assert _should_hide_console(["--hide-console"]) is True, truthy

@@ -212,7 +212,7 @@ def _tree_kill(pid: int) -> None:
     if os.name == "nt":
         try:
             # creationflags stops this taskkill from flashing a
-            # console window under the windowless pythonw.exe service (see
+            # console window, whatever the parent's console state (see
             # _run_subprocess_with_tree_kill below for the full explanation —
             # same root cause, same fix).
             subprocess.run(
@@ -247,9 +247,11 @@ def _run_subprocess_with_tree_kill(cmd: list[str], **kwargs: Any) -> subprocess.
         # every child spawned through here (taskkill, tasklist,
         # netstat, powershell, ...) is a console-subsystem tool. Under a
         # console parent (python.exe) it just attaches to the already-open
-        # console, invisibly. Under a windowless parent (pythonw.exe, which
-        # the scheduled task runs under via bootstrap/run_hidden.py) Windows
-        # has nowhere to attach it and pops a brand-new console that flashes
+        # console, invisibly — and that is the normal case, since the task
+        # runs python.exe (--hide-console merely HIDES that console, so
+        # children still inherit it and draw nothing). Under a windowless
+        # parent with no console at all, Windows would instead have nowhere
+        # to attach a child and pop a brand-new console that flashes
         # on screen for the call's duration — visible as a repeating
         # cmd/PowerShell-window flash from anything that polls status on an
         # interval (e.g. the /ui dashboard hitting /health or optix_doctor

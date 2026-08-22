@@ -240,7 +240,53 @@ def _ensure_state_dirs(cfg: core.Config) -> None:
             pass
 
 
+def _should_hide_console(argv: list[str]) -> bool:
+    """Either mechanism: --hide-console for a one-off, OPTIX_HIDE_CONSOLE for
+    an operator who wants it on every start without re-registering the task.
+    Same truthy set as FTX_AUTH_REQUIRED so there is one convention to learn.
+
+    Split out from the Win32 call so the DECISION is testable off-Windows.
+    """
+    if "--hide-console" in argv:
+        return True
+    return os.environ.get("OPTIX_HIDE_CONSOLE", "").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
+def _hide_console_if_asked(argv: list[str]) -> None:
+    """Hide this process's console window on request.
+
+    Opt in with --hide-console or OPTIX_HIDE_CONSOLE=1.
+
+    Windows decides console attachment from the executable's SUBSYSTEM, not
+    from any runtime flag: python.exe is console-subsystem so Windows always
+    allocates one. The alternative -- registering the task against
+    pythonw.exe -- costs two things this does not: pythonw has no
+    stdout/stderr at all (they are None, so the first log line raises), and
+    it leaves no console for child processes to inherit, so every shell-out
+    allocates a fresh one and flashes on screen.
+
+    Hiding the console we already own keeps real stdout/stderr and keeps a
+    console for children to inherit (they draw into a hidden window, i.e.
+    nothing). One launcher, one code path. The only cost is a brief flicker
+    at startup before the window is hidden -- once per service start, not
+    once per shell-out.
+    """
+    if os.name != "nt" or not _should_hide_console(argv):
+        return
+    try:
+        import ctypes
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+    except Exception:
+        # Never let a cosmetic window tweak stop the service from starting.
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _hide_console_if_asked(list(argv or []))
     cfg = core.Config.from_env()
     _ensure_state_dirs(cfg)
 
