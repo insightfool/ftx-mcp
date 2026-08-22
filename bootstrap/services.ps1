@@ -62,11 +62,12 @@ function Set-ServiceConsoleMode {
     $exe = $t.Actions[0].Execute
     $wd  = $t.Actions[0].WorkingDirectory
     $want = if ($Hide) { "-m service --hide-console" } else { "-m service" }
-    if ($t.Actions[0].Arguments -eq $want) { return }   # already correct
+    if ($t.Actions[0].Arguments -eq $want) { return $false }   # already correct
     $a = New-ScheduledTaskAction -Execute $exe -Argument $want -WorkingDirectory $wd
     Set-ScheduledTask -TaskName $Script:FtxTaskName -Action $a | Out-Null
     Write-Host ("  mode  {0,-28} {1}" -f $Script:FtxTaskName,
         $(if ($Hide) { "console hidden" } else { "console visible" })) -ForegroundColor DarkCyan
+    return $true
 }
 
 # Each entry: TaskName + the port the task is expected to bind (used by
@@ -160,7 +161,17 @@ foreach ($t in $tasks) {
         continue
     }
     if ($name -eq $Script:FtxTaskName -and $Action -in @("start","restart")) {
-        Set-ServiceConsoleMode -Hide:$Silent.IsPresent
+        $modeChanged = Set-ServiceConsoleMode -Hide:$Silent.IsPresent
+        # A task action only takes effect on the NEXT launch, and
+        # Start-ScheduledTask is a no-op while the task is already Running --
+        # so a bare `start -Silent` against a live service would rewrite the
+        # definition and change nothing the operator can see. Recycle it.
+        if ($modeChanged -and $Action -eq "start" -and
+            (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue).State -eq "Running") {
+            Write-Host ("  recyc {0,-28} (console mode changed while running)" -f $name) -ForegroundColor DarkCyan
+            Do-Stop $name $t.Port
+            Start-Sleep -Seconds 1
+        }
     }
     switch ($Action) {
         "start" {
