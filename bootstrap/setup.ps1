@@ -431,7 +431,8 @@ if ($NoServiceRegister) {
         -Action $action `
         -Settings $settings `
         -Principal $principal | Out-Null
-    Ok "scheduled task '$taskName' registered (manual start; use bootstrap\services.ps1)"
+    $modeNote = if ($HideConsole) { "console hidden" } else { "console visible" }
+    Ok "scheduled task '$taskName' registered ($modeNote; manual start; use bootstrap\services.ps1)"
 
     # Deliberately NOT started here (field feedback 2026-07-22): setup used to
     # start the main task but not chrome-cdp, leaving a confusing half-started
@@ -506,7 +507,18 @@ if ($NoServiceRegister) {
 Section "Done"
 Write-Host "ftx-mcp install complete." -ForegroundColor Green
 Write-Host ""
-Write-Host "  START THE SERVICE (both tasks):  .\bootstrap\services.ps1 start" -ForegroundColor Cyan
+# services.ps1 OWNS the console mode on every start, by design: the verb you use
+# is the behavior you get, no sticky state. The consequence is that a plain
+# `start` rewrites the task action back to "-m service" and silently undoes
+# -HideConsole -- so this banner has to name the verb matching the install the
+# operator just chose, or setup's own last instruction throws the flag away.
+if ($HideConsole) {
+    Write-Host "  START THE SERVICE (both tasks):  .\bootstrap\services.ps1 start -Silent" -ForegroundColor Cyan
+    Write-Host "    -Silent keeps the console hidden; a plain 'start' clears it again." -ForegroundColor DarkGray
+    Write-Host "    For hidden on EVERY start regardless of verb: set OPTIX_HIDE_CONSOLE=1." -ForegroundColor DarkGray
+} else {
+    Write-Host "  START THE SERVICE (both tasks):  .\bootstrap\services.ps1 start" -ForegroundColor Cyan
+}
 Write-Host "  HTTP   http://127.0.0.1:$httpPort"
 Write-Host "  MCP    http://127.0.0.1:$mcpPort/mcp"
 Write-Host "  state  $state"
