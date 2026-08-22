@@ -16,6 +16,10 @@
 .PARAMETER Action
     One of: start | stop | restart | status | enable-autostart | disable-autostart.
     start    - Start-ScheduledTask on each registered task.
+               Add -Silent to start the service with its console hidden
+               (rewrites the task action to pass --hide-console). A plain
+               start clears it again, so the verb you use is the behavior
+               you get -- no sticky state.
     stop     - Stop-ScheduledTask on each registered task.
     restart  - stop, sleep 1s, then start.
     status   - report State, LastRunTime, LastTaskResult, port-listen,
@@ -34,12 +38,36 @@
 param(
     [Parameter(Mandatory=$true, Position=0)]
     [ValidateSet("start", "stop", "restart", "status", "enable-autostart", "disable-autostart")]
-    [string]$Action
+    [string]$Action,
+    # Applies to start/restart. Rewrites the ftx-mcp task action to pass (or
+    # NOT pass) --hide-console, then starts it -- so the SAME verb controls
+    # console visibility and the task definition always tells the truth about
+    # how the service was last started. Deterministic in both directions: a
+    # plain start clears the flag, -Silent sets it.
+    [switch]$Silent
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot "_common.ps1")
+
+function Set-ServiceConsoleMode {
+    # The scheduled task always launches console-subsystem python.exe (there is
+    # deliberately no second, windowless launcher to validate). --hide-console
+    # asks the service to hide the console it already owns, which keeps real
+    # stdout/stderr and leaves a console for child processes to inherit.
+    param([bool]$Hide)
+    $t = Get-ScheduledTask -TaskName $Script:FtxTaskName -ErrorAction SilentlyContinue
+    if (-not $t) { return }
+    $exe = $t.Actions[0].Execute
+    $wd  = $t.Actions[0].WorkingDirectory
+    $want = if ($Hide) { "-m service --hide-console" } else { "-m service" }
+    if ($t.Actions[0].Arguments -eq $want) { return }   # already correct
+    $a = New-ScheduledTaskAction -Execute $exe -Argument $want -WorkingDirectory $wd
+    Set-ScheduledTask -TaskName $Script:FtxTaskName -Action $a | Out-Null
+    Write-Host ("  mode  {0,-28} {1}" -f $Script:FtxTaskName,
+        $(if ($Hide) { "console hidden" } else { "console visible" })) -ForegroundColor DarkCyan
+}
 
 # Each entry: TaskName + the port the task is expected to bind (used by
 # status to TCP-probe presence). 0 means "no port to probe".
@@ -130,6 +158,9 @@ foreach ($t in $tasks) {
     if (-not $task) {
         Write-Host ("  skip  {0,-28} (not registered)" -f $name) -ForegroundColor DarkGray
         continue
+    }
+    if ($name -eq $Script:FtxTaskName -and $Action -in @("start","restart")) {
+        Set-ServiceConsoleMode -Hide:$Silent.IsPresent
     }
     switch ($Action) {
         "start" {
