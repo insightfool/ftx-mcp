@@ -270,7 +270,7 @@ def test_runner_default_fn_is_tree_kill_aware() -> None:
 def test_run_subprocess_with_tree_kill_suppresses_console_on_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AInsightfool (v1.0.6) lock-in: every child spawned through here
+    """lock-in: every child spawned through here
     (taskkill/tasklist/netstat/powershell/...) is a console-subsystem tool.
     Under a windowless pythonw.exe parent (no console of its own — the
     scheduled task's actual runtime mode, via bootstrap/run_hidden.py),

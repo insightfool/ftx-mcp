@@ -40,7 +40,7 @@
   .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
   .chip{border:1px solid var(--line);border-radius:20px;padding:2px 9px;font-size:11px;color:var(--dim)}
   .chip.on{color:var(--cyan);border-color:#294}
-  /* AInsightfool (v1.0.11): a port that answers HTTP but hasn't reported
+  /* (v1.0.11) a port that answers HTTP but hasn't reported
      model_loaded=true yet (Studio still opening the project) is a distinct
      state from "nothing listening" — amber, not just dim. */
   .chip.loading{color:var(--amber);border-color:#6b4f1a}
@@ -84,16 +84,16 @@
       <div class="row"><span class="k">model loaded</span><span class="v" id="b_model">—</span></div>
       <div class="row"><span class="k">last saved</span><span class="v" id="b_saved">—</span></div>
       <div class="row"><span class="k">thread</span><span class="v accent">http-bg (inline)</span></div>
-      <!-- AInsightfool (v1.0.7): multi-instance bridge support — several Studio
+      <!-- multi-instance bridge support — several Studio
            instances can be armed at once, one per port. Controls' project
            picker below reads from d.bridges (armed ports only).
-           AInsightfool (v1.0.9): this chip row now ALWAYS shows every
+           (v1.0.9) this chip row now ALWAYS shows every
            CONFIGURED port (d.sockets — armed and unarmed alike), not just
            the armed ones, so "4 sockets configured, only 1 answering" is
            visible at a glance instead of looking identical to "nothing
            configured". Falls back to d.bridges (armed-only) for an older
            service payload that doesn't send d.sockets yet.
-           AInsightfool (v1.0.11): each chip now carries its OWN version and
+           (v1.0.11) each chip now carries its OWN version and
            last-saved age (the single big "Bridge" version number above only
            ever reflects the primary/first-armed port, which was ambiguous
            with >1 bridge up) — on hover every chip shows version + project +
@@ -173,7 +173,7 @@
 <script>
 const $=id=>document.getElementById(id);
 let lastSeen=null, feed=[];
-// AInsightfool (v1.0.9): one shared HTML-escape, replacing three near-identical
+// one shared HTML-escape, replacing three near-identical
 // inline copies (esc/escv/escb) that had accumulated across render() edits.
 function esc(x){return String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');}
 function pill(ok){return ok?'<span class="ok">● ok</span>':'<span class="bad">● down</span>';}
@@ -220,7 +220,7 @@ function render(d){
     ? `<span class="ok">${esc(mc.name)}${mc.version?(' '+esc(mc.version)):''}</span>`
     : '<span class="sub">none connected</span>';
   $('s_bar').style.width=(dc.length? Math.round(100*okc/dc.length):0)+'%';
-  // checks — AInsightfool (v1.0.9): each row's title tooltip now surfaces
+  // checks — (v1.0.9) each row's title tooltip now surfaces
   // `detail` (what was actually found, e.g. a version/path/URL) and `fix`
   // (the plain-English remedy) that doctor() always computed but the UI
   // never showed — hover any row (studio_exe, cdp, tesseract, pillow, a
@@ -252,18 +252,18 @@ function render(d){
   $('f_deploy').innerHTML = f.deploy_configured?`<span class="ok">${f.deploy_ip||''} ✓</span>`:'<span class="warn">not configured</span>';
   // bridge last-saved + control target
   $('b_saved').textContent = fmtAge(b.last_saved_epoch);
-  // AInsightfool (v1.0.7): multi-instance — d.bridges lists EVERY armed
+  // multi-instance — d.bridges lists EVERY armed
   // bridge (project + port), not just the primary one `b` echoes for
   // back-compat. Chip list + a project picker when more than one is up;
   // below that, curProj resolution collapses to the pre-1.0.7 single-bridge
   // behavior automatically since bridges.length<=1 in that case.
   const bridges = d.bridges || (b.reachable ? [b] : []);
-  // AInsightfool (v1.0.9): d.sockets is EVERY configured port (armed and
+  // d.sockets is EVERY configured port (armed and
   // unarmed), so the chip row always shows the full range's status — falls
   // back to bridges-only (the pre-1.0.9 payload shape) when an older
   // service hasn't been redeployed yet.
   const sockets = d.sockets || bridges;
-  // AInsightfool (v1.0.11): three states per port, not two — `available`
+  // three states per port, not two — `available`
   // (fully armed) vs `responded` (HTTP answered but model_loaded=false,
   // i.e. Studio is still opening the project) vs neither (nothing
   // listening / refused / disabled). Version + last-saved are shown right

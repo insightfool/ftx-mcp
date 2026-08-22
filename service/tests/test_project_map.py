@@ -32,7 +32,7 @@ TREE = {
 
 @pytest.fixture(autouse=True)
 def _bridge_up(monkeypatch):
-    # AInsightfool: get_project_map now resolves its OWN bridge routing via
+    # get_project_map now resolves its OWN bridge routing via
     # _require_bridge_for (multi-instance, v1.0.7) instead of the old
     # guard-then-call-cfg-unchanged pattern _use_bridge_for used to gate —
     # patching _use_bridge_for alone no longer has any effect on it. Patch

@@ -14,7 +14,7 @@ from service.tests.conftest import FakeProc, make_fake_runner, make_project
 @pytest.fixture(autouse=True)
 def _no_bridge_by_default(monkeypatch) -> None:
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: False)
-    # AInsightfool: run_emulator resolves its OWN bridge routing via
+    # run_emulator resolves its OWN bridge routing via
     # _bridge_cfg_for (multi-instance, v1.0.7) instead of the old
     # _use_bridge_for-then-cfg-unchanged gate — patch it too so "no bridge" by
     # default still holds (target_pid stays 0, matching pre-1.0.7 behavior).

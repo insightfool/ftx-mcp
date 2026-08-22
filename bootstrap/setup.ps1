@@ -325,7 +325,7 @@ if (-not (Test-Path $venvDir)) {
 }
 
 $venvPython = Join-Path $venvDir "Scripts\python.exe"
-# AInsightfool: added -- the scheduled task now launches via pythonw.exe
+# added -- the scheduled task now launches via pythonw.exe
 # (see the task-action block below) instead of python.exe, so the
 # installer needs this path too.
 $venvPythonW = Join-Path $venvDir "Scripts\pythonw.exe"
@@ -406,7 +406,7 @@ if ($NoServiceRegister) {
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
     }
 
-    # AInsightfool: changed this action from `python.exe -m service` to
+    # changed this action from `python.exe -m service` to
     # pythonw.exe + run_hidden.py, and baked it into the installer itself
     # (not just a manually-patched live task) so a fresh install/reinstall
     # on any PC gets the windowless behavior without extra steps.

@@ -1,4 +1,4 @@
-# AInsightfool: new file. The scheduled task previously ran
+# new file. The scheduled task previously ran
 # `python.exe -m service` directly, which kept a visible console window open
 # (the user found the "watch its status" console more clutter than help).
 # Switching straight to pythonw.exe broke silently because pythonw has no
@@ -23,7 +23,7 @@ install-smoke run), otherwise the default %LOCALAPPDATA%\\ftx-mcp. Do not
 hardcode a path -- this file ships as part of the distro and must work
 unmodified on any PC/username setup.ps1 installs onto.
 
-AInsightfool: pythonw.exe itself never allocates a console, so this
+pythonw.exe itself never allocates a console, so this
 launcher (and the service it starts) never triggers the console-popup bug
 this way. The companion fix — service/core.py's Runner defaulting every
 subprocess call to creationflags=CREATE_NO_WINDOW — is what stops the

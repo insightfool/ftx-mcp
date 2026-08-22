@@ -46,7 +46,7 @@ EXPECTED_TOOLS = {
 
     "optix_bridge_convert_to_type",
     "optix_bridge_validate_expression",
-    # AInsightfool: generic ExecuteMethod invoke, no optix_bridge_edit op verb
+    # generic ExecuteMethod invoke, no optix_bridge_edit op verb
     # equivalent -- never gated (see the FTXMCP_BRIDGE_PRIMITIVES comment).
     "optix_bridge_invoke_method",
     # The 14 per-noun bridge primitives (set_property/bind_property/
@@ -210,7 +210,7 @@ def test_mcp_tools_carry_readonly_destructive_annotations(cfg: core.Config) -> N
                    # U16 batch: a batch may carry a delete op, so the batch tool
                    # inherits the most destructive thing it can dispatch
                    "optix_bridge_edit",
-                   # AInsightfool: runs arbitrary NetLogic method code; impact
+                   # runs arbitrary NetLogic method code; impact
                    # is whatever the method does, not knowable generically, so
                    # it's flagged destructive rather than a plain write.
                    "optix_bridge_invoke_method"}
@@ -871,7 +871,7 @@ def test_with_project_tool_count_and_annotations_unchanged(cfg: core.Config) -> 
     optix_status (58 - 3 = 55); the 5-tool optix_run_emulator/_restart_emulator/
     _stop_emulator/_emulator_status/_runtime_log_tail family folds into
     optix_emulator (55 - 4 = 51); the 14 per-noun bridge primitives are gated
-    OFF by default behind FTXMCP_BRIDGE_PRIMITIVES (51 - 14 = 37). AInsightfool
+    OFF by default behind FTXMCP_BRIDGE_PRIMITIVES (51 - 14 = 37).
     (v1.0.6): optix_bridge_invoke_method adds one, never gated (37 + 1 = 38)."""
     mcp = make_mcp(cfg)
     by_name = {t.name: t for t in _list_tools(mcp)}

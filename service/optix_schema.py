@@ -65,7 +65,7 @@ def fetch_schema_dump(
     """
     if get_json is None:
         get_json = core._bridge_get_json
-        # AInsightfool: rebind to the SPECIFIC bridge serving `project` (one of
+        # rebind to the SPECIFIC bridge serving `project` (one of
         # possibly several simultaneously armed, each on its own port) rather
         # than the old implicit single cfg.bridge_url.
         cfg = core._require_bridge_for(cfg, project)

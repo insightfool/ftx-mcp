@@ -211,7 +211,7 @@ def _tree_kill(pid: int) -> None:
     """
     if os.name == "nt":
         try:
-            # AInsightfool: creationflags stops this taskkill from flashing a
+            # creationflags stops this taskkill from flashing a
             # console window under the windowless pythonw.exe service (see
             # _run_subprocess_with_tree_kill below for the full explanation —
             # same root cause, same fix).
@@ -244,7 +244,7 @@ def _run_subprocess_with_tree_kill(cmd: list[str], **kwargs: Any) -> subprocess.
     deploy_timeout_seconds by minutes (phase2-roadmap Finding 2).
     """
     if os.name == "nt":
-        # AInsightfool: every child spawned through here (taskkill, tasklist,
+        # every child spawned through here (taskkill, tasklist,
         # netstat, powershell, ...) is a console-subsystem tool. Under a
         # console parent (python.exe) it just attaches to the already-open
         # console, invisibly. Under a windowless parent (pythonw.exe, which
@@ -450,7 +450,7 @@ class Config:
     bridge_url: str = "http://127.0.0.1:8768"  # :8768 since bridge v0.5.0 (was :8767)
     bridge_token: str | None = None
     bridge_enabled: bool = True
-    # AInsightfool: multi-instance bridge support (v1.0.7). StudioMCPBridge.cs no
+    # multi-instance bridge support (v1.0.7). StudioMCPBridge.cs no
     # longer exclusively owns :8768 - each Studio instance self-binds the first
     # free port in [bridge_port_base, bridge_port_base + bridge_port_range), so
     # up to `bridge_port_range` projects can have an armed bridge AT THE SAME
@@ -584,7 +584,7 @@ class Config:
                 if os.environ.get("OPTIX_TOKENS_PATH")
                 else state_dir / "secrets" / "tokens.json.dpapi",
             cdp_url=os.environ.get("OPTIX_CDP_URL", "http://127.0.0.1:9222"),
-            # AInsightfool: OPTIX_BRIDGE_URL explicitly set = the legacy
+            # OPTIX_BRIDGE_URL explicitly set = the legacy
             # single-bridge pin (bridge_url_pinned=True), which skips
             # range-scanning entirely and always talks to that one URL —
             # unset = the new default, multi-instance range-scan mode.
@@ -663,7 +663,7 @@ def _now_iso(ts: float | None = None) -> str:
     return when.isoformat(timespec="seconds")
 
 
-# AInsightfool: dropped the old outright rejection of "/" and "\\" in
+# dropped the old outright rejection of "/" and "\\" in
 # `project` (only ".." is still rejected up front). That extra check blocked
 # every legitimately nested project name (e.g. "RCB/CELL 4/RCB_LV2_...")
 # even though the real security boundary — the is_relative_to(root) check
@@ -899,7 +899,7 @@ _LIST_PROJECTS_SKIP_DIRS = {
 _LIST_PROJECTS_MAX_DEPTH = 4  # folders under projects_root a project may be nested
 
 
-# AInsightfool: rewrote from a flat, single-level iterdir() to a recursive
+# rewrote from a flat, single-level iterdir() to a recursive
 # walk (capped at _LIST_PROJECTS_MAX_DEPTH, skipping _LIST_PROJECTS_SKIP_DIRS)
 # so projects organized into subfolders (e.g. RCB/CELL 4/<project>) actually
 # show up. Companion fix to the resolve_project relaxation above — both were
@@ -973,7 +973,7 @@ def _attributed_studio_pass(
     """
     if cfg.studio_guard_mode != "attributed":
         return None
-    # AInsightfool: NOT relaxed for multi-instance bridging (v1.0.7). With
+    # NOT relaxed for multi-instance bridging (v1.0.7). With
     # several Studio PIDs open, attribution would need to map EACH running PID
     # to the specific bridge (if any) it owns — bridge_state()/list_bridges()
     # alone don't carry PID, only served-project — and getting that wrong here
@@ -1134,7 +1134,7 @@ def find_in_project(
     # property name+value), which is the query shape callers reach `find` for while
     # authoring. When the bridge is down or serving a different project, fall through
     # to the file scan unchanged.
-    # AInsightfool: rebind to the bridge SERVING this project (one of possibly
+    # rebind to the bridge SERVING this project (one of possibly
     # several simultaneously armed) rather than the old implicit single cfg.bridge_url.
     _bridge_cfg = _bridge_cfg_for(cfg, project)
     if _bridge_cfg is not None:
@@ -1217,7 +1217,7 @@ def find_in_project(
 # (studio_guard is non-attributable): the bridge serving on its port IS the
 # open-project identity.
 
-# AInsightfool: multi-instance bridge support (v1.0.7). This USED TO be a single
+# multi-instance bridge support (v1.0.7). This USED TO be a single
 # {available, project, ...} snapshot for the one well-known bridge at
 # cfg.bridge_url. Now that up to cfg.bridge_port_range Studio instances can each
 # have an armed bridge on their own self-assigned port, the cache is keyed by
@@ -1418,7 +1418,7 @@ def _bridge_write_guard(cfg: Config, project: str) -> Config:
     mutate the live model — there is no file fallback); else return `cfg`
     rebound to that SPECIFIC bridge's URL.
 
-    AInsightfool: now just _require_bridge_for under its original write-path
+    now just _require_bridge_for under its original write-path
     name — with multi-instance support the caller MUST use the returned,
     rebound cfg for its bridge calls (`cfg = _bridge_write_guard(cfg, project)`),
     not the cfg it passed in, or it'll target whichever bridge happens to be
@@ -1459,7 +1459,7 @@ def classify_bridge_failure(cfg: Config, project: str, exc: Exception) -> dict:
         }
 
     # BridgeUnavailable → probe health directly for a precise classification.
-    # AInsightfool: scan every port in range, not just cfg.bridge_url's base
+    # scan every port in range, not just cfg.bridge_url's base
     # port — with several bridges potentially armed, the base port alone can
     # be unbound while a DIFFERENT port is serving the WRONG project (or is
     # the RIGHT one, mid-transient-failure); probing only the base port would
@@ -1803,7 +1803,7 @@ def _untrusted(value: object, source: str) -> str:
     return f'<untrusted source="{source}">{safe}</untrusted>'
 
 
-# AInsightfool: added the `timeout` kwarg (default None -> unchanged 8s
+# added the `timeout` kwarg (default None -> unchanged 8s
 # behavior). Discovered live: invoke_method calling a slow built-in method
 # (FindBrokenDynamicLink scanning a whole project) blew past the 8s default
 # and came back as a false "bridge unreachable" — the bridge was fine, the
@@ -2155,7 +2155,7 @@ def bridge_delete_node(cfg: Config, project: str, node_path: str) -> dict:
     )
 
 
-# AInsightfool: new — generic wrapper around the bridge's new
+# new — generic wrapper around the bridge's new
 # /bridge/node/invoke endpoint (IUAObject.ExecuteMethod), added so any
 # exported NetLogic method — including Optix's own built-in
 # SearchBrokenDynamicLinks/FixAliasDynamicLinkMode tools — can be triggered
@@ -2173,13 +2173,13 @@ def bridge_invoke_method(
     open + the bridge.
 
     `timeout` (seconds) defaults to 60, well above the 8s default every
-    other bridge write uses (AInsightfool): unlike a property set, an
+    other bridge write uses : unlike a property set, an
     arbitrary NetLogic method's runtime is unknowable — e.g. Optix's own
     SearchBrokenDynamicLinks scans the whole project and can legitimately
     run long on a large one. Raise it further via this param for a method
     known to be even slower.
 
-    CONFIRMED HAZARD (AInsightfool): calling Optix's own
+    CONFIRMED HAZARD: calling Optix's own
     SearchBrokenDynamicLinks.FindBrokenDynamicLink through this endpoint has
     been observed to kill the entire FTOptixStudio.exe process outright —
     reproduced twice, across two separate Studio sessions, with no exception
@@ -2513,14 +2513,14 @@ def ui_stats(cfg: Config) -> dict:
     except Exception:
         pass
     try:
-        # AInsightfool: multi-instance (v1.0.7) — `bridges` is the full list of
+        # multi-instance (v1.0.7) — `bridges` is the full list of
         # everything currently armed (one entry per port answering), so the
         # dashboard can show every open project instead of assuming there's
         # only one. `out["bridge"]` stays as the PRIMARY (first-in-port-order)
         # single-bridge summary for back-compat with the pre-1.0.7 dashboard
         # fields — with more than one armed, prefer `bridges` for the full
         # picture; `bridge` alone doesn't say which project it's describing.
-        # AInsightfool (v1.0.9): scan ONCE via _scan_bridge_ports() and derive
+        # scan ONCE via _scan_bridge_ports() and derive
         # both `bridges` (armed only) and `sockets` (every configured port,
         # armed or not — so the dashboard can show "4 configured, 1 armed"
         # instead of just the 1) from the same results, instead of two
@@ -2574,7 +2574,7 @@ def ui_stats(cfg: Config) -> dict:
         # Studio's own type system, not per-project) — the primary bridge's
         # port is a fine source for it, no need to ask each one.
         primary_port = out.get("bridge", {}).get("port")
-        # AInsightfool (v1.0.8): skip this call entirely when NOTHING is
+        # skip this call entirely when NOTHING is
         # armed anywhere -- we already know from the `bridges` scan above
         # that there's no listener to ask, so a call here (previously it
         # fell back to cfg's default single bridge_url and asked anyway)
@@ -2607,7 +2607,7 @@ def ui_stats(cfg: Config) -> dict:
 def _bridge_ports(cfg: Config) -> list[int]:
     """Candidate bridge ports to probe, in order.
 
-    AInsightfool: a single port when cfg.bridge_url_pinned (OPTIX_BRIDGE_URL was
+    a single port when cfg.bridge_url_pinned (OPTIX_BRIDGE_URL was
     set explicitly — the documented legacy escape hatch for a rebound bridge
     port), else the whole configured range [bridge_port_base,
     bridge_port_base + bridge_port_range).
@@ -2628,7 +2628,7 @@ def _is_connection_refused(exc: BaseException | None) -> bool:
     -one is listening on that port" answer, as opposed to a timeout or some
     other transport failure.
 
-    AInsightfool (v1.0.8): `_bridge_http` raises `BridgeUnavailable(...) from
+    (v1.0.8) `_bridge_http` raises `BridgeUnavailable(...) from
     e` where `e` is the `urllib.error.URLError`/`OSError` it caught -- NOT
     the raw socket exception directly. `urllib.request.urlopen` wraps a bare
     `ConnectionRefusedError` in a `URLError`, stashing the original exception
@@ -2652,7 +2652,7 @@ def _bridge_health_at(cfg: Config, port: int, force: bool = False) -> dict:
     reports model_loaded. Cached ~2s per port (reads arrive in bursts). Never
     raises — an unreachable bridge is a normal "unavailable", not an error.
 
-    AInsightfool: this is the per-port building block bridge_state /
+    this is the per-port building block bridge_state /
     list_bridges / _find_bridge_for are all built on — see the module-level
     _bridge_cache comment for why the cache moved from one global snapshot to
     one per port.
@@ -2667,7 +2667,7 @@ def _bridge_health_at(cfg: Config, port: int, force: bool = False) -> dict:
         state = {"available": False, "responded": False, "project": None,
                   "bridge_version": None, "port": port, "reason": "disabled"}
     else:
-        # AInsightfool (v1.0.8): a bare-connect/immediate-close TCP pre-check
+        # a bare-connect/immediate-close TCP pre-check
         # used to run here before the HTTP health probe, to skip the slower
         # retry-loop below for ports that obviously have nothing listening.
         # Removed: against a REAL listener (the C# bridge's single-threaded
@@ -2718,7 +2718,7 @@ def _bridge_health_at(cfg: Config, port: int, force: bool = False) -> dict:
             except BridgeUnavailable as e:
                 state = {"available": False, "responded": False, "project": None,
                           "bridge_version": None, "port": port, "reason": str(e)}
-                # AInsightfool (v1.0.8): connection *refused* means nothing is
+                # connection *refused* means nothing is
                 # listening on this port at all -- a definitive answer, not a
                 # transient block, so retrying just adds latency scanning a
                 # range where most ports are typically unarmed. Only sleep
@@ -2738,7 +2738,7 @@ def _scan_bridge_ports(cfg: Config, force: bool = False) -> list[dict]:
     """Every configured port's health snapshot, in port order — armed AND
     unarmed alike (unlike list_bridges(), which filters to available=True).
 
-    AInsightfool (v1.0.9): factored out of list_bridges() so a caller that
+    (v1.0.9) factored out of list_bridges() so a caller that
     wants the FULL picture (e.g. ui_stats()'s `sockets` field, so the /ui
     dashboard can show "4 configured, 1 armed" instead of just the 1) can get
     it from the SAME scan list_bridges() already does, instead of a second
@@ -2747,7 +2747,7 @@ def _scan_bridge_ports(cfg: Config, force: bool = False) -> list[dict]:
     ports = _bridge_ports(cfg)
     if len(ports) <= 1:
         return [_bridge_health_at(cfg, ports[0], force=force)] if ports else []
-    # AInsightfool (v1.0.8): scan the range CONCURRENTLY, not one port at
+    # scan the range CONCURRENTLY, not one port at
     # a time. Each _bridge_health_at() call on an unarmed port costs a
     # full real HTTP connection attempt now that the (buggy) raw-socket
     # pre-check is gone -- on a box where a refused connection isn't
@@ -2768,7 +2768,7 @@ def _scan_bridge_ports(cfg: Config, force: bool = False) -> list[dict]:
 def list_bridges(cfg: Config, force: bool = False) -> list[dict]:
     """Every bridge currently answering across the configured port range.
 
-    AInsightfool: the multi-instance replacement for what used to be a single
+    the multi-instance replacement for what used to be a single
     bridge_state() snapshot. Returns one entry per port that answers
     available=True: [{available, project, bridge_version, port, reason}, ...],
     in port order. Empty when nothing's armed. Drives optix_bridge_status and
@@ -2782,7 +2782,7 @@ def bridge_state(cfg: Config, force: bool = False) -> dict:
     """Back-compat single-bridge view: the FIRST available bridge in port
     order, or a summary {available:False, reason} when none answer.
 
-    AInsightfool: kept for callers that only care "is anything up at all"
+    kept for callers that only care "is anything up at all"
     (classify_bridge_failure's unreachable-studio branch, the legacy single-
     bridge dashboard fields) — prefer list_bridges() for anything that needs
     to reason about MULTIPLE simultaneously-armed bridges.
@@ -2817,7 +2817,7 @@ def default_project(cfg: Config) -> str | None:
     single-seat flow — instead of naming it every time (and without a
     list_projects round-trip). None when no bridge is serving one.
 
-    AInsightfool: with multi-instance support, more than one bridge can be
+    with multi-instance support, more than one bridge can be
     armed at once — in that case there is no longer a single "the" project to
     default to, so this now deliberately returns None and requires an
     explicit `project=` rather than guessing which of several open projects
@@ -2863,7 +2863,7 @@ def _find_bridge_for(cfg: Config, project: str) -> dict | None:
     searching every port in the configured range. None if no armed bridge
     matches.
 
-    AInsightfool: this is the routing step that makes multi-instance work —
+    this is the routing step that makes multi-instance work —
     with several bridges armed simultaneously, each on its own port, THIS is
     what picks the right one for a given project instead of assuming there's
     only one to check."""
@@ -2880,7 +2880,7 @@ def _bridge_cfg_for(cfg: Config, project: str) -> Config | None:
     """`cfg` rebound to the SPECIFIC bridge URL serving `project`, or None if
     no armed bridge serves it.
 
-    AInsightfool: the choke point every bridge call site uses. Every
+    the choke point every bridge call site uses. Every
     _bridge_get_json/_bridge_post_json/_bridge_post_body/_bridge_write call
     downstream reads cfg.bridge_url unchanged — rebinding it HERE, once, is
     what makes the rest of the bridge plumbing (unchanged since before
@@ -3717,7 +3717,7 @@ def save(
     # Studio window — with several Studio instances open, "first window" can
     # save the WRONG project silently. When no bridge serves this project
     # (target_pid stays 0), behaviour is unchanged: the first focus-able Studio
-    # window — AInsightfool: this is also the multi-instance fix for "the
+    # window — this is also the multi-instance fix for "the
     # wrong project's emulator/save got targeted" — arming a bridge for every
     # open project (see StudioMCPBridge.cs's port range) means target_pid is
     # resolvable for each of them instead of falling back to a guess.
@@ -3921,7 +3921,7 @@ def active_target(
     PID first. `source` is "uia_live" when the live toolbar was read (definitive,
     Windows + bridge + session-1), else the config-file path (lazy, may be stale).
 
-    AInsightfool: multi-instance-aware. Pass `project` to target a SPECIFIC
+    multi-instance-aware. Pass `project` to target a SPECIFIC
     armed bridge's Studio window. Without it: zero or exactly one bridge armed
     behaves as before (no bridge -> config-file fallback; one bridge -> that
     one). With SEVERAL bridges armed and no `project` given, this refuses to
@@ -3997,7 +3997,7 @@ def run_emulator(
     # Resolve the bridge-owner PID FIRST — the live UIA target read needs it, and
     # the F5 keystroke below aims at the SAME instance (with several Studio
     # windows open, "first window" can F5 the wrong project). Computed once,
-    # reused. AInsightfool: this is the crux of the wrong-project-emulator fix —
+    # reused. This is the crux of the wrong-project-emulator fix —
     # arming a bridge for EVERY open project (StudioMCPBridge.cs now supports
     # several at once, each on its own port) means target_pid resolves for
     # whichever project was actually asked for, instead of only ever being
@@ -4673,7 +4673,7 @@ def doctor(cfg: Config) -> dict:
     add("projects_root", cfg.projects_root.is_dir(), cfg.projects_root,
         "Create the projects folder, or set OPTIX_PROJECTS_ROOT.", required=True)
 
-    # AInsightfool (v1.0.9): a single "bridge" row was ambiguous once
+    # a single "bridge" row was ambiguous once
     # multi-instance support (v1.0.7) meant up to bridge_port_range ports
     # could each be independently armed or not — one ok/fail couldn't say
     # WHICH of them. Kept as exactly ONE row named "bridge" (unchanged name,

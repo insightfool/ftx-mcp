@@ -542,7 +542,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         """Status of the design-time read-bridge(s) (NetLogic HTTP listener(s)
         in Studio).
 
-        AInsightfool: multi-instance (v1.0.7) — up to several Studio instances
+        multi-instance (v1.0.7) — up to several Studio instances
         can each have an armed bridge SIMULTANEOUSLY, one per project, so this
         now returns `bridges`: a list, one entry per port currently answering
         {available, project, bridge_version, port, reason}, plus `count`.
@@ -1252,7 +1252,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         return _bridge_guarded(project, lambda: core.bridge_delete_node(
             cfg, project, node_path))
 
-    # AInsightfool: new tool, registered alongside the new
+    # new tool, registered alongside the new
     # core.bridge_invoke_method wrapper -- exposes the bridge's generic
     # /bridge/node/invoke endpoint so any exported NetLogic method can be
     # triggered from here (originally requested to run Optix's built-in
@@ -1275,7 +1275,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         does is NOT undoable by this tool — review the method's own behavior
         first if you didn't write it.
 
-        CONFIRMED HAZARD (AInsightfool): calling Optix's own
+        CONFIRMED HAZARD: calling Optix's own
         SearchBrokenDynamicLinks.FindBrokenDynamicLink through this tool killed
         the entire FTOptixStudio.exe process outright — reproduced twice across
         two separate Studio sessions, no exception ever surfaced. Root cause is
@@ -1288,7 +1288,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         confirmed so far. For broken-link finding/fixing specifically, use
         Studio's own right-click Execute instead; it's unaffected by this bug.
 
-        `timeout_seconds` defaults to 60 (AInsightfool: raised from the 8s
+        `timeout_seconds` defaults to 60 (raised from the 8s
         every other bridge write uses — an arbitrary method's runtime is
         unknowable, e.g. Optix's own SearchBrokenDynamicLinks scans the whole
         project). A `bridge_unreachable_studio_open` "timed out" error from
@@ -1599,7 +1599,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         `source`="uia_live" is the definitive live read; the config-file path
         is the lazy fallback (off-Windows, no bridge, or non-interactive session).
 
-        AInsightfool: multi-instance (v1.0.7) — pass `project` to read a
+        multi-instance (v1.0.7) — pass `project` to read a
         SPECIFIC armed bridge's Studio window when several are up at once.
         Omitted: resolves cleanly when 0 or 1 bridge is armed (unchanged
         behavior); with MORE than one armed and no `project`, this refuses to
@@ -2777,7 +2777,7 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     # wrappers (add_label / add_bound_widget / add_navigation_panel_item),
     # optix_bridge_convert_to_type, optix_bridge_ensure_web_engine,
     # optix_bridge_validate_expression, optix_bridge_status,
-    # optix_bridge_invoke_method (AInsightfool: no optix_bridge_edit op verb
+    # optix_bridge_invoke_method (no optix_bridge_edit op verb
     # invokes an arbitrary NetLogic method), and optix_bridge_edit itself are
     # NEVER gated -- they either have no optix_bridge_edit-op equivalent or
     # ARE the batch tool. Any other value

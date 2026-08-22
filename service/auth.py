@@ -362,7 +362,7 @@ TOOL_SCOPES: dict[str, str] = {
     "optix_bridge_move_node": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
     "optix_bridge_convert_to_type": "author",
     "optix_bridge_delete_node": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
-    "optix_bridge_invoke_method": "author",  # AInsightfool: live-model bridge write, never gated
+    "optix_bridge_invoke_method": "author",  # live-model bridge write, never gated
     "optix_cdp_click": "author",
     "optix_cdp_fill": "author",
     "optix_cdp_type": "author",

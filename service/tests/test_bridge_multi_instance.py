@@ -21,7 +21,7 @@ from service import core
 @pytest.fixture(autouse=True)
 def _clear_bridge_cache(monkeypatch) -> None:
     core.reset_bridge_cache()
-    # AInsightfool (v1.0.8): _bridge_health_at used to do a fast raw-socket
+    # _bridge_health_at used to do a fast raw-socket
     # pre-check (_tcp_probe) before the mockable HTTP layer, to skip
     # obviously-dead ports in production. That pre-check was removed —
     # against a real listener it could race the C# bridge's accept/read/write
@@ -110,7 +110,7 @@ def test_default_project_resolves_when_exactly_one_bridge_armed(
 def test_default_project_none_when_several_bridges_armed(
     multi_bridge_cfg, monkeypatch
 ) -> None:
-    """AInsightfool: v1.0.7 behavior change — with more than one bridge armed
+    """v1.0.7 behavior change — with more than one bridge armed
     there's no longer a single 'the' project to default to. A caller MUST pass
     project= explicitly rather than get a silent guess."""
     monkeypatch.setattr(core, "_bridge_http", _multi_bridge(_THREE_ARMED))

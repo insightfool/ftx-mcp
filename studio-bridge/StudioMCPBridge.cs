@@ -26,7 +26,7 @@ using FTOptix.CoreBase;
 // "MCPBridge" Optix library (component "StudioMCPBridge") for drag-in reuse.
 public class StudioMCPBridge : BaseNetLogic
 {
-    // AInsightfool: kept in sync with the ftx-mcp service version (pyproject.toml /
+    // kept in sync with the ftx-mcp service version (pyproject.toml /
     // service/__init__.py / server.json) rather than left to lag behind it. Bump
     // this alongside those whenever a change to THIS FILE actually alters bridge
     // behavior; leave it alone for service/dashboard-only releases that never
@@ -35,7 +35,7 @@ public class StudioMCPBridge : BaseNetLogic
     // wrong about behavior). Last bumped for the StopBridge port-sweep + bind
     // retry fix, which IS a real behavior change to this file.
     private const string BridgeVersion = "1.0.7";
-    // AInsightfool: multi-instance support (v1.0.7). Port is no longer a single
+    // multi-instance support (v1.0.7). Port is no longer a single
     // fixed const - each Studio instance self-assigns the first free port in
     // BasePort..BasePort+PortRangeSize-1, so up to PortRangeSize projects can
     // run this NetLogic (StartBridge'd) AT THE SAME TIME, each on its own port,
@@ -52,7 +52,7 @@ public class StudioMCPBridge : BaseNetLogic
     // A named kernel event IS shared across ALCs in the process; StopBridge sets it and
     // the accept loop (in whichever ALC owns the listener) polls it and closes the socket.
     //
-    // AInsightfool: the event name USED TO be a single compile-time constant
+    // the event name USED TO be a single compile-time constant
     // (".._p8768"), which worked precisely because it needed no runtime state -
     // every ALC agreed on the same literal string. Now that the port is chosen
     // at runtime (per instance), the name has to be too - but StopBridge runs in
@@ -64,7 +64,7 @@ public class StudioMCPBridge : BaseNetLogic
     // StartListener to a later StopBridge, keeping StopBridge scoped to only
     // this instance's own bridge, never a sibling Studio's.
     //
-    // AInsightfool: this USED TO hold a single port number (whatever
+    // this USED TO hold a single port number (whatever
     // StartListener bound most recently), which meant StopBridge could only ever
     // recover ONE listener. That broke down for a very ordinary sequence: edit
     // this NetLogic's code (or just fire StartBridge again quickly after a
@@ -96,7 +96,7 @@ public class StudioMCPBridge : BaseNetLogic
     private static string StopEventNameFor(int port) => "Local\\StudioMCPBridge_Stop_p" + port;
 
     private const int MaxItems = 500;
-    // AInsightfool: unlike the bridge's own TCP port (self-assigned per instance,
+    // unlike the bridge's own TCP port (self-assigned per instance,
     // see BasePort/PortRangeSize above), the Web presentation engine port is a
     // PROJECT setting, persisted into the project's own model by SetupProject -
     // it does NOT auto-negotiate at bridge-start time. Every project SetupProject
@@ -121,7 +121,7 @@ public class StudioMCPBridge : BaseNetLogic
     // reload orphans still require the Studio closed.
     private static TcpListener _listener;
     private static volatile bool _running;
-    // AInsightfool: the port THIS running listener bound to (or -1 if none is
+    // the port THIS running listener bound to (or -1 if none is
     // running). Valid within the ALC/thread epoch that started it; StopBridge
     // (a fresh ALC) uses BoundPortEnvVar instead, not this field, to learn it.
     private static volatile int _boundPort = -1;
@@ -179,7 +179,7 @@ public class StudioMCPBridge : BaseNetLogic
     public void SetupProject()
     {
         Log.Info("StudioBridge", "SetupProject: " + EnsureWebEngineCore(WebEnginePort, "0.0.0.0"));
-        // AInsightfool: this instance's bridge landed on a non-default port (i.e.
+        // this instance's bridge landed on a non-default port (i.e.
         // :8768 was already taken by another project's bridge), which is a
         // reasonable signal you're running more than one project at once - flag
         // that the just-assigned web-engine port (8081) will collide with any
@@ -203,13 +203,13 @@ public class StudioMCPBridge : BaseNetLogic
     // port. Shared across ALCs by name, so a StopBridge in one ALC can signal a
     // listener loop in another - as long as both agree on the port, which is why
     // StartListener/StopListener resolve it through BoundPortEnvVar rather than a
-    // static field (see the AInsightfool comment on BoundPortEnvVar above).
+    // static field (see the comment on BoundPortEnvVar above).
     private static EventWaitHandle OpenStopEvent(int port)
     {
         return new EventWaitHandle(false, EventResetMode.ManualReset, StopEventNameFor(port));
     }
 
-    // AInsightfool: BoundPortEnvVar port-list helpers. See the
+    // BoundPortEnvVar port-list helpers. See the
     // comment on BoundPortEnvVar's declaration for why this exists (a single
     // remembered port silently orphaned any PREVIOUS listener once a second
     // StartBridge landed on a different port).
@@ -279,7 +279,7 @@ public class StudioMCPBridge : BaseNetLogic
         MutateBoundPorts(ports => ports.Remove(port));
     }
 
-    // AInsightfool: tries each port in BasePort..BasePort+PortRangeSize-1 in turn
+    // tries each port in BasePort..BasePort+PortRangeSize-1 in turn
     // and binds the first free one, instead of exclusively owning a single fixed
     // port. This is what lets PortRangeSize Studio instances each run their own
     // armed bridge simultaneously (no more manual StopBridge-on-one-to-free-it-
@@ -287,7 +287,7 @@ public class StudioMCPBridge : BaseNetLogic
     // survives the ALC reload) so a later StopBridge call - which runs in a fresh
     // ALC with none of this method's static state - can recover exactly which
     // port THIS Studio instance is using and signal only that one.
-    // AInsightfool: binds `port` with a few short retries before giving
+    // binds `port` with a few short retries before giving
     // up on it. Absorbs the window between a StopBridge signal and the OLD
     // listener thread actually noticing it and closing its socket (Loop polls
     // the stop event roughly every 50ms, longer if it's mid-HandleClient) - so
@@ -346,7 +346,7 @@ public class StudioMCPBridge : BaseNetLogic
             }
             _listener = listener;
             _boundPort = port;
-            // AInsightfool: ADD to the process-wide port list rather than
+            // ADD to the process-wide port list rather than
             // overwriting it - see BoundPortEnvVar's comment. A prior port left
             // bound by an orphaned/edited-and-rebuilt listener stays remembered
             // here until ITS OWN Loop() thread removes it (or a StopBridge sweep
@@ -378,7 +378,7 @@ public class StudioMCPBridge : BaseNetLogic
         // where that static was never set - so read the process-env var
         // StartListener/AddBoundPort maintain instead (see BoundPortEnvVar).
         //
-        // AInsightfool: sweep ALL of them, not just one - a NetLogic
+        // sweep ALL of them, not just one - a NetLogic
         // recompile (edit this file, rebuild, StartBridge again) leaves the
         // PREVIOUS compiled listener thread alive on its own port, which used to
         // be silently forgotten the moment the new port overwrote this value.
@@ -423,7 +423,7 @@ public class StudioMCPBridge : BaseNetLogic
     // the loop stays responsive to a StopBridge from another ALC (a blocking
     // AcceptTcpClient could only be broken by our own ALC's Stop(), which StopBridge
     // can't reach). On stop, close the listener so the port is freed.
-    // AInsightfool: takes `port` as a parameter (closed over by the lambda
+    // takes `port` as a parameter (closed over by the lambda
     // StartListener spawns this thread with) rather than reading the static
     // _boundPort - Loop always runs within the SAME ALC/thread epoch as the
     // StartListener call that spawned it, so either would work here, but the
@@ -457,7 +457,7 @@ public class StudioMCPBridge : BaseNetLogic
             try { _listener?.Stop(); } catch { /* ignore */ }
             _listener = null;
             _boundPort = -1;
-            // AInsightfool: remove ONLY this port from the shared list, not
+            // remove ONLY this port from the shared list, not
             // the whole thing - a blanket clear here would erase the record of any
             // OTHER port this process still has a live (or still-orphaned) listener
             // on, which is exactly the bug this release fixes. See BoundPortEnvVar's
@@ -692,7 +692,7 @@ public class StudioMCPBridge : BaseNetLogic
                     body = WireEventInline(firstLine);
                     status = "200 OK";
                 }
-                // AInsightfool: new dispatcher branch, paired with
+                // new dispatcher branch, paired with
                 // InvokeMethodInline() below -- the generic UAMethod-invoke endpoint.
                 else if (firstLine.StartsWith("POST /bridge/node/invoke"))
                 {
@@ -744,7 +744,7 @@ public class StudioMCPBridge : BaseNetLogic
         "POST /bridge/node/convert-to-type", "POST /bridge/node/reorder",
         "POST /bridge/node/delete", "POST /bridge/node/event",
         "POST /bridge/node/attach-expression",
-        // AInsightfool: added for the generic invoke endpoint below.
+        // added for the generic invoke endpoint below.
         "POST /bridge/node/invoke",
     };
 
@@ -795,7 +795,7 @@ public class StudioMCPBridge : BaseNetLogic
         {
             Log.Warning("StudioBridge", "Project.Current unavailable: " + ex.Message);
         }
-        // AInsightfool: "port" lets the Python service, which now probes a whole
+        // "port" lets the Python service, which now probes a whole
         // port RANGE (see StartListener), confirm which port answered rather
         // than assuming the well-known 8768 - and is handy for a human reading
         // the raw JSON while debugging which Studio instance is which.
@@ -3259,7 +3259,7 @@ public class StudioMCPBridge : BaseNetLogic
         catch (Exception ex) { return "{\"ok\":false,\"error\":\"" + JsonEscape(ExcMsg(ex)) + "\"}"; }
     }
 
-    // AInsightfool: new method. Verified against the real installed SDK
+    // new method. Verified against the real installed SDK
     // (UAManagedCore.dll / UAManagedCoreCommon.dll via .NET reflection) that
     // IUAObject.ExecuteMethod(name, inArgs, out outArgs) is the correct API before
     // writing this, and compile-checked it in isolation since two of the project's
@@ -3287,7 +3287,7 @@ public class StudioMCPBridge : BaseNetLogic
     // runs at Studio DESIGN TIME against Project.Current, not a live runtime/PLC - the
     // blast radius is "the open project", the same as any other bridge write.
     //
-    // AInsightfool: CONFIRMED HAZARD, not theoretical. Calling
+    // CONFIRMED HAZARD, not theoretical. Calling
     // SearchBrokenDynamicLinks' FindBrokenDynamicLink through this endpoint killed
     // the whole FTOptixStudio.exe process outright - reproduced twice, across two
     // separate Studio sessions (crash, user relaunched Studio + StartBridge, called
@@ -4176,7 +4176,7 @@ public class StudioMCPBridge : BaseNetLogic
         return DataTypeName(v) + (IsArrayVariable(v) ? "[]" : "");
     }
 
-    // AInsightfool: root-cause fix for a false "broken link" diagnosis.
+    // root-cause fix for a false "broken link" diagnosis.
     // describe_node (NodeJson) called this for EVERY property, including
     // DynamicLink/Alias children, via UAValue.ToString() - which returns
     // blank for a NodePath-boxed value (confirmed live: Studio's own

@@ -256,7 +256,7 @@ def make_app(cfg: core.Config) -> FastAPI:
     # UI can never drift from the real tool surface (names, one-line summary
     # for hover, read/write/destructive kind). Built once per process.
     _tool_catalog: list[dict] = []
-    # AInsightfool (v1.0.9): FastAPI runs a sync def route handler like this
+    # FastAPI runs a sync def route handler like this
     # one in a worker-thread pool (starlette.concurrency.run_in_threadpool),
     # so concurrent /ui/stats requests can call _tools_catalog() on DIFFERENT
     # threads at the same time. The lazy-init guard below (`if not
