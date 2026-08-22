@@ -328,6 +328,8 @@ TOOL_SCOPES: dict[str, str] = {
     "optix_cdp_find_text": "read",
     "optix_cdp_diff": "read",
     "optix_observe": "read",  # U14 consolidated read-side CDP capture
+    "optix_build_check": "read",  # compiles to a throwaway copy; mutates nothing
+    "optix_bridge_log_tail": "read",  # bridge transport diagnostics
     # ---- author (35): mutates project / previews / drives canvas ----
     # U16 batched authoring: `author`, same as every per-noun bridge write it
     # dispatches to. It can only do what those tools can do — batching does not
@@ -346,6 +348,7 @@ TOOL_SCOPES: dict[str, str] = {
     "optix_bridge_bind_property": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
     "optix_bridge_create_alias": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
     "optix_bridge_add_translation": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
+    "optix_bridge_create_netlogic": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
     "optix_bridge_reorder": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
     "optix_bridge_attach_expression": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
     "optix_bridge_wire_event": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES

@@ -172,9 +172,10 @@ def test_ensure_dump_fetches_and_caches(cfg: core.Config) -> None:
 
 def _call_tool(mcp, name, **kwargs):
     tool = mcp._tool_manager._tools[name]
-    result = tool.fn(**kwargs)
+    fn = getattr(tool, "_ftx_sync_fn", tool.fn)
+    result = fn(**kwargs)
     if asyncio.iscoroutine(result):
-        return asyncio.get_event_loop().run_until_complete(result)
+        return asyncio.run(result)
     return result
 
 

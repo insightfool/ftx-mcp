@@ -838,7 +838,7 @@ _TWO_OPS = [
 
 
 def _fake_validate(report, *, seen=None):
-    def fake(cfg, path, payload, timeout=20.0):
+    def fake(cfg, path, payload, timeout=20.0, **_kwargs):
         if seen is not None:
             seen.append((path, payload))
         return 200, report
@@ -945,6 +945,10 @@ def test_rename_op_lowers_to_move_before_validation(alpha, monkeypatch):
     monkeypatch.setattr(core, "_bridge_post_body",
                         _fake_validate(_OK_REPORT, seen=seen))
     monkeypatch.setattr(core, "_use_bridge_for", lambda cfg, project: True)
+    # multi-instance (v1.0.7): the write paths gate on _require_bridge_for, which
+    # resolves WHICH armed port serves the project; _use_bridge_for is no longer
+    # the guard, so patch the resolver too or it probes a real socket.
+    monkeypatch.setattr(core, "_require_bridge_for", lambda cfg, project: cfg)
     monkeypatch.setattr(core, "_apply_one_edit",
                         lambda cfg, project, op: applied.append(op))
 

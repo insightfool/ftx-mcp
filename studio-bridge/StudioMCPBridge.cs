@@ -34,7 +34,7 @@ public class StudioMCPBridge : BaseNetLogic
     // bridge does (a mismatch there is cosmetic - the string is just stale, not
     // wrong about behavior). Last bumped for the StopBridge port-sweep + bind
     // retry fix, which IS a real behavior change to this file.
-    private const string BridgeVersion = "1.0.11";
+    private const string BridgeVersion = "1.0.7";
     // AInsightfool: multi-instance support (v1.0.7). Port is no longer a single
     // fixed const - each Studio instance self-assigns the first free port in
     // BasePort..BasePort+PortRangeSize-1, so up to PortRangeSize projects can

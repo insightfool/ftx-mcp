@@ -2791,40 +2791,25 @@ def make_mcp(cfg: core.Config) -> FastMCP:
         "optix_bridge_create_folder", "optix_bridge_create_object",
         "optix_bridge_create_type", "optix_bridge_create_alias",
         "optix_bridge_create_widget", "optix_bridge_add_translation",
+        "optix_bridge_create_netlogic",
     )
     if os.environ.get("FTXMCP_BRIDGE_PRIMITIVES") != "1":
         for _prim in _BRIDGE_PRIMITIVES:
             mcp._tool_manager._tools.pop(_prim, None)
 
-    # Offload the tools that shell out to Studio / PowerShell / Chrome-CDP onto a
-    # worker thread. The official FastMCP runs a sync `def` tool fn DIRECTLY on the
-    # event loop (Tool.run -> FuncMetadata.call_fn_with_arg_validation), so a slow
-    # shell-out (e.g. emulator status' Get-CimInstance process scan, up to ~15s)
-    # stalls the shared HTTP+MCP loop long enough to drop the MCP streamable-http
-    # transport (the observed 120s optix_emulator_status hang, pre-consolidation).
-    # These are the only tools with multi-second subprocess/CDP calls; the rest
-    # are fast and stay on the loop. Tool.run reads self.fn/self.is_async at call
-    # time, so this takes effect. (New shell-out tools MUST be added here.)
-    _OFFLOAD_TOOLS = frozenset((
-        # optix_emulator: run/restart/stop/status all shell out (Studio F5/UIA +
-        # process probes); log is a fast file tail, but the offload wraps the
-        # whole dispatcher so it rides along -- negligible overhead.
-        "optix_emulator", "optix_save",
-        # optix_status: doctor/services shell out; health/version are fast, same
-        # whole-dispatcher rationale as optix_emulator above.
-        "optix_status",
-        "optix_cdp_screenshot", "optix_cdp_click", "optix_cdp_fill",
-        "optix_cdp_type", "optix_cdp_key", "optix_cdp_ocr", "optix_cdp_restart",
-        "optix_runtime_start", "optix_runtime_stop", "optix_runtime_status",
-        # v1.0.3 additions - all drive multi-second CDP sessions and/or
-        # tesseract subprocesses; diff decodes N JPEG pairs (Pillow, CPU).
-        "optix_cdp_read_text", "optix_cdp_find_text", "optix_cdp_navigate",
-        "optix_cdp_sweep", "optix_cdp_diff",
-        # U14 consolidated CDP surface — same multi-second CDP/tesseract paths.
-        "optix_observe", "optix_interact",
-    ))
+    # Keep the asyncio event loop free. FastMCP runs a SYNCHRONOUS tool fn
+    # directly on the loop, so any tool doing BLOCKING I/O -- a subprocess
+    # shell-out, a urllib bridge call, a large file read -- stalls the loop for
+    # its whole duration, and while stalled uvicorn cannot accept new
+    # connections. So offload by DEFAULT and keep only a denylist on the loop.
+    #
+    # This inverts the previous _OFFLOAD_TOOLS allowlist. "read-only" is NOT
+    # "non-blocking": the bridge READ tools do blocking HTTP and MUST offload
+    # too -- keeping them on the loop was the original bridge-drop bug, and an
+    # allowlist silently mis-classified every newly added tool.
+    _STAY_SYNC = frozenset(("optix_health", "optix_list_projects"))
     for _name, _tool in mcp._tool_manager._tools.items():
-        if _name not in _OFFLOAD_TOOLS or _tool.is_async:
+        if _tool.is_async or _name in _STAY_SYNC:
             continue
         _sync_fn = _tool.fn
 
@@ -2887,33 +2872,5 @@ def make_mcp(cfg: core.Config) -> FastMCP:
 
     mcp._tool_manager.call_tool = _measured_dispatch
 
-    # Keep the asyncio event loop free. FastMCP runs a SYNCHRONOUS tool fn
-    # directly on the loop (func_metadata.call_fn_with_arg_validation:
-    # `return fn(...)`), so any tool that does BLOCKING I/O -- a subprocess
-    # shell-out, one of the urllib bridge calls, a large file read -- stalls the
-    # loop for its whole duration, and while stalled uvicorn cannot accept new
-    # connections; a burst of parallel calls then fails with "cannot connect"
-    # even though nothing is down. So offload such tools to a worker thread.
-    #
-    # IMPORTANT: "read-only" is NOT "non-blocking". The bridge READ tools
-    # (optix_describe_node, optix_get_project_map, ...) do blocking HTTP and MUST
-    # offload too -- keeping them on the loop was the original bridge-drop bug.
-    # Only a small allowlist of provably fast, pure-local tools stays sync, to
-    # skip a needless thread hop (and so unit tests can call their .fn directly).
-    # The arg schema is built from the original signature (fn_metadata on the
-    # Tool), so replacing .fn does not change the tool's public interface.
-    _STAY_SYNC = frozenset(("optix_health", "optix_list_projects"))
-    for _name, _tool in mcp._tool_manager._tools.items():
-        if _tool.is_async or _name in _STAY_SYNC:
-            continue
-        _sync_fn = _tool.fn
-
-        async def _offloaded(*a, _sync_fn=_sync_fn, **k):
-            return await anyio.to_thread.run_sync(functools.partial(_sync_fn, *a, **k))
-
-        _offloaded.__name__ = getattr(_sync_fn, "__name__", "tool")
-        _offloaded.__doc__ = _sync_fn.__doc__
-        _tool.fn = _offloaded
-        _tool.is_async = True
 
     return mcp

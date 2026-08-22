@@ -294,7 +294,7 @@ def _bridge(routes: dict, *, unreachable: bool = False):
     Duplicated from test_bridge.py per this suite's per-file convention (each
     bridge-touching test file carries its own ~10-line closure rather than a
     shared conftest helper)."""
-    def fake(cfg: core.Config, path: str, timeout: float = 5.0):
+    def fake(cfg: core.Config, path: str, timeout: float = 5.0, **_kwargs):
         if unreachable:
             raise core.BridgeUnavailable("bridge unreachable at test")
         for prefix, (status, body) in routes.items():

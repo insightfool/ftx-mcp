@@ -194,6 +194,8 @@ def test_mcp_tools_carry_readonly_destructive_annotations(cfg: core.Config) -> N
             "optix_active_target",
             # U14 consolidated read-side capture
             "optix_observe",
+            # compiles to a throwaway copy / tails a diagnostic log — neither mutates
+            "optix_build_check", "optix_bridge_log_tail",
             "optix_bridge_log_tail"}
     DESTRUCTIVE = {"optix_deploy","optix_deploy_updatesvc","optix_bridge_delete_node",
                    "optix_runtime_stop","optix_cdp_click","optix_cdp_type",
@@ -873,7 +875,7 @@ def test_with_project_tool_count_and_annotations_unchanged(cfg: core.Config) -> 
     (v1.0.6): optix_bridge_invoke_method adds one, never gated (37 + 1 = 38)."""
     mcp = make_mcp(cfg)
     by_name = {t.name: t for t in _list_tools(mcp)}
-    assert len(by_name) == 38
+    assert len(by_name) == 40
     assert by_name["optix_list_screens"].annotations.readOnlyHint is True
     write = by_name["optix_bridge_add_bound_widget"].annotations
     assert write.readOnlyHint is False and write.destructiveHint is False

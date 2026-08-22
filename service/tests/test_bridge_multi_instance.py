@@ -39,7 +39,7 @@ def _multi_bridge(by_port: dict[int, dict]):
     """Fake core._bridge_http: routes /bridge/health by the PORT cfg.bridge_url
     points at, so different simulated Studio instances answer differently. A
     port with no entry raises BridgeUnavailable (nothing listening there)."""
-    def fake(cfg: core.Config, path: str, method: str = "GET", timeout: float = 5.0):
+    def fake(cfg: core.Config, path: str, method: str = "GET", timeout: float = 5.0, **_kwargs):
         port = urlparse(cfg.bridge_url).port
         if port not in by_port:
             raise core.BridgeUnavailable(f"nothing listening on {port}")
@@ -172,7 +172,7 @@ def test_bridge_url_pinned_skips_range_scan_legacy_path(cfg, monkeypatch) -> Non
     multi-instance support existing in the codebase."""
     probed_ports = []
 
-    def fake(cfg_, path, timeout=5.0):
+    def fake(cfg_, path, timeout=5.0, **_kwargs):
         probed_ports.append(urlparse(cfg_.bridge_url).port)
         return 200, json.dumps({"project": "Alpha", "bridge_version": "1.0.7",
                                  "model_loaded": True}).encode()
