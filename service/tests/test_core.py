@@ -587,3 +587,31 @@ def test_hide_console_is_opt_in_via_flag_or_env(monkeypatch) -> None:
         assert _should_hide_console([]) is False, falsy
         # the flag still wins over an explicit off
         assert _should_hide_console(["--hide-console"]) is True, truthy
+
+
+def test_module_entrypoint_forwards_argv() -> None:
+    """`python -m service` runs service/__main__.py, NOT main.py -- so main.py's
+    own `if __name__ == "__main__": main(sys.argv[1:])` never fires. If
+    __main__.py calls main() bare, every command-line flag is silently dropped:
+    the scheduled task's `-m service --hide-console` parsed fine and did
+    nothing, because main() could not see an argv it was never given.
+
+    Asserted structurally (the call has >=1 positional arg) rather than by
+    string match, so reformatting cannot defeat it."""
+    import ast
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "__main__.py"
+    tree = ast.parse(src.read_text(encoding="utf-8"))
+    calls = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "main"
+    ]
+    assert calls, "__main__.py no longer calls main() at all"
+    for c in calls:
+        assert c.args or c.keywords, (
+            "__main__.py calls main() with no arguments -- command-line flags "
+            "will be silently ignored under `python -m service`"
+        )
