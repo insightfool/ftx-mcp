@@ -120,7 +120,7 @@ def test_add_label_lands_in_screen_children(cfg: core.Config, projects_root: Pat
     ])
     assert res["file"] == "Nodes/UI/Screens.yaml"
     out = _deploy(cfg, "Alpha", res["edits"])
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     text = (proj / "Nodes" / "UI" / "Screens.yaml").read_text()
     # inserted as Screen1's FIRST child, before ExistingLabel, correctly indented
     assert "  - Name: Hello\n" in text
@@ -138,7 +138,7 @@ def test_add_switch_and_label_share_one_edit(cfg: core.Config, projects_root: Pa
     ])
     assert len(res["edits"]) == 1  # both widgets, one insert
     out = _deploy(cfg, "Alpha", res["edits"])
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     text = (proj / "Nodes" / "UI" / "Screens.yaml").read_text()
     assert "  - Name: PowerSwitch\n" in text
     assert "  - Name: OnLabel\n" in text
@@ -174,7 +174,7 @@ def test_add_model_variable_lands(cfg: core.Config, projects_root: Path) -> None
     res = core.add_model_variable(cfg, "Alpha", "PowerOn")
     assert res["target_path"] == "{Model}/PowerOn"
     out = _deploy(cfg, "Alpha", res["edits"])
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     text = (proj / "Nodes" / "Model" / "Model.yaml").read_text()
     # bare export-safe shape: the PowerOn node is exactly Name/Type/DataType
     # with NO AccessLevel/Value/Id before the next node (W4 finding — those
@@ -206,7 +206,7 @@ def test_add_model_variable_creates_children_on_empty_model(
     (proj / "Nodes" / "Model" / "Model.yaml").write_bytes(EMPTY_MODEL.encode("utf-8"))
     res = core.add_model_variable(cfg, "Alpha", "PowerOn")
     out = _deploy(cfg, "Alpha", res["edits"])
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     text = (proj / "Nodes" / "Model" / "Model.yaml").read_text()
     # Children block was created at body indent 0, with the variable under it
     assert "Children:\n- Name: PowerOn\n" in text
@@ -222,7 +222,7 @@ def test_add_widget_converts_empty_inline_children(cfg: core.Config, projects_ro
         {"kind": "label", "name": "First", "text": "hi"},
     ])
     out = _deploy(cfg, "Alpha", res["edits"])
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     text = (proj / "Nodes" / "UI" / "Screens.yaml").read_text()
     assert "Children: []" not in text          # the inline-empty was converted
     assert "  Children:\n  - Name: First\n" in text
@@ -238,7 +238,7 @@ def test_set_property_changes_inline_value(cfg: core.Config, projects_root: Path
     )
     assert res["old_value"] == '"hi"'
     out = _deploy(cfg, "Alpha", res["edits"])
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     text = (proj / "Nodes" / "UI" / "Screens.yaml").read_text()
     assert '    Text: "changed"\n' in text
     assert '    Text: "hi"' not in text

@@ -460,7 +460,7 @@ def test_cdp_screenshot_default_returns_dict_with_hint(
     tool = next(t for t in _list_tools(mcp) if t.name == "optix_observe")
     out = _tool_fn(tool)(mode="screenshot", save_path=str(shot))
     assert isinstance(out, dict)
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert "hint" in out and "file tool" in out["hint"]
 
 
@@ -711,7 +711,7 @@ def test_routes_get_tool_registered_and_forwards_to_core(
     mcp = make_mcp(cfg)
     tool = next(t for t in _list_tools(mcp) if t.name == "optix_routes")
     out = _tool_fn(tool)(action="get", project="Alpha")
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["routes"]["routes"]["home"] == {"steps": []}
     assert seen == {"project": "Alpha", "name": "ftx_ui_map"}
 
@@ -740,7 +740,7 @@ def test_routes_list_tool_registered_and_forwards_to_core(
     mcp = make_mcp(cfg)
     tool = next(t for t in _list_tools(mcp) if t.name == "optix_routes")
     out = _tool_fn(tool)(action="list", project="Alpha")
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["count"] == 1 and out["skipped"] == 1
     assert seen == {"project": "Alpha"}
 
@@ -770,7 +770,7 @@ def test_cdp_sweep_tool_registered_and_forwards_to_core(
     tool = next(t for t in _list_tools(mcp) if t.name == "optix_cdp_sweep")
     out = _tool_fn(tool)(routes_path="dev/routes.json", out_dir="dev/shots",
                   routes=["home"], warmup=False)
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert seen == {"routes_path": "dev/routes.json", "out_dir": "dev/shots",
                     "routes": ["home"], "warmup": False}
 
@@ -801,7 +801,7 @@ def test_cdp_diff_tool_registered_and_forwards_to_core(
     mcp = make_mcp(cfg)
     tool = next(t for t in _list_tools(mcp) if t.name == "optix_observe")
     out = _tool_fn(tool)(mode="diff", dir_a="dev/before", dir_b="dev/after", threshold=5.0)
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert seen == {"dir_a": "dev/before", "dir_b": "dev/after", "threshold": 5.0}
 
 

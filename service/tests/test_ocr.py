@@ -55,7 +55,7 @@ def test_ocr_returns_recognized_text(cfg, monkeypatch) -> None:
     )
     runner = make_fake_runner(lambda cmd, kw: FakeProc(0, tsv))
     out = core.cdp_ocr_runtime(cfg, runner=runner)
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert "Hello Optix" in out["text"]
     # OCR text is <untrusted>-delimited (U11): a substring check still holds,
     # but exact-equality must compare against the wrapped form.
@@ -105,7 +105,7 @@ def test_read_text_returns_recognized_text(cfg, monkeypatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tesseract")
     runner = make_fake_runner(lambda cmd, kw: FakeProc(0, _tsv(("SP-101", 92.0))))
     out = core.cdp_read_text_runtime(cfg, region=[0.1, 0.1, 0.2, 0.2], runner=runner)
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["text"] == core._untrusted("SP-101", "cdp_read_text")
     assert out["region"] == [10.0, 20.0, 30.0, 40.0]
     assert out["confidence"] == {"mean": 0.92, "min": 0.92}
@@ -160,7 +160,7 @@ def test_ocr_confidence_reported_when_high(cfg, monkeypatch) -> None:
     tsv = _tsv(("Alarm", 96.0), ("Active", 90.0))
     runner = make_fake_runner(lambda cmd, kw: FakeProc(0, tsv))
     out = core.cdp_ocr_runtime(cfg, runner=runner)
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["text"] == core._untrusted("Alarm Active", "cdp_ocr")
     assert out["confidence"] == {"mean": 0.93, "min": 0.90}
     assert out["confidence"]["mean"] >= cfg.ocr_conf_threshold
@@ -175,7 +175,7 @@ def test_ocr_low_confidence_nudge_when_below_threshold(cfg, monkeypatch) -> None
     tsv = _tsv(("Blur", 15.0), ("Noise", 20.0))
     runner = make_fake_runner(lambda cmd, kw: FakeProc(0, tsv))
     out = core.cdp_ocr_runtime(cfg, runner=runner)
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["confidence"]["mean"] < cfg.ocr_conf_threshold
     assert out["low_confidence"] is True
     assert "optix_describe_node" in out["next_step"]
@@ -189,7 +189,7 @@ def test_ocr_no_words_has_no_confidence_field(cfg, monkeypatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tesseract")
     runner = make_fake_runner(lambda cmd, kw: FakeProc(0, _TSV_HEADER + "\n"))
     out = core.cdp_ocr_runtime(cfg, runner=runner)
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     # empty frame -> empty inner text, still wrapped for a consistent contract
     assert out["text"] == core._untrusted("", "cdp_ocr") and "confidence" not in out
     assert "low_confidence" not in out
@@ -201,7 +201,7 @@ def test_read_text_confidence_reported_when_high(cfg, monkeypatch) -> None:
     tsv = _tsv(("Setpoint", 88.0), ("42", 94.0))
     runner = make_fake_runner(lambda cmd, kw: FakeProc(0, tsv))
     out = core.cdp_read_text_runtime(cfg, region=[0.1, 0.1, 0.2, 0.2], runner=runner)
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["text"] == core._untrusted("Setpoint 42", "cdp_read_text")
     assert out["confidence"] == {"mean": 0.91, "min": 0.88}
     assert out["region"] == [1.0, 2.0, 3.0, 4.0]
@@ -214,7 +214,7 @@ def test_read_text_low_confidence_nudge_when_below_threshold(cfg, monkeypatch) -
     tsv = _tsv(("smudge", 12.0), ("blur", 18.0))
     runner = make_fake_runner(lambda cmd, kw: FakeProc(0, tsv))
     out = core.cdp_read_text_runtime(cfg, region=[0.1, 0.1, 0.2, 0.2], runner=runner)
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["low_confidence"] is True
     assert "optix_describe_node" in out["next_step"]
     assert out["region"] == [1.0, 2.0, 3.0, 4.0]

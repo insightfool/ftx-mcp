@@ -91,7 +91,7 @@ def test_cdp_click_skips_protocol_events(cfg, fake_cdp):
     # an out-of-band event arrives before our reply; cmd() must skip it
     ws = fake_cdp(pre_events=[{"method": "Page.frameNavigated", "params": {}}])
     out = core.cdp_click_runtime(cfg, x=5, y=5)
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
 
 
 def test_cdp_screenshot_saves_file(cfg, fake_cdp, tmp_path: Path):
@@ -100,7 +100,7 @@ def test_cdp_screenshot_saves_file(cfg, fake_cdp, tmp_path: Path):
                       {"data": base64.b64encode(jpeg).decode()}})
     out_file = tmp_path / "sub" / "shot.jpg"
     out = core.cdp_screenshot_runtime(cfg, save_path=str(out_file))
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["path"] == str(out_file)
     assert out_file.read_bytes() == jpeg
     assert out["size_bytes"] == len(jpeg)
@@ -253,7 +253,7 @@ def _script_stale_capture_test(monkeypatch, responses: list[tuple]):
 def test_cdp_screenshot_fresh_first_call_has_nothing_to_compare(cfg, monkeypatch):
     _script_stale_capture_test(monkeypatch, [(b"frame-A", None, None)])
     out = core.cdp_screenshot_runtime(cfg, fresh=True)
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert "stale_recovery" not in out
 
 
@@ -512,7 +512,7 @@ def test_cdp_type_inserts_text_when_input_focused(cfg, fake_cdp):
 def test_cdp_type_input_overlay_counts_as_focused(cfg, fake_cdp):
     fake_cdp(results={"Runtime.evaluate": {"result": {"value": "INPUT"}}})
     out = core.cdp_type_runtime(cfg, "42")
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
 
 
 def test_cdp_type_fails_loud_without_focus(cfg, fake_cdp):
@@ -619,7 +619,7 @@ def test_cdp_fill_full_sequence(cfg, fake_cdp):
     ws = fake_cdp(results={"Runtime.evaluate": {"result": {"value": "INPUT"}}})
     import service.core as core_mod
     out = core_mod.cdp_fill_runtime(cfg, x=119, y=187, text="hello")
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["steps"] == {"clicked": True, "focused_element": "INPUT",
                             "typed_chars": 5, "committed": "Enter"}
     methods = [m for (m, p, _) in ws.sent]
@@ -675,7 +675,7 @@ def test_screenshot_applies_viewport_override_before_capture(cfg, fake_cdp):
     ws = fake_cdp(results={"Page.captureScreenshot":
                            {"data": base64.b64encode(jpeg).decode()}})
     out = core.cdp_screenshot_runtime(cfg, navigate_url="")
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     methods = [m for (m, _, _) in ws.sent]
     assert "Emulation.setDeviceMetricsOverride" in methods
     override_idx = methods.index("Emulation.setDeviceMetricsOverride")
@@ -720,7 +720,7 @@ def test_screenshot_uses_configured_viewport_values(cfg, fake_cdp):
     ws = fake_cdp(results={"Page.captureScreenshot":
                            {"data": base64.b64encode(jpeg).decode()}})
     out = core.cdp_screenshot_runtime(custom, navigate_url="")
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     override_params = next(
         p for (m, p, _) in ws.sent if m == "Emulation.setDeviceMetricsOverride")
     assert override_params == {
@@ -738,7 +738,7 @@ def test_screenshot_survives_viewport_override_rejected(cfg, fake_cdp):
         "Emulation.setDeviceMetricsOverride": Exception("Not supported"),
     })
     out = core.cdp_screenshot_runtime(cfg, navigate_url="")
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert base64.b64decode(out["b64"]) == jpeg
     # the (failed) override was still attempted
     assert any(m == "Emulation.setDeviceMetricsOverride" for (m, _, _) in ws.sent)
@@ -751,7 +751,7 @@ def test_click_session_also_gets_viewport_override(cfg, fake_cdp):
     # applies it to every session, so a bare click call gets it too.
     ws = fake_cdp()
     out = core.cdp_click_runtime(cfg, x=10, y=20)
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     override_params = next(
         p for (m, p, _) in ws.sent if m == "Emulation.setDeviceMetricsOverride")
     assert override_params["width"] == cfg.cdp_viewport_width
@@ -780,7 +780,7 @@ def test_screenshot_region_normalized_resolves_against_viewport(cfg, fake_cdp):
         "Page.getLayoutMetrics": _layout_metrics(1000, 800),
     })
     out = core.cdp_screenshot_runtime(cfg, navigate_url="", region=[0.1, 0.2, 0.5, 0.5])
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["region"] == [100.0, 160.0, 500.0, 400.0]
     clip = next(p for (m, p, _) in ws.sent if m == "Page.captureScreenshot")["clip"]
     assert clip == {"x": 100.0, "y": 160.0, "width": 500.0, "height": 400.0, "scale": 1}
@@ -793,7 +793,7 @@ def test_screenshot_region_pixel_passthrough(cfg, fake_cdp):
         "Page.getLayoutMetrics": _layout_metrics(1000, 800),
     })
     out = core.cdp_screenshot_runtime(cfg, navigate_url="", region=[100, 50, 200, 150])
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["region"] == [100.0, 50.0, 200.0, 150.0]
     clip = next(p for (m, p, _) in ws.sent if m == "Page.captureScreenshot")["clip"]
     assert clip == {"x": 100.0, "y": 50.0, "width": 200.0, "height": 150.0, "scale": 1}
@@ -842,7 +842,7 @@ def test_screenshot_region_composes_with_save_path(cfg, fake_cdp, tmp_path: Path
     out_file = tmp_path / "clip.jpg"
     out = core.cdp_screenshot_runtime(
         cfg, navigate_url="", save_path=str(out_file), region=[0.0, 0.0, 1.0, 1.0])
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["region"] == [0.0, 0.0, 400.0, 300.0]
     assert out_file.read_bytes() == jpeg
 
@@ -892,7 +892,7 @@ def test_find_text_no_match_is_not_an_error(cfg, fake_cdp, monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tesseract")
     runner = make_fake_runner(lambda cmd, kw: FakeProc(0, _FIND_TSV))
     out = core.cdp_find_text_runtime(cfg, "Nonexistent Label", runner=runner)
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["found"] is False and out["matches"] == []
 
 
@@ -997,7 +997,7 @@ def test_navigate_happy_path_resolves_coords_and_honors_settle_and_expect(
         cfg, route="setup-values", routes_path=str(routes_file),
         navigate_url="", runner=runner)
 
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["route"] == "setup-values"
     assert out["steps_run"] == 2
     assert out["verified_steps"] == 1
@@ -1065,7 +1065,7 @@ def test_navigate_tesseract_absent_skips_checks_but_runs_all_clicks(
     out = core.cdp_navigate_runtime(
         cfg, route="r1", routes_path=str(routes_file), navigate_url="")
 
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["ocr_unavailable"] is True
     assert out["steps_run"] == 2
     assert out["verified_steps"] == 0
@@ -1168,7 +1168,7 @@ def test_sweep_happy_path_writes_files_and_manifest(
 
     out = core.cdp_sweep_runtime(cfg, routes_path=str(routes_file), out_dir=str(out_dir))
 
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert "errors" not in out
     assert out["version"] == 1
     assert out["ocr"] is False
@@ -1206,7 +1206,7 @@ def test_sweep_route_subset_in_given_order(cfg, fake_cdp, tmp_path: Path, monkey
     out_dir = tmp_path / "out"
     out = core.cdp_sweep_runtime(
         cfg, routes_path=str(routes_file), out_dir=str(out_dir), routes=["c", "a"])
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert list(out["screens"].keys()) == ["c", "a"]
     assert (out_dir / "c.jpg").exists()
     assert (out_dir / "a.jpg").exists()
@@ -1258,7 +1258,7 @@ def test_sweep_warmup_discards_extra_capture(cfg, fake_cdp, tmp_path: Path, monk
     out = core.cdp_sweep_runtime(
         cfg, routes_path=str(routes_file), out_dir=str(tmp_path / "out_warm"),
         warmup=True)
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     caps = [m for (m, _, _) in ws.sent if m == "Page.captureScreenshot"]
     assert len(caps) == 2  # 1 discard + 1 saved
 
@@ -1277,7 +1277,7 @@ def test_sweep_no_warmup_single_capture(cfg, fake_cdp, tmp_path: Path, monkeypat
     out = core.cdp_sweep_runtime(
         cfg, routes_path=str(routes_file), out_dir=str(tmp_path / "out_nowarm"),
         warmup=False)
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     caps = [m for (m, _, _) in ws.sent if m == "Page.captureScreenshot"]
     assert len(caps) == 1
 
@@ -1320,7 +1320,7 @@ def test_sweep_per_route_capture_error_continues(cfg, fake_cdp, tmp_path: Path, 
     monkeypatch.setattr(core, "_find_tesseract", lambda: None)
     out_dir = tmp_path / "out_err"
     out = core.cdp_sweep_runtime(cfg, routes_path=str(routes_file), out_dir=str(out_dir))
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["errors"] == 1
     assert "error" in out["screens"]["bad"]
     assert out["screens"]["good"]["file"] == "good.jpg"
@@ -1372,7 +1372,7 @@ def test_sweep_cdp_transport_error_mid_sweep_continues(cfg, tmp_path: Path, monk
     out = core.cdp_sweep_runtime(
         cfg, routes_path=str(routes_file), out_dir=str(tmp_path / "out_flaky"))
 
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["errors"] == 1
     assert "transport boom" in out["screens"]["b"]["error"]
     assert out["screens"]["a"]["file"] == "a.jpg"
@@ -1399,7 +1399,7 @@ def test_routes_save_happy_path_round_trips_into_navigate(
         cfg, "Alpha",
         {"version": 1, "routes": {"home": {"steps": [{"click": [0.5, 0.5]}]}}},
     )
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["routes"] == ["home"]
     assert out["bytes"] > 0
     path = out["path"]
@@ -1426,7 +1426,7 @@ def test_routes_save_accepts_bare_inner_mapping_and_normalizes(
     out = core.routes_save(
         cfg, "Alpha", {"home": {"steps": [{"click": [0.1, 0.1]}]}}, name="bare",
     )
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["routes"] == ["home"]
     data, err = core._load_routes_file(out["path"])
     assert err is None
@@ -1483,7 +1483,7 @@ def test_routes_get_happy_path(cfg, projects_root: Path):
     make_project(projects_root, "Alpha")
     saved = core.routes_save(cfg, "Alpha", {"home": {"steps": [{"click": [0.2, 0.3]}]}})
     out = core.routes_get(cfg, "Alpha")
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["path"] == saved["path"]
     assert out["routes"]["routes"]["home"]["steps"][0]["click"] == [0.2, 0.3]
 
@@ -1508,7 +1508,7 @@ def test_routes_list_counts_valid_and_skips_junk(cfg, projects_root: Path):
     (project_dir / "dev" / "junk.json").write_text("not valid json")
 
     out = core.routes_list(cfg, "Alpha")
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     assert out["count"] == 2
     assert out["skipped"] == 1
     names = {f["name"] for f in out["files"]}
@@ -1542,7 +1542,7 @@ def test_routes_save_preserves_extra_top_level_keys(cfg, projects_root):
         "notes": ["description auto-fills from row 2"],
     }
     out = core.routes_save(cfg, "Alpha", payload)
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     import json as _json
     from pathlib import Path
     on_disk = _json.loads(Path(out["path"]).read_text(encoding="utf-8"))
@@ -1565,7 +1565,7 @@ def test_routes_roundtrip_preserves_non_ascii(cfg, projects_root):
         "structure": {"MainWindow": {"title": "LINE 4 — OVERVIEW"}},
     }
     out = core.routes_save(cfg, "Alpha", payload)
-    assert out["state"] == "succeeded", out
+    assert out["state"] == "succeeded", (out.get("reason_code"), out.get("detail"))
     back = core.routes_get(cfg, "Alpha")
     assert back["state"] == "succeeded"
     assert back["routes"]["structure"]["MainWindow"]["title"] == "LINE 4 — OVERVIEW"
