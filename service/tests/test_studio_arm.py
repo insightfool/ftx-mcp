@@ -369,9 +369,13 @@ class _FakeStudio:
     folder menu; right-clicking DesignTimeNetLogic opens the category menu with
     the Execute entries. Clicking `Execute StartBridge` arms."""
 
-    def __init__(self, root_row="Cell_v5", path_label=None, show_root=True):
+    def __init__(self, root_row="Cell_v5", path_label=None, show_root=True,
+                 search_box=False):
         self.root_row, self.path_label, self.show_root = root_row, path_label, show_root
+        self.search_box = search_box
         self.expanded = False
+        self.filter = ""
+        self.focus = None
         self.menu = None
         self.armed = False
         self.clicks: list[tuple[int, int]] = []
@@ -383,17 +387,30 @@ class _FakeStudio:
         rows = []
         if self.path_label:
             rows.append(_Ctl(self.path_label, "TextControl", (1084, 10, 499, 18)))
-        if self.show_root:
+        if self.search_box:
+            rows.append(_Ctl("", "EditControl", (961, 99, 349, 27)))
+        if self.filter:
+            # Filtered tree: the match with its ancestors, match bolded.
             rows.append(_Ctl(self.root_row, "TextControl", (1008, 126, 297, 28)))
-        rows.append(_Ctl("UI", "TextControl", (1024, 154, 281, 28)))
-        rows.append(_Ctl("Misc.", "TextControl", (1024, 182, 281, 28)))
-        y = 210
-        if self.expanded:
-            rows.append(_Ctl("DesignTimeNetLogic", "TextControl", (1040, y, 265, 28)))
-            y += 28
-        rows.append(_Ctl("Model", "TextControl", (1024, y, 281, 28)))
+            rows.append(_Ctl("Misc.", "TextControl", (1024, 154, 281, 28)))
+            rows.append(_Ctl("DesignTimeNetLogic", "TextControl", (1040, 182, 265, 28)))
+            rows.append(_Ctl(f"<b>{self.filter}</b>", "TextControl", (1056, 210, 249, 28)))
+        else:
+            if self.show_root:
+                rows.append(_Ctl(self.root_row, "TextControl", (1008, 126, 297, 28)))
+            rows.append(_Ctl("UI", "TextControl", (1024, 154, 281, 28)))
+            rows.append(_Ctl("Misc.", "TextControl", (1024, 182, 281, 28)))
+            y = 210
+            if self.expanded:
+                rows.append(_Ctl("DesignTimeNetLogic", "TextControl", (1040, y, 265, 28)))
+                y += 28
+            rows.append(_Ctl("Model", "TextControl", (1024, y, 281, 28)))
         # The Properties pane repeats the selected node's name, far right.
         rows.append(_Ctl("StudioMCPBridge", "TextControl", (1666, 99, 243, 28)))
+        # Type-view tiles under the tree: same row height, overlapping x-band.
+        # Measured to poison the indent estimate (1040 -> 1046 = "6 px").
+        for i, n in enumerate(("User interface", "Model", "Security", "Database")):
+            rows.append(_Ctl(n, "TextControl", (966 + 80 * i, 959, 70, 28)))
         if self.menu is not None:
             rows.append(self.menu)
         return rows
@@ -436,6 +453,7 @@ class _FakeStudio:
 
     def Click(self, x, y):  # noqa: N802 -- mirrors uiautomation
         self.clicks.append((x, y))
+        self.focus = "search" if (self.search_box and 99 <= y < 126 and x < 1310) else "tree"
         if self.menu is not None:
             for it in self.menu.GetChildren():
                 r = it.BoundingRectangle
@@ -451,6 +469,11 @@ class _FakeStudio:
         self.keys.append(keys)
         if "{Esc}" in keys:
             self.menu = None
+        elif self.focus == "search":
+            if keys == "{Ctrl}a{Delete}":
+                self.filter = ""
+            elif not keys.startswith("{"):
+                self.filter = keys
 
 
 def _wire(monkeypatch, fake: _FakeStudio):
@@ -462,6 +485,9 @@ def _wire(monkeypatch, fake: _FakeStudio):
 
 
 def test_arm_expands_a_collapsed_tree_down_to_the_category_folder(tmp_path, monkeypatch) -> None:
+    """No search box on offer: the chevron fallback. The indent must come
+    from the tree rows above (16 px -> chevron at text-34), not from the
+    Type-view tiles below, which would put the click on the folder icon."""
     _fork_tree(tmp_path)
     fake = _FakeStudio()
     _wire(monkeypatch, fake)
@@ -474,6 +500,22 @@ def test_arm_expands_a_collapsed_tree_down_to_the_category_folder(tmp_path, monk
     assert [t["row"] for t in out["tried"]] == ["Misc.", "DesignTimeNetLogic"]
     assert (990, 196) in fake.clicks
     assert fake.expanded and fake.armed
+
+
+def test_arm_prefers_the_search_box_and_clears_it_afterwards(tmp_path, monkeypatch) -> None:
+    """With a Search box present the leaf name is typed, the filtered tree
+    shows the ancestor chain, the category folder's menu is used, and the
+    box is cleared on the way out so the operator gets their tree back."""
+    _fork_tree(tmp_path)
+    fake = _FakeStudio(search_box=True)
+    _wire(monkeypatch, fake)
+    out = studio_arm.execute_method("Cell_v5", str(tmp_path), method="StartBridge")
+    assert out["ok"] and out["state"] == "armed", out
+    assert out["expanded"] == ["filter:StudioMCPBridge"]
+    assert [t["row"] for t in out["tried"]] == ["Misc.", "DesignTimeNetLogic"]
+    assert "StudioMCPBridge" in fake.keys          # typed into the box
+    assert fake.keys[-1] == "{Ctrl}a{Delete}"     # and cleared afterwards
+    assert fake.filter == "" and not fake.expanded and fake.armed
 
 
 def test_arm_names_the_ancestor_it_could_not_see(tmp_path, monkeypatch) -> None:

@@ -30,6 +30,18 @@ THREE MEASURED FACTS THIS ENCODES
        not offer "Execute <method>".
     3. Qt/QML draws context menus and modals INTO the window's scene graph, so
        they are children of the main window, never top-level.
+    4. A fresh Studio opens with every top-level folder COLLAPSED, and only
+       the NetLogic CATEGORY folder lists Execute entries — a plain folder
+       above it shows the generic menu. The Project-view Search box (the
+       window's only EditControl) is the geometry-free way in: typing the
+       leaf's name filters the tree to the leaf WITH its ancestors, all real
+       rows with real context menus. {Right} and a double-click do nothing;
+       the expander chevron is not a UIA control, but a click two indent
+       steps left of the row text toggles it — kept as the fallback.
+    5. The Type-view tiles under the tree share the rows' height and x-band,
+       so an indent measured from every same-height control reads 6 px
+       (1040 -> 1046) instead of 16 and the chevron click lands on the icon.
+       Measure only from rows at or above the one being opened.
 
 Off Windows / without `uiautomation` / with no interactive desktop, arm()
 returns a structured {"ok": False, "error": ...} rather than raising.
@@ -294,6 +306,11 @@ def _indent_step(win, row) -> int:
                 r = c.BoundingRectangle
                 if r.height() != rr.height() or abs(r.left - rr.left) > 160:
                     continue
+                # Same pane only: rows at or above the one being opened. The
+                # Type-view tiles BELOW the tree share its row height and
+                # x-band and read as a 6 px "indent" (fact 5).
+                if r.top > rr.top or r.top <= 0:
+                    continue
                 lefts.add(r.left)
             except Exception:
                 continue
@@ -302,6 +319,28 @@ def _indent_step(win, row) -> int:
     ls = sorted(lefts)
     gaps = [b - a for a, b in zip(ls, ls[1:], strict=False) if 0 < b - a <= 40]
     return min(gaps) if gaps else 16
+
+
+def _search_box(win):
+    """The Project-view Search box: the window's only EditControl, top-left."""
+    try:
+        boxes = [c for c in win.GetChildren() if c.ControlTypeName == "EditControl"]
+    except Exception:
+        return None
+    boxes.sort(key=lambda c: (c.BoundingRectangle.top, c.BoundingRectangle.left))
+    return boxes[0] if boxes else None
+
+
+def _set_filter(auto, box, text: str) -> None:
+    """Replace the Search box content. uiautomation key syntax is {Ctrl}a —
+    a ^a is typed LITERALLY (measured: it landed '^aStudioMCPBridge^a')."""
+    r = box.BoundingRectangle
+    auto.Click(r.left + r.width() // 2, r.top + r.height() // 2)
+    time.sleep(0.3)
+    auto.SendKeys("{Ctrl}a{Delete}")
+    if text:
+        time.sleep(0.2)
+        auto.SendKeys(text)
 
 
 def _click_chevron(auto, win, row) -> int:
@@ -451,6 +490,7 @@ def execute_method(project: str, project_dir: str, method: str = "StartBridge",
     prev_fg = auto.GetForegroundControl()
     tried: list[dict] = []
     expanded: list[str] = []
+    filtered = False
     want = f"Execute {method}"
     try:
         win.SetActive()
@@ -477,9 +517,19 @@ def execute_method(project: str, project_dir: str, method: str = "StartBridge",
                 time.sleep(0.3)
             if target is not None or i + 1 >= len(names):
                 break
-            # The next level is not on screen: open this one. Leftmost row is
-            # the tree's (the same text recurs in the Properties pane).
+            # The next level is not on screen. First choice: filter the tree
+            # on the leaf's name, which reveals the whole ancestor chain with
+            # no geometry involved (fact 4). Fallback: the chevron of this
+            # row — leftmost candidate is the tree's (the same text recurs in
+            # the Properties pane).
             nxt = names[i + 1]
+            if not _candidate_rows(win, [nxt]) and not filtered:
+                box = _search_box(win)
+                if box is not None:
+                    _set_filter(auto, box, names[-1])
+                    filtered = True
+                    time.sleep(1.5)
+                    expanded.append(f"filter:{names[-1]}")
             if not _candidate_rows(win, [nxt]):
                 _click_chevron(auto, win, rows[0])
                 time.sleep(0.8)
@@ -524,6 +574,11 @@ def execute_method(project: str, project_dir: str, method: str = "StartBridge",
                 "tried": tried}
     finally:
         try:
+            if filtered:
+                box = _search_box(win)
+                if box is not None:
+                    _set_filter(auto, box, "")   # give the operator their tree back
+                    time.sleep(0.3)
             auto.SetCursorPos(*prev_cursor)
             if prev_fg:
                 prev_fg.SetActive()
