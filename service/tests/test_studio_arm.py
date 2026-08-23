@@ -207,3 +207,35 @@ def test_liveness_is_http_never_a_bare_tcp_connect(monkeypatch) -> None:
                             {"project": "P"} if p == 8769 else None))
     assert sa.bound_ports() == {8769}
     assert seen == [8768, 8769, 8770, 8771]
+
+
+# ---- I9: unknown op fields must not be silently applied ------------------
+
+def test_unknown_op_field_is_detected() -> None:
+    """I9, reproduced on 1.0.7: a create_folder op carrying a bogus field
+    returned applied:1 / errors:[] / warnings:[] / succeeded WITH strict:true,
+    and the node was really created. Field notes call it 'the dangerous one'."""
+    assert core.unknown_op_fields(
+        {"op": "create_folder", "parent": "Model", "name": "X",
+         "bogus_field_that_does_not_exist": "xyz"}) == [
+        "bogus_field_that_does_not_exist"]
+
+
+def test_legal_ops_are_clean() -> None:
+    assert core.unknown_op_fields(
+        {"op": "create_folder", "parent": "Model", "name": "X"}) == []
+    assert core.unknown_op_fields(
+        {"op": "bind", "path": "a", "name": "b",
+         "source_path": "c", "mode": "Read"}) == []
+
+
+def test_normalizer_aliases_are_not_flagged() -> None:
+    """_normalize_edit_op accepts node_path/prop_name aliases, so they must not
+    read as unknown — otherwise the check fires on valid callers."""
+    assert core.unknown_op_fields(
+        {"op": "set_property", "node_path": "a", "name": "b", "value": "c"}) == []
+
+
+def test_unknown_verb_defers_to_the_bridge_validator() -> None:
+    """Reporting it here too would give two errors for one mistake."""
+    assert core.unknown_op_fields({"op": "no_such_verb", "whatever": 1}) == []

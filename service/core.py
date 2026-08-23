@@ -2314,6 +2314,43 @@ _BRIDGE_EDIT_POSITIONAL = {
 }
 
 
+# Fields every op may legally carry beyond its verb's own, because
+# _normalize_edit_op accepts them as aliases or the batch surface adds them.
+_OP_COMMON_FIELDS: frozenset[str] = frozenset({"op", "node_path", "prop_name"})
+
+
+def unknown_op_fields(op: dict) -> list[str]:
+    """Field names on `op` that its verb does not define.
+
+    The legal set is not new schema — `_BRIDGE_EDIT_OPS` already declares, per
+    verb, the required positionals and the optional field map. This is a set
+    difference against data that was already there.
+
+    Why this exists: an op carrying a misspelled or invented field used to be
+    applied SILENTLY. `optix_bridge_edit` reported `applied: 1`, `errors: []`,
+    `warnings: []`, `succeeded` — with `strict: true` — and the node landed in
+    the wrong place. Field notes call it "the dangerous one"; it produced a
+    phantom `Model/RecipeEditVars`. Reproduced on 1.0.7 (2026-08-23) with a
+    `create_folder` op carrying `bogus_field_that_does_not_exist`.
+
+    The gap was exactly one layer deep: MCP TOOL arguments are validated (a
+    wrong parameter name is a clean pydantic rejection), but the op dicts
+    inside a batch were free-form and unchecked.
+
+    Returns [] for an unknown verb — that is `bridge_validate_ops`' job to
+    report, and duplicating it here would produce two errors for one mistake.
+    """
+    if not isinstance(op, dict):
+        return []
+    verb = op.get("op")
+    spec = _BRIDGE_EDIT_OPS.get(verb)
+    if spec is None:
+        return []
+    _fn, required, optional = spec
+    legal = _OP_COMMON_FIELDS | set(required) | set(optional)
+    return sorted(k for k in op if k not in legal)
+
+
 def bridge_validate_ops(
     cfg: Config, project: str, ops: list[dict], strict: bool = False
 ) -> dict:
@@ -2460,7 +2497,27 @@ def bridge_edit(
     # Reconcile attach_expression's name/prop_name across the validator/applier
     # seam BEFORE both phases (see _normalize_edit_op). Never mutates caller ops.
     ops = [_normalize_edit_op(op) for op in ops]
+    # Unknown-field check BEFORE the bridge round-trip. The C# validator checks
+    # op semantics against the model; it does not police the op's own field
+    # names, so a typo used to sail through as `applied: 1 succeeded`. Under
+    # strict this is an error (refuse the batch); otherwise a warning, so
+    # existing callers that pass harmless extras are not broken outright.
+    field_errs = [
+        {"op_index": i, "code": "unknown_op_field",
+         "message": (f"op {op.get('op')!r} has no field(s) "
+                     f"{', '.join(repr(f) for f in unknown)} — they would be "
+                     f"silently ignored and the op applied anyway"),
+         "unknown_fields": unknown}
+        for i, op in enumerate(ops)
+        if (unknown := unknown_op_fields(op))
+    ]
     report = bridge_validate_ops(cfg, project, ops, strict=strict)
+    if field_errs:
+        if strict:
+            report["errors"] = list(report.get("errors") or []) + field_errs
+            report["ok"] = False
+        else:
+            report["warnings"] = list(report.get("warnings") or []) + field_errs
     out: dict = {
         "op_count": len(ops),
         "applied": 0,
