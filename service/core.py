@@ -7304,7 +7304,11 @@ def _poll_until(
     None on timeout) is asserted verbatim by test_core.py / test_deploy_contract
     and must stay byte-identical."""
     deadline = deploy_started_at + cfg.verify_timeout_seconds
-    while time.time() < deadline:
+    # ALWAYS probe at least once. The deadline is measured from DEPLOY start,
+    # not verify start, so a deploy whose export ate the whole budget would
+    # otherwise probe ZERO times and report "not confirmed" without ever
+    # having looked — reporting failure for something it never checked.
+    while True:
         ok, confirmed_at = probe()
         if ok:
             return {
@@ -7312,12 +7316,32 @@ def _poll_until(
                 "confirmed_at": confirmed_at,
                 "timeout_seconds": cfg.verify_timeout_seconds,
             }
+        if time.time() >= deadline:
+            break
         time.sleep(cfg.verify_poll_seconds)
     return {
         "method": method,
         "confirmed_at": None,
         "timeout_seconds": cfg.verify_timeout_seconds,
     }
+
+
+# time.time() and st_mtime are different clocks at the same coarse resolution,
+# so a file written immediately AFTER a time.time() sample routinely reports an
+# mtime EQUAL to (or a hair below) it. Measured on the Windows VM, 2000 samples:
+# a file written right after the sample failed a strict `mtime > started` check
+# **75.35%** of the time, median delta +0.000 ms, min -0.000 ms.
+#
+# A strict `>` therefore makes verification a coin-flip for any deploy that
+# completes inside one clock tick — and it is UNRECOVERABLE, because mtimes do
+# not change after the export: the poll loop simply burns its whole budget and
+# reports a successful deploy as failed. That surfaced as a rare "flaky test"
+# that roamed across every deploy test on the VM and never reproduced on Linux.
+#
+# The tolerance only has to absorb clock granularity. A genuinely stale tree —
+# the thing this check exists to catch — is seconds or minutes old, orders of
+# magnitude outside this window, so the check keeps its teeth.
+_MTIME_CLOCK_TOLERANCE_SECONDS = 0.05
 
 
 def verify_export_mtime(cfg: Config, runtime_project_dir: Path, deploy_started_at: float) -> dict:
@@ -7332,7 +7356,7 @@ def verify_export_mtime(cfg: Config, runtime_project_dir: Path, deploy_started_a
             latest = _project_tree_max_mtime(runtime_project_dir)
         except OSError:
             latest = 0.0
-        if latest > deploy_started_at:
+        if latest >= deploy_started_at - _MTIME_CLOCK_TOLERANCE_SECONDS:
             return True, _now_iso(latest)
         return False, None
     return _poll_until(cfg, deploy_started_at, "export_mtime", _probe)
