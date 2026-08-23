@@ -191,3 +191,19 @@ def test_arm_names_a_missing_netlogic_distinctly(tmp_path, monkeypatch) -> None:
     out = studio_arm.execute_method("Fresh", str(tmp_path), method="StartBridge")
     assert out["ok"] is False and out["error"] == "bridge_netlogic_absent"
     assert "StudioMCPBridge" in out["nudge"]
+
+
+def test_liveness_is_http_never_a_bare_tcp_connect(monkeypatch) -> None:
+    """REGRESSION: probing with a raw connect-then-close makes the bridge log
+    'request error: ... connection was aborted by the software in your host
+    machine' once per probe — 26 such WARNINGs were traced to exactly that in
+    one afternoon. Liveness must go through /bridge/health, like
+    core.list_bridges has always done."""
+    import service.studio_arm as sa
+    assert not hasattr(sa, "_port_open"), "bare-TCP probe reintroduced"
+    seen: list[int] = []
+    monkeypatch.setattr(sa, "_bridge_health",
+                        lambda p, timeout=3.0: seen.append(p) or (
+                            {"project": "P"} if p == 8769 else None))
+    assert sa.bound_ports() == {8769}
+    assert seen == [8768, 8769, 8770, 8771]

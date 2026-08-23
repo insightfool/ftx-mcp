@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import json
 import re
-import socket
 import time
 import urllib.request
 from pathlib import Path
@@ -111,32 +110,32 @@ def derive_chain(yaml_path: str, method: str = "StartBridge") -> list[str] | Non
 
 # ---- bridge probing (identity, never "is the base port open") ---------------
 
-def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.4) -> bool:
-    s = socket.socket()
-    s.settimeout(timeout)
+def _bridge_health(port: int, timeout: float = 3.0) -> dict | None:
+    """GET /bridge/health, or None when nothing answers.
+
+    Liveness is decided by a REAL HTTP request, never by a bare TCP connect.
+    A connect-then-close makes the bridge log
+    "request error: ... An established connection was aborted by the software
+    in your host machine" for every probe — 26 such WARNINGs were traced to an
+    earlier version of this module inside one afternoon. core.list_bridges has
+    always probed over HTTP for the same reason; match it.
+    """
     try:
-        s.connect((host, port))
-        return True
-    except OSError:
-        return False
-    finally:
-        try:
-            s.close()
-        except OSError:
-            pass
-
-
-def bound_ports(base: int = _DEFAULT_BASE, span: int = _DEFAULT_RANGE) -> set[int]:
-    return {p for p in range(base, base + span) if _port_open(p)}
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/bridge/health", timeout=timeout) as r:
+            return json.loads(r.read().decode()) or {}
+    except Exception:
+        return None
 
 
 def bridge_project(port: int) -> str | None:
-    try:
-        with urllib.request.urlopen(
-                f"http://127.0.0.1:{port}/bridge/health", timeout=3) as r:
-            return (json.loads(r.read().decode()) or {}).get("project")
-    except Exception:
-        return None
+    h = _bridge_health(port)
+    return None if h is None else h.get("project")
+
+
+def bound_ports(base: int = _DEFAULT_BASE, span: int = _DEFAULT_RANGE) -> set[int]:
+    """Ports in the range currently served by a bridge (health answered)."""
+    return {p for p in range(base, base + span) if _bridge_health(p) is not None}
 
 
 def serving_port_for(project: str, base: int = _DEFAULT_BASE,
