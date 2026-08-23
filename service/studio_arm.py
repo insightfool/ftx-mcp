@@ -56,7 +56,7 @@ def find_bridge_yaml(project_dir: str | Path,
     """The Nodes/*.yaml declaring `node_name`, or None.
 
     Searched rather than hardcoded to Nodes/NetLogic/NetLogic.yaml: the bridge
-    NetLogic can sit under any category folder, and Pearson's fork nests it
+    NetLogic can sit under any category folder, and customer forks nest it
     deeper than the stock NewHMIProject layout.
     """
     root = Path(project_dir) / "Nodes"
@@ -108,6 +108,58 @@ def derive_chain(yaml_path: str, method: str = "StartBridge") -> list[str] | Non
     return None
 
 
+def folder_ancestors(yaml_path: str) -> list[str]:
+    """Project-tree folder rows ABOVE the file that declares the bridge,
+    outermost first — the part of the chain `derive_chain` cannot see.
+
+    Studio splits the tree across files: a folder's own yaml lists its
+    children as `- File: Sub/Sub.yaml` references, and the child file starts
+    over at indent 0. So for a customer fork's layout the bridge file
+    (`Misc_/DesignTimeNetLogic/DesignTimeNetLogic.yaml`) yields the chain
+    [DesignTimeNetLogic, StudioMCPBridge] while the row actually on screen
+    after a fresh open is the PARENT folder `Misc.`, declared one directory up
+    in `Misc_/Misc_.yaml`. Measured 2026-08-23: the arm reported
+    menu_item_not_found with tried=[] because nothing in the chain was
+    visible. Each ancestor directory `D` under Nodes/ carries `D/D.yaml` whose
+    first `Name:` is the row text (`Misc_` on disk is `Misc.` in the tree).
+    """
+    out: list[str] = []
+    try:
+        yp = Path(yaml_path).resolve()
+    except OSError:
+        return out
+    d = yp.parent
+    while d.name and d.name.lower() != "nodes":
+        own = d / f"{d.name}.yaml"
+        if own != yp and own.is_file():
+            try:
+                for ln in own.read_text(encoding="utf-8", errors="replace").splitlines()[:20]:
+                    m = re.match(r"^Name:\s*(.+?)\s*$", ln)
+                    if m:
+                        out.append(m.group(1))
+                        break
+            except OSError:
+                pass
+        if d.parent == d:
+            break
+        d = d.parent
+    return list(reversed(out))
+
+
+_TAGS = re.compile(r"</?b>")
+
+
+def _strip_tags(name: object) -> str:
+    """Row text without the `<b>..</b>` the Project-view search wraps around
+    a match — with a filter typed, the leaf reads `<b>StudioMCPBridge</b>`
+    and an exact compare misses it (measured 2026-08-23)."""
+    return _TAGS.sub("", str(name or "")).strip()
+
+
+def _norm(name: object) -> str:
+    return _strip_tags(name).lower()
+
+
 # ---- bridge probing (identity, never "is the base port open") ---------------
 
 def _bridge_health(port: int, timeout: float = 3.0) -> dict | None:
@@ -139,22 +191,31 @@ def bound_ports(base: int = _DEFAULT_BASE, span: int = _DEFAULT_RANGE) -> set[in
 
 
 def serving_port_for(project: str, base: int = _DEFAULT_BASE,
-                     span: int = _DEFAULT_RANGE) -> int | None:
+                     span: int = _DEFAULT_RANGE,
+                     aliases: set[str] | None = None) -> int | None:
     """Port whose bridge serves `project`, or None.
 
     This is the ONLY correct fast-exit/verify question once more than one
     bridge can be armed. "Is 8768 open?" answers yes for somebody ELSE's
     Studio, which would report success having armed nothing.
+
+    `aliases` are the OTHER names the bridge may report for this project: it
+    answers with Project.Current.BrowseName, which is the project NODE's name,
+    not the directory's. They usually agree (Studio names the folder after the
+    project) but not always — `Line4_HMI/Line4.optix` serves as "Line4", and a
+    dir-name-only compare never matches it (measured 2026-08-23).
     """
+    want = {project.strip().lower()} | {a.strip().lower() for a in (aliases or ())}
     for p in sorted(bound_ports(base, span)):
-        if (bridge_project(p) or "").strip().lower() == project.strip().lower():
+        if (bridge_project(p) or "").strip().lower() in want:
             return p
     return None
 
 
 # ---- the gesture ------------------------------------------------------------
 
-def _studio_window_for(auto, project: str):
+def _studio_window_for(auto, project: str, aliases: set[str] | None = None,
+                       project_dir: str | Path | None = None):
     """Studio top-level window whose project tree identifies `project`.
 
     The Win32 caption is useless — every Studio window reports 'FactoryTalk
@@ -163,7 +224,18 @@ def _studio_window_for(auto, project: str):
     exposed as direct TextControl children, so identity resolves with NO bridge
     involved — which is what makes this usable at arm time, when by definition
     no bridge exists yet.
+
+    Two identities are accepted, because each is absent in a real case:
+      * the tree's ROOT row, compared against the project dir name AND its
+        aliases (the .optix stem / root node name) — `Line4_HMI` opens with a
+        root row reading `Line4`;
+      * the in-scene PATH label (`C:\\...\\Line4_HMI` or `...\\Line4.optix`),
+        matched by directory — the root row disappears while the Project-view
+        search filter is active ("No results found" replaces the tree), and
+        the label is what is left.
     """
+    want = {project.strip().lower()} | {a.strip().lower() for a in (aliases or ())}
+    pdir = str(project_dir).replace("/", "\\").rstrip("\\").lower() if project_dir else None
     for w in auto.GetRootControl().GetChildren():
         try:
             if w.ControlTypeName != "WindowControl":
@@ -171,7 +243,13 @@ def _studio_window_for(auto, project: str):
             if "optixstudio" not in (w.Name or "").replace(" ", "").casefold():
                 continue
             for c in w.GetChildren():
-                if c.ControlTypeName == "TextControl" and (c.Name or "") == project:
+                if c.ControlTypeName != "TextControl":
+                    continue
+                n = _norm(c.Name)
+                if n in want:
+                    return w
+                if pdir and (n.replace("/", "\\") == pdir
+                             or n.replace("/", "\\").startswith(pdir + "\\")):
                     return w
         except Exception:
             continue
@@ -185,10 +263,11 @@ def _candidate_rows(win, names: list[str]) -> list:
     the row most likely already on screen, and (fact 1) its menu carries the
     child NetLogic's Execute entries anyway.
     """
+    wanted = {n.lower() for n in names}
     out = []
     for c in win.GetChildren():
         try:
-            if c.ControlTypeName != "TextControl" or (c.Name or "") not in names:
+            if c.ControlTypeName != "TextControl" or _norm(c.Name) not in wanted:
                 continue
             r = c.BoundingRectangle
             if r.width() <= 0 or r.height() <= 0:
@@ -198,6 +277,48 @@ def _candidate_rows(win, names: list[str]) -> list:
             continue
     out.sort(key=lambda c: c.BoundingRectangle.left)
     return out
+
+
+def _indent_step(win, row) -> int:
+    """Pixels per tree level, measured from the rows around `row`: the
+    smallest positive gap between distinct row-text left edges in the pane.
+    16 at 100 % scaling; falls back to that when there is nothing to measure.
+    """
+    lefts: set[int] = set()
+    try:
+        rr = row.BoundingRectangle
+        for c in win.GetChildren():
+            try:
+                if c.ControlTypeName != "TextControl":
+                    continue
+                r = c.BoundingRectangle
+                if r.height() != rr.height() or abs(r.left - rr.left) > 160:
+                    continue
+                lefts.add(r.left)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    ls = sorted(lefts)
+    gaps = [b - a for a, b in zip(ls, ls[1:], strict=False) if 0 < b - a <= 40]
+    return min(gaps) if gaps else 16
+
+
+def _click_chevron(auto, win, row) -> int:
+    """Toggle a collapsed tree row open by clicking its expander.
+
+    Measured 2026-08-23 on 1.7.4.32: `{Right}` does nothing, a double-click on
+    the row does nothing, and the chevron is NOT a UIA ButtonControl. What
+    works is a click on the glyph itself, which sits two indent steps (plus
+    the glyph's own padding) LEFT of the row text: 34 px at 100 % scaling,
+    derived from the 16 px step so it follows DPI. The click is a TOGGLE —
+    the caller must confirm the child row appeared and click again if it
+    collapsed an already-open row instead. Returns the x clicked.
+    """
+    r = row.BoundingRectangle
+    x = r.left - (2 * _indent_step(win, row) + 2)
+    auto.Click(x, r.top + r.height() // 2)
+    return x
 
 
 def _open_menu_items(win) -> list[tuple[str, object]]:
@@ -265,9 +386,20 @@ def _click_consent(auto, win) -> bool:
 def execute_method(project: str, project_dir: str, method: str = "StartBridge",
                    node_name: str = "StudioMCPBridge",
                    base_port: int = _DEFAULT_BASE, port_range: int = _DEFAULT_RANGE,
-                   timeout: float = 15.0) -> dict:
+                   timeout: float = 15.0, aliases: set[str] | None = None) -> dict:
     """Right-click the bridge NetLogic (or an ancestor folder) in `project`'s
     Studio window and click `Execute <method>`.
+
+    Walks the tree chain OUTERMOST first — folder ancestors from the directory
+    layout, then the rows inside the bridge's own yaml — right-clicking each
+    visible row for the menu item and clicking the chevron of any level whose
+    child is not yet on screen. A fresh Studio opens with every top-level
+    folder collapsed, and only the NetLogic category folder (not a plain
+    folder above it) lists `Execute <method>` entries, so expansion down to
+    that folder is required. Rows are left expanded afterwards.
+
+    `aliases`: the other names this project's bridge may answer with (see
+    serving_port_for / _studio_window_for).
 
     Returns a structured dict; never raises. `state` is one of already_armed /
     armed / stopped, or `error` names the failure.
@@ -279,7 +411,7 @@ def execute_method(project: str, project_dir: str, method: str = "StartBridge",
     # without uiautomation still gets a useful already_armed/not_running
     # instead of a spurious capability error.
     arming = method == "StartBridge"
-    already = serving_port_for(project, base_port, port_range)
+    already = serving_port_for(project, base_port, port_range, aliases)
     if arming and already:
         return {"ok": True, "state": "already_armed", "port": already,
                 "project": project}
@@ -298,15 +430,17 @@ def execute_method(project: str, project_dir: str, method: str = "StartBridge",
                           f"(studio-bridge/StudioMCPBridge.cs as a DesignTime "
                           f"NetLogic named {node_name}), then arm.")}
     chain = derive_chain(yaml_path, method)
-    names = list(chain or [node_name])
-
+    names: list[str] = []
+    for n in folder_ancestors(yaml_path) + list(chain or [node_name]):
+        if not names or names[-1] != n:
+            names.append(n)
 
     try:
         import uiautomation as auto  # lazy: Windows-only, may be absent
     except Exception as e:  # pragma: no cover - import guard
         return {"ok": False, "error": "uiautomation_unavailable", "detail": str(e)}
 
-    win = _studio_window_for(auto, project)
+    win = _studio_window_for(auto, project, aliases, project_dir)
     if win is None:
         return {"ok": False, "error": "studio_window_not_found", "project": project,
                 "nudge": (f"open {project!r} in Studio (optix_project "
@@ -316,28 +450,48 @@ def execute_method(project: str, project_dir: str, method: str = "StartBridge",
     prev_cursor = auto.GetCursorPos()
     prev_fg = auto.GetForegroundControl()
     tried: list[dict] = []
+    expanded: list[str] = []
     want = f"Execute {method}"
     try:
         win.SetActive()
         time.sleep(0.4)
         target = None
-        for row in _candidate_rows(win, names):
-            r = row.BoundingRectangle
-            rec = {"row": row.Name, "x": r.left, "y": r.top}
-            auto.RightClick(r.left + r.width() // 2, r.top + r.height() // 2)
-            time.sleep(0.8)
-            items = _open_menu_items(win)
-            rec["menu_items"] = len(items)
-            hit = [el for nm, el in items if nm.strip() == want]
-            tried.append(rec)
-            if hit:
-                target = hit[0]
+        for i, name in enumerate(names):
+            rows = _candidate_rows(win, [name])
+            if not rows:
+                tried.append({"row": name, "visible": False})
                 break
-            auto.SendKeys("{Esc}")
-            time.sleep(0.3)
+            for row in rows:
+                r = row.BoundingRectangle
+                rec = {"row": _strip_tags(row.Name), "x": r.left, "y": r.top}
+                auto.RightClick(r.left + r.width() // 2, r.top + r.height() // 2)
+                time.sleep(0.8)
+                items = _open_menu_items(win)
+                rec["menu_items"] = len(items)
+                hit = [el for nm, el in items if nm.strip() == want]
+                tried.append(rec)
+                if hit:
+                    target = hit[0]
+                    break
+                auto.SendKeys("{Esc}")
+                time.sleep(0.3)
+            if target is not None or i + 1 >= len(names):
+                break
+            # The next level is not on screen: open this one. Leftmost row is
+            # the tree's (the same text recurs in the Properties pane).
+            nxt = names[i + 1]
+            if not _candidate_rows(win, [nxt]):
+                _click_chevron(auto, win, rows[0])
+                time.sleep(0.8)
+                expanded.append(name)
+                if not _candidate_rows(win, [nxt]):
+                    # A toggle on an already-open row collapses it; undo.
+                    _click_chevron(auto, win, rows[0])
+                    time.sleep(0.8)
         if target is None:
             return {"ok": False, "error": "menu_item_not_found", "wanted": want,
-                    "tried": tried, "chain": chain, "yaml": yaml_path}
+                    "tried": tried, "chain": names, "expanded": expanded,
+                    "yaml": yaml_path}
 
         r = target.BoundingRectangle
         auto.Click(r.left + r.width() // 2, r.top + r.height() // 2)
@@ -347,16 +501,17 @@ def execute_method(project: str, project_dir: str, method: str = "StartBridge",
         deadline = time.time() + timeout
         while time.time() < deadline:
             if arming:
-                port = serving_port_for(project, base_port, port_range)
+                port = serving_port_for(project, base_port, port_range, aliases)
                 if port is not None:
                     return {"ok": True, "state": "armed", "port": port,
                             "project": project, "consent_clicked": consented,
                             "new_ports": sorted(
                                 bound_ports(base_port, port_range) - before),
-                            "tried": tried, "chain": chain}
-            elif serving_port_for(project, base_port, port_range) is None:
+                            "tried": tried, "chain": names, "expanded": expanded}
+            elif serving_port_for(project, base_port, port_range, aliases) is None:
                 return {"ok": True, "state": "stopped", "project": project,
-                        "consent_clicked": consented, "tried": tried}
+                        "consent_clicked": consented, "tried": tried,
+                        "expanded": expanded}
             time.sleep(0.4)
         return {"ok": False, "error": "verify_timeout",
                 "detail": (f"clicked {want!r} but no bridge is serving "

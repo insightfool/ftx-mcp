@@ -994,7 +994,7 @@ def _attributed_studio_pass(
     served = bstate.get("project")
     if not bstate.get("available") or not served:
         return None
-    if _bridge_name_match(served, project_dir.name):
+    if _bridge_name_match(served, project_served_names(project_dir)):
         return None  # Studio holds THIS project — keep blanket-blocking
     return {"studio_guard": "attributed", "studio_serving": served}
 
@@ -1474,7 +1474,8 @@ def classify_bridge_failure(cfg: Config, project: str, exc: Exception) -> dict:
     reachable = bool(responded)
     serving = None
     model_loaded = None
-    matched = next((p for p in responded if _bridge_name_match(p.get("project"), project)), None)
+    wanted = _bridge_want_names(cfg, project) or {project.strip().lower()}
+    matched = next((p for p in responded if _bridge_name_match(p.get("project"), wanted)), None)
     if matched is not None:
         serving = matched.get("project")
         model_loaded = bool(matched.get("available"))
@@ -1484,7 +1485,7 @@ def classify_bridge_failure(cfg: Config, project: str, exc: Exception) -> dict:
 
     if reachable:
         norm = (serving or "").strip().lower()
-        if norm and norm not in ("unknown", "") and norm != project.strip().lower():
+        if norm and norm not in ("unknown", "") and norm not in wanted:
             code = "bridge_wrong_project"
             others = ", ".join(repr(p.get("project")) for p in responded)
             nudge = (f"{len(responded)} bridge(s) are reachable, serving {others} — none is "
@@ -2891,22 +2892,61 @@ def default_project(cfg: Config) -> str | None:
         return None
 
 
-def _bridge_name_match(served: object, want: str) -> bool:
-    """Case-insensitive, whitespace-trimmed BrowseName ↔ dir-name compare.
+def project_served_names(project_dir: Path) -> set[str]:
+    """Every name a bridge may report for the project at `project_dir`,
+    lower-cased: the directory name, each .optix stem, and the root node's
+    `Name:` from Nodes/<stem>.yaml.
+
+    The bridge answers /bridge/health with Project.Current.BrowseName — the
+    project NODE's name, not the folder's. They usually coincide (Studio names
+    the folder after the project) but not always: `Line4_HMI/Line4.optix` serves
+    as "Line4", and a dir-name-only compare routed NONE of its bridge calls and
+    could not find its Studio window either (measured 2026-08-23).
+    """
+    names = {project_dir.name}
+    try:
+        optix = sorted(project_dir.glob("*.optix"))
+    except OSError:
+        optix = []
+    for f in optix:
+        names.add(f.stem)
+        root_yaml = project_dir / "Nodes" / f"{f.stem}.yaml"
+        try:
+            if root_yaml.is_file():
+                for ln in root_yaml.read_text(
+                        encoding="utf-8", errors="replace").splitlines()[:10]:
+                    m = re.match(r"^Name:\s*(.+?)\s*$", ln)
+                    if m:
+                        names.add(m.group(1))
+                        break
+        except OSError:
+            pass
+    return {n.strip().lower() for n in names if n and n.strip()}
+
+
+def _bridge_name_match(served: object, want: str | set[str]) -> bool:
+    """Case-insensitive, whitespace-trimmed BrowseName ↔ project-name compare.
 
     The single comparison both `_find_bridge_for` and the attributed
     studio-guard (`_attributed_studio_pass`) use to decide whether a bridge's
-    Project.Current.BrowseName names a given on-disk project dir.
+    Project.Current.BrowseName names a given on-disk project dir. `want` is
+    either one name or the set from `project_served_names` (dir name plus the
+    .optix stem / root node name it may be served under).
     """
-    return str(served or "").strip().lower() == want.strip().lower()
+    s = str(served or "").strip().lower()
+    if not s:
+        return False
+    if isinstance(want, str):
+        return s == want.strip().lower()
+    return s in want
 
 
-def _bridge_want_name(cfg: Config, project: str) -> str | None:
-    """The name to match a bridge's served-project against for `project`, or
+def _bridge_want_names(cfg: Config, project: str) -> set[str] | None:
+    """The names to match a bridge's served-project against for `project`, or
     None for an invalid name (no path separators / no traversal — junk never
     matches). Shared by _find_bridge_for and the old single-bridge callers."""
     try:
-        return resolve_project(cfg, project).name
+        return project_served_names(resolve_project(cfg, project))
     except CoreError:
         # Studio can open a project from ANYWHERE (e.g. the Desktop), not only
         # under projects_root. The bridge serves Project.Current regardless of
@@ -2914,7 +2954,7 @@ def _bridge_want_name(cfg: Config, project: str) -> str | None:
         # resolve under projects_root — fall back to the requested name itself.
         if not project or "/" in project or "\\" in project or ".." in project:
             return None
-        return project
+        return {project.strip().lower()}
 
 
 def _find_bridge_for(cfg: Config, project: str) -> dict | None:
@@ -2926,7 +2966,7 @@ def _find_bridge_for(cfg: Config, project: str) -> dict | None:
     with several bridges armed simultaneously, each on its own port, THIS is
     what picks the right one for a given project instead of assuming there's
     only one to check."""
-    want = _bridge_want_name(cfg, project)
+    want = _bridge_want_names(cfg, project)
     if want is None:
         return None
     for st in list_bridges(cfg):
@@ -4028,6 +4068,7 @@ def bridge_arm(cfg: Config, project: str, action: str = "arm") -> dict:
     out = studio_arm.execute_method(
         project, str(project_dir), method=method,
         base_port=cfg.bridge_port_base, port_range=cfg.bridge_port_range,
+        aliases=project_served_names(project_dir),
     )
     reset_bridge_cache()
     return out

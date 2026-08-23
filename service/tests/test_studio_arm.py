@@ -32,7 +32,7 @@ STOCK = textwrap.dedent("""\
         Name: StopBridge
     """)
 
-# Pearson's fork nests the bridge under extra folders; the chain must follow
+# Customer forks nest the bridge under extra folders; the chain must follow
 # the file rather than a hardcoded default.
 NESTED = textwrap.dedent("""\
     Name: NetLogic
@@ -239,3 +239,300 @@ def test_normalizer_aliases_are_not_flagged() -> None:
 def test_unknown_verb_defers_to_the_bridge_validator() -> None:
     """Reporting it here too would give two errors for one mistake."""
     assert core.unknown_op_fields({"op": "no_such_verb", "whatever": 1}) == []
+
+
+# ---- 2026-08-23: the first arm on a real nested project failed three ways ----
+#
+# A nested-layout fork opened fresh: menu_item_not_found, tried=[]. A project
+# whose folder is not named after the project: studio_window_not_found. Measured causes: (1) the chain stops at the bridge's
+# own yaml while the on-screen row is the parent folder declared one file up;
+# (2) only the NetLogic CATEGORY folder lists Execute entries, so the tree must
+# be expanded to it — via a click on the chevron 34px left of the row text
+# ({Right} and double-click do nothing); (3) the bridge and the root row use
+# Project.Current.BrowseName ("Line4"), not the directory name ("Line4_HMI").
+
+FORK_MISC = "Name: Misc.\nType: FolderType\nChildren:\n- File: DesignTimeNetLogic/DesignTimeNetLogic.yaml\n"
+FORK_DT = textwrap.dedent("""\
+    Name: DesignTimeNetLogic
+    Type: NetLogicCategoryFolder
+    Children:
+    - Name: SensorsScript
+      Type: NetLogic
+      Children:
+      - Class: Method
+        Name: CreateSensors
+    - Name: StudioMCPBridge
+      Type: NetLogic
+      Children:
+      - Name: BehaviourStartPriority
+        Value: 180
+      - Class: Method
+        Name: StartBridge
+      - Class: Method
+        Name: StopBridge
+    """)
+# Flat shape: the bridge sits DIRECTLY under the plain Misc. folder, in
+# that folder's own file.
+HMI_MISC = textwrap.dedent("""\
+    Name: Misc.
+    Type: FolderType
+    Children:
+    - File: Security/Security.yaml
+    - Name: StudioMCPBridge
+      Type: NetLogic
+      Children:
+      - Class: Method
+        Name: StartBridge
+    """)
+
+
+def _fork_tree(tmp_path: Path) -> Path:
+    misc = tmp_path / "Nodes" / "Misc_"
+    (misc / "DesignTimeNetLogic").mkdir(parents=True)
+    (misc / "Misc_.yaml").write_text(FORK_MISC, encoding="utf-8")
+    (misc / "DesignTimeNetLogic" / "DesignTimeNetLogic.yaml").write_text(FORK_DT, encoding="utf-8")
+    (tmp_path / "Cell_v5.optix").write_text("", encoding="utf-8")
+    return tmp_path
+
+
+def test_folder_ancestors_follow_file_references(tmp_path: Path) -> None:
+    _fork_tree(tmp_path)
+    y = studio_arm.find_bridge_yaml(tmp_path)
+    assert y.endswith("DesignTimeNetLogic.yaml")
+    assert studio_arm.folder_ancestors(y) == ["Misc."]
+    assert studio_arm.derive_chain(y) == ["DesignTimeNetLogic", "StudioMCPBridge"]
+
+
+def test_folder_ancestors_stock_layout_is_empty(tmp_path: Path) -> None:
+    nodes = tmp_path / "Nodes" / "NetLogic"
+    nodes.mkdir(parents=True)
+    (nodes / "NetLogic.yaml").write_text(STOCK, encoding="utf-8")
+    assert studio_arm.folder_ancestors(str(nodes / "NetLogic.yaml")) == []
+
+
+def test_bridge_directly_under_a_plain_folder(tmp_path: Path) -> None:
+    misc = tmp_path / "Nodes" / "Misc_"
+    misc.mkdir(parents=True)
+    (misc / "Misc_.yaml").write_text(HMI_MISC, encoding="utf-8")
+    y = studio_arm.find_bridge_yaml(tmp_path)
+    # The folder's own file IS the bridge file: no ancestor is added twice.
+    assert studio_arm.folder_ancestors(y) == []
+    assert studio_arm.derive_chain(y) == ["Misc.", "StudioMCPBridge"]
+
+
+def test_search_highlight_is_stripped_from_row_names() -> None:
+    assert studio_arm._strip_tags("<b>StudioMCPBridge</b>") == "StudioMCPBridge"
+    assert studio_arm._norm(" <b>Misc.</b> ") == "misc."
+    assert studio_arm._strip_tags(None) == ""
+
+
+def test_serving_port_for_accepts_browsename_aliases(monkeypatch) -> None:
+    """Line4_HMI's bridge reports "Line4". Without the alias the arm would click
+    Execute, then report verify_timeout while the bridge was already up."""
+    monkeypatch.setattr(studio_arm, "bound_ports", lambda *a, **k: {8769})
+    monkeypatch.setattr(studio_arm, "bridge_project", lambda p: "Line4")
+    assert studio_arm.serving_port_for("Line4_HMI") is None
+    assert studio_arm.serving_port_for("Line4_HMI", aliases={"line4"}) == 8769
+
+
+# -- a fake UIA surface: just enough of `uiautomation` for execute_method ----
+
+class _Rect:
+    def __init__(self, left, top, w, h):
+        self.left, self.top, self._w, self._h = left, top, w, h
+
+    def width(self):
+        return self._w
+
+    def height(self):
+        return self._h
+
+
+class _Ctl:
+    def __init__(self, name, kind, rect=(0, 0, 0, 0), children=()):
+        self.Name, self.ControlTypeName = name, kind
+        self.BoundingRectangle = _Rect(*rect)
+        self._children = list(children)
+        self.ProcessId = 1
+
+    def GetChildren(self):  # noqa: N802 -- mirrors uiautomation
+        return list(self._children)
+
+    def SetActive(self):  # noqa: N802 -- mirrors uiautomation
+        return True
+
+
+class _FakeStudio:
+    """One Studio window, half-screen at x=961 like the measured one, with
+    `Misc.` COLLAPSED: `DesignTimeNetLogic` exists only after a click lands on
+    the chevron 34px left of Misc.'s text. Right-clicking Misc. opens the plain
+    folder menu; right-clicking DesignTimeNetLogic opens the category menu with
+    the Execute entries. Clicking `Execute StartBridge` arms."""
+
+    def __init__(self, root_row="Cell_v5", path_label=None, show_root=True):
+        self.root_row, self.path_label, self.show_root = root_row, path_label, show_root
+        self.expanded = False
+        self.menu = None
+        self.armed = False
+        self.clicks: list[tuple[int, int]] = []
+        self.keys: list[str] = []
+        self.win = _Ctl("FactoryTalk Optix Studio", "WindowControl", (961, 0, 958, 1031))
+        self.win.GetChildren = self._rows
+
+    def _rows(self):
+        rows = []
+        if self.path_label:
+            rows.append(_Ctl(self.path_label, "TextControl", (1084, 10, 499, 18)))
+        if self.show_root:
+            rows.append(_Ctl(self.root_row, "TextControl", (1008, 126, 297, 28)))
+        rows.append(_Ctl("UI", "TextControl", (1024, 154, 281, 28)))
+        rows.append(_Ctl("Misc.", "TextControl", (1024, 182, 281, 28)))
+        y = 210
+        if self.expanded:
+            rows.append(_Ctl("DesignTimeNetLogic", "TextControl", (1040, y, 265, 28)))
+            y += 28
+        rows.append(_Ctl("Model", "TextControl", (1024, y, 281, 28)))
+        # The Properties pane repeats the selected node's name, far right.
+        rows.append(_Ctl("StudioMCPBridge", "TextControl", (1666, 99, 243, 28)))
+        if self.menu is not None:
+            rows.append(self.menu)
+        return rows
+
+    def _row_at(self, x, y):
+        for c in self._rows():
+            r = c.BoundingRectangle
+            if c.ControlTypeName == "TextControl" and r.left <= x < r.left + r.width() \
+                    and r.top <= y < r.top + r.height():
+                return c.Name
+        return None
+
+    def _menu(self, names):
+        items = [_Ctl(n, "MenuItemControl", (1100, 300 + 22 * i, 220, 22))
+                 for i, n in enumerate(names)]
+        return _Ctl("", "MenuControl", (1100, 300, 220, 22 * len(names)), items)
+
+    # --- module surface used by execute_method
+    def GetRootControl(self):  # noqa: N802 -- mirrors uiautomation
+        return _Ctl("", "PaneControl", children=[self.win])
+
+    def GetCursorPos(self):  # noqa: N802 -- mirrors uiautomation
+        return (0, 0)
+
+    def SetCursorPos(self, x, y):  # noqa: N802 -- mirrors uiautomation
+        pass
+
+    def GetForegroundControl(self):  # noqa: N802 -- mirrors uiautomation
+        return None
+
+    def RightClick(self, x, y):  # noqa: N802 -- mirrors uiautomation
+        row = self._row_at(x, y)
+        if row == "Misc.":
+            self.menu = self._menu(["NodeSet", "Rename", "Delete", "New"])
+        elif row == "DesignTimeNetLogic":
+            self.menu = self._menu(["NodeSet", "Execute StopBridge",
+                                    "Execute StartBridge", "Execute CreateSensors"])
+        else:
+            self.menu = None
+
+    def Click(self, x, y):  # noqa: N802 -- mirrors uiautomation
+        self.clicks.append((x, y))
+        if self.menu is not None:
+            for it in self.menu.GetChildren():
+                r = it.BoundingRectangle
+                if r.left <= x < r.left + r.width() and r.top <= y < r.top + r.height():
+                    if it.Name == "Execute StartBridge":
+                        self.armed = True
+                    self.menu = None
+                    return
+        if not self.expanded and abs(x - (1024 - 34)) <= 4 and 182 <= y < 210:
+            self.expanded = True
+
+    def SendKeys(self, keys):  # noqa: N802 -- mirrors uiautomation
+        self.keys.append(keys)
+        if "{Esc}" in keys:
+            self.menu = None
+
+
+def _wire(monkeypatch, fake: _FakeStudio):
+    monkeypatch.setitem(__import__("sys").modules, "uiautomation", fake)
+    monkeypatch.setattr(studio_arm.time, "sleep", lambda s: None)
+    monkeypatch.setattr(studio_arm, "bound_ports", lambda *a, **k: set())
+    monkeypatch.setattr(studio_arm, "serving_port_for",
+                        lambda *a, **k: 8768 if fake.armed else None)
+
+
+def test_arm_expands_a_collapsed_tree_down_to_the_category_folder(tmp_path, monkeypatch) -> None:
+    _fork_tree(tmp_path)
+    fake = _FakeStudio()
+    _wire(monkeypatch, fake)
+    out = studio_arm.execute_method("Cell_v5", str(tmp_path), method="StartBridge")
+    assert out["ok"] and out["state"] == "armed", out
+    assert out["chain"] == ["Misc.", "DesignTimeNetLogic", "StudioMCPBridge"]
+    assert out["expanded"] == ["Misc."]
+    # The plain folder was tried (and offered no Execute), then the chevron
+    # was clicked, then the category folder's menu carried the entry.
+    assert [t["row"] for t in out["tried"]] == ["Misc.", "DesignTimeNetLogic"]
+    assert (990, 196) in fake.clicks
+    assert fake.expanded and fake.armed
+
+
+def test_arm_names_the_ancestor_it_could_not_see(tmp_path, monkeypatch) -> None:
+    """With the Project-view search filter active the whole tree is replaced by
+    'No results found' -- report WHICH row was missing, not an empty tried."""
+    _fork_tree(tmp_path)
+    # The in-scene path label is the only identity left; it names the dir
+    # execute_method was given.
+    fake = _FakeStudio(path_label=str(tmp_path), show_root=False)
+    fake._rows = lambda: [_Ctl(fake.path_label, "TextControl", (1084, 10, 499, 18)),
+                          _Ctl('No results found for "x"', "TextControl", (966, 131, 300, 17))]
+    fake.win.GetChildren = fake._rows
+    _wire(monkeypatch, fake)
+    out = studio_arm.execute_method("Cell_v5", str(tmp_path), method="StartBridge")
+    assert out["ok"] is False and out["error"] == "menu_item_not_found"
+    assert out["tried"] == [{"row": "Misc.", "visible": False}]
+
+
+def test_window_identity_accepts_browsename_alias_and_path_label() -> None:
+    # Line4_HMI: root row reads Line4 (the project node), never Line4_HMI.
+    fake = _FakeStudio(root_row="Line4")
+    assert studio_arm._studio_window_for(fake, "Line4_HMI") is None
+    assert studio_arm._studio_window_for(fake, "Line4_HMI", aliases={"line4"}) is fake.win
+    # Filter active: root row gone, only the in-scene path label identifies it.
+    fake2 = _FakeStudio(root_row="Line4", show_root=False,
+                        path_label=r"C:\Users\me\Desktop\Line4_HMI\Line4.optix")
+    assert studio_arm._studio_window_for(fake2, "Line4_HMI", aliases={"line4"}) is None
+    assert studio_arm._studio_window_for(
+        fake2, "Line4_HMI", aliases={"line4"},
+        project_dir=r"C:\Users\me\Desktop\Line4_HMI") is fake2.win
+    # A different project's label must not match by prefix.
+    assert studio_arm._studio_window_for(
+        fake2, "Line4_HM", project_dir=r"C:\Users\me\Desktop\Line4_HM") is None
+
+
+def test_served_names_include_optix_stem_and_root_node(cfg: core.Config) -> None:
+    d = cfg.projects_root / "Line4_HMI"
+    (d / "Nodes").mkdir(parents=True)
+    (d / "Line4.optix").write_text("", encoding="utf-8")
+    (d / "Nodes" / "Line4.yaml").write_text("Name: Line4\nType: Project\n", encoding="utf-8")
+    names = core.project_served_names(d)
+    assert names == {"line4_hmi", "line4"}
+    assert core._bridge_name_match("Line4", names)
+    assert core._bridge_name_match(" line4 ", names)
+    assert not core._bridge_name_match("Other_v5", names)
+    assert not core._bridge_name_match("", names)
+    assert core._bridge_name_match("Line4_HMI", "line4_hmi")
+
+
+def test_find_bridge_for_routes_by_browsename(cfg: core.Config, monkeypatch) -> None:
+    """Every bridge tool goes through _find_bridge_for; before the alias it
+    reported bridge_wrong_project for Line4_HMI while its bridge was up."""
+    d = cfg.projects_root / "Line4_HMI"
+    (d / "Nodes").mkdir(parents=True)
+    (d / "Line4.optix").write_text("", encoding="utf-8")
+    monkeypatch.setattr(core, "list_bridges", lambda c, force=False: [
+        {"project": "Cell_v5", "port": 8768, "available": True},
+        {"project": "Line4", "port": 8769, "available": True},
+    ])
+    assert core._find_bridge_for(cfg, "Line4_HMI")["port"] == 8769
+    assert core._find_bridge_for(cfg, "Cell_v5")["port"] == 8768
+    assert core._find_bridge_for(cfg, "Nobody") is None
