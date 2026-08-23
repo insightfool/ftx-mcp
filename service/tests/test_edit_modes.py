@@ -133,7 +133,7 @@ def test_find_replace_changes_only_the_target_line(
     proj = make_project(projects_root, "Alpha")
     f = _write(proj, "Nodes/UI.yaml", "MaxConnections: 5\nOtherField: 5\n")
     out = _deploy(cfg, "Alpha", [{"path": "Nodes/UI.yaml", "find": "MaxConnections: 5", "replace": "MaxConnections: 6"}])
-    assert out["state"] == "succeeded"
+    assert out["state"] == "succeeded", out
     assert f.read_text() == "MaxConnections: 6\nOtherField: 5\n"
     assert out["edit_summary"][0]["mode"] == "find_replace"
     assert out["edit_summary"][0]["occurrences"] == 1
@@ -160,7 +160,7 @@ def test_find_replace_honors_expect_count(cfg: core.Config, projects_root: Path)
     proj = make_project(projects_root, "Alpha")
     f = _write(proj, "a.yaml", "v\nv\nv\n")
     out = _deploy(cfg, "Alpha", [{"path": "a.yaml", "find": "v", "replace": "w", "expect_count": 3}])
-    assert out["state"] == "succeeded"
+    assert out["state"] == "succeeded", out
     assert f.read_text() == "w\nw\nw\n"
     assert out["edit_summary"][0]["occurrences"] == 3
 
@@ -170,7 +170,7 @@ def test_find_replace_crlf_file_with_lf_anchor(cfg: core.Config, projects_root: 
     proj = make_project(projects_root, "Alpha")
     f = _write(proj, "win.yaml", "A: 1\nB: 2\n", crlf=True)
     out = _deploy(cfg, "Alpha", [{"path": "win.yaml", "find": "A: 1\nB: 2", "replace": "A: 1\nB: 9"}])
-    assert out["state"] == "succeeded"
+    assert out["state"] == "succeeded", out
     raw = f.read_bytes()
     assert raw == b"A: 1\r\nB: 9\r\n"  # EOL preserved, no LF leakage
 
@@ -186,7 +186,7 @@ def test_insert_after_anchor_adds_block(cfg: core.Config, projects_root: Path) -
         "insert_after_anchor": "Children:",
         "block": "- Name: PowerOn\n  Type: Boolean",
     }])
-    assert out["state"] == "succeeded"
+    assert out["state"] == "succeeded", out
     assert f.read_text() == "Children:\n- Name: PowerOn\n  Type: Boolean\n- Name: Existing\n"
     assert out["edit_summary"][0]["mode"] == "insert_after_anchor"
 
@@ -204,7 +204,7 @@ def test_insert_after_anchor_crlf_preserved(cfg: core.Config, projects_root: Pat
     proj = make_project(projects_root, "Alpha")
     f = _write(proj, "m.yaml", "Children:\n- Existing\n", crlf=True)
     out = _deploy(cfg, "Alpha", [{"path": "m.yaml", "insert_after_anchor": "Children:", "block": "- New"}])
-    assert out["state"] == "succeeded"
+    assert out["state"] == "succeeded", out
     assert f.read_bytes() == b"Children:\r\n- New\r\n- Existing\r\n"
 
 
@@ -216,7 +216,7 @@ def test_full_content_still_works_and_creates_files(
 ) -> None:
     make_project(projects_root, "Alpha")
     out = _deploy(cfg, "Alpha", [{"path": "Nodes/New.yaml", "content": "Name: New\n"}])
-    assert out["state"] == "succeeded"
+    assert out["state"] == "succeeded", out
     assert (projects_root / "Alpha" / "Nodes" / "New.yaml").read_text() == "Name: New\n"
     assert out["edit_summary"][0]["mode"] == "content"
 

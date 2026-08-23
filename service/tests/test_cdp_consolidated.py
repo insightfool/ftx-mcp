@@ -63,7 +63,7 @@ def test_observe_screenshot_forwards_to_core(cfg, monkeypatch, tmp_path):
     assert seen == {"save_path": str(shot), "quality": 70,
                     "navigate_url": "http://x", "settle_seconds": 1.0,
                     "fresh": True, "region": [0.1, 0.1, 0.2, 0.2]}
-    assert out["state"] == "succeeded"
+    assert out["state"] == "succeeded", out
     assert "hint" in out and "file tool" in out["hint"]
 
 
@@ -172,7 +172,7 @@ def test_observe_diff_forwards_to_core(cfg, monkeypatch):
     out = _tool_fn(mcp, "optix_observe")(
         mode="diff", dir_a="/a", dir_b="/b", threshold=5.0)
     assert seen == {"dir_a": "/a", "dir_b": "/b", "threshold": 5.0}
-    assert out["state"] == "succeeded"
+    assert out["state"] == "succeeded", out
 
 
 def test_observe_invalid_mode_returns_structured_error(cfg):
@@ -200,7 +200,7 @@ def test_interact_click_forwards_to_core(cfg, monkeypatch):
         action="click", x=10.0, y=20.0, navigate_url="u", settle_seconds=0.5)
     assert seen == {"x": 10.0, "y": 20.0, "navigate_url": "u",
                     "settle_seconds": 0.5}
-    assert out["state"] == "succeeded"
+    assert out["state"] == "succeeded", out
 
 
 def test_interact_fill_forwards_to_core(cfg, monkeypatch):
@@ -220,7 +220,7 @@ def test_interact_fill_forwards_to_core(cfg, monkeypatch):
     assert seen == {"x": 1.0, "y": 2.0, "text": "42", "submit": "Tab",
                     "select_all": False, "navigate_url": "u",
                     "settle_seconds": 0.1}
-    assert out["state"] == "succeeded"
+    assert out["state"] == "succeeded", out
 
 
 def test_interact_type_forwards_to_core(cfg, monkeypatch):

@@ -86,7 +86,7 @@ def test_diff_added_and_removed_screens(tmp_path: Path, monkeypatch) -> None:
         "new_screen": {"file": "new_screen.jpg", "size_bytes": 10, "text": ["New"]},
     }, ocr=True)
     out = core.cdp_diff_runtime(str(dir_a), str(dir_b))
-    assert out["state"] == "succeeded"
+    assert out["state"] == "succeeded", out
     assert out["added"] == ["new_screen"]
     assert out["removed"] == ["old_screen"]
     assert out["screens"]["home"]["status"] == "same"
@@ -131,7 +131,7 @@ def test_diff_degraded_text_only_mode(tmp_path: Path, monkeypatch) -> None:
         "setup": {"file": "setup.jpg", "size_bytes": 10, "text": ["Setup Values", "New Line"]},
     }, ocr=True)
     out = core.cdp_diff_runtime(str(dir_a), str(dir_b))
-    assert out["state"] == "succeeded"
+    assert out["state"] == "succeeded", out
     assert out["degraded"] == "no_pillow"
     assert out["screens"]["home"]["status"] == "same"
     assert out["screens"]["home"]["pixel_pct"] is None
@@ -155,7 +155,7 @@ def test_diff_screen_with_sweep_error_reports_error_status(tmp_path: Path, monke
     _write_manifest(dir_a, {"home": {"error": "click x/y must be >= 0"}}, ocr=True)
     _write_manifest(dir_b, {"home": {"file": "home.jpg", "size_bytes": 1, "text": ["Hi"]}}, ocr=True)
     out = core.cdp_diff_runtime(str(dir_a), str(dir_b))
-    assert out["state"] == "succeeded"
+    assert out["state"] == "succeeded", out
     assert out["screens"]["home"]["status"] == "error"
     assert out["summary"]["errors"] == 1
 
@@ -184,7 +184,7 @@ def test_diff_state_and_threshold_echoed(tmp_path: Path, monkeypatch) -> None:
     _write_manifest(dir_a, {"home": {"file": "home.jpg", "size_bytes": 1, "text": ["Hi"]}}, ocr=True)
     _write_manifest(dir_b, {"home": {"file": "home.jpg", "size_bytes": 1, "text": ["Hi"]}}, ocr=True)
     out = core.cdp_diff_runtime(str(dir_a), str(dir_b), threshold=5.0)
-    assert out["state"] == "succeeded"
+    assert out["state"] == "succeeded", out
     assert out["threshold"] == 5.0
     assert "degraded" in out
 
@@ -202,7 +202,7 @@ def test_diff_pixel_same_below_threshold(tmp_path: Path) -> None:
     _write_manifest(dir_a, {"home": {"file": "home.jpg", "size_bytes": 1}})
     _write_manifest(dir_b, {"home": {"file": "home.jpg", "size_bytes": 1}})
     out = core.cdp_diff_runtime(str(dir_a), str(dir_b))
-    assert out["state"] == "succeeded"
+    assert out["state"] == "succeeded", out
     assert "degraded" not in out
     assert out["screens"]["home"]["status"] == "same"
     assert out["screens"]["home"]["pixel_pct"] == 0.0

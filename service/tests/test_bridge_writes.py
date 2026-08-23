@@ -860,7 +860,7 @@ def test_bridge_edit_applies_after_a_clean_report(alpha, monkeypatch):
 
     out = core.bridge_edit(alpha, "Alpha", _TWO_OPS)
 
-    assert out["state"] == "succeeded"
+    assert out["state"] == "succeeded", out
     assert out["applied"] == 2 and out["op_count"] == 2
     assert applied == ["create_widget", "set_property"]
 
@@ -955,7 +955,7 @@ def test_rename_op_lowers_to_move_before_validation(alpha, monkeypatch):
     out = core.bridge_edit(alpha, "Alpha", [
         {"op": "rename", "path": "UI/Screens/Foo", "new_name": "Bar"}])
 
-    assert out["state"] == "succeeded"
+    assert out["state"] == "succeeded", out
     sent = seen[0][1]["ops"][0]
     assert sent == {"op": "move", "path": "UI/Screens/Foo",
                     "new_parent": "UI/Screens", "new_name": "Bar"}
@@ -1036,7 +1036,7 @@ def test_bridge_edit_reconciles_attach_expression_name_and_prop_name(alpha, monk
          "sources": "Model/L"},
     ]
     out = core.bridge_edit(alpha, "Alpha", ops)
-    assert out["state"] == "succeeded"
+    assert out["state"] == "succeeded", out
     # validator side (reads `name`) now sees both, whichever spelling was given
     _, payload = seen[0]
     assert payload["ops"][0]["name"] == "FillColor"
