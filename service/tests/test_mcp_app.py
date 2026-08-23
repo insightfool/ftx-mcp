@@ -23,6 +23,10 @@ from service.tests.conftest import make_project
 
 EXPECTED_TOOLS = {
     "optix_active_target",
+    # cold-start pair (v1.0.7): arm the bridge and open/create a project with
+    # no human at the keyboard.
+    "optix_bridge_arm",
+    "optix_project",
     "optix_status",  # consolidated optix_health/_doctor/_services_status/_studio_version
     "optix_build_check",
     "optix_list_projects",
@@ -872,10 +876,12 @@ def test_with_project_tool_count_and_annotations_unchanged(cfg: core.Config) -> 
     _stop_emulator/_emulator_status/_runtime_log_tail family folds into
     optix_emulator (55 - 4 = 51); the 14 per-noun bridge primitives are gated
     OFF by default behind FTXMCP_BRIDGE_PRIMITIVES (51 - 14 = 37).
-    (v1.0.6): optix_bridge_invoke_method adds one, never gated (37 + 1 = 38)."""
+    (v1.0.6): optix_bridge_invoke_method adds one, never gated (37 + 1 = 38).
+    (v1.0.7): the cold-start pair optix_bridge_arm (consolidated arm/stop)
+    and optix_project (consolidated open/new) add two more (40 + 2 = 42)."""
     mcp = make_mcp(cfg)
     by_name = {t.name: t for t in _list_tools(mcp)}
-    assert len(by_name) == 40
+    assert len(by_name) == 42
     assert by_name["optix_list_screens"].annotations.readOnlyHint is True
     write = by_name["optix_bridge_add_bound_widget"].annotations
     assert write.readOnlyHint is False and write.destructiveHint is False

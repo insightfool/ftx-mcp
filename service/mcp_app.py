@@ -1474,6 +1474,95 @@ def make_mcp(cfg: core.Config) -> FastMCP:
     # _OFFLOAD_TOOLS.
     _EMULATOR_ACTIONS = ("run", "restart", "stop", "status", "log")
 
+    # optix_bridge_arm / optix_project: the cold-start pair. Deliberately NOT
+    # wrapped in @_with_project — that resolves a missing project from the
+    # SERVING BRIDGE, and at arm time there is by definition no bridge to ask.
+    @mcp.tool(annotations=_RW, name="optix_bridge_arm")
+    def _optix_bridge_arm_tool(
+        action: Literal["arm", "stop"],
+        project: str,
+    ) -> dict:
+        """Arm or stop the design-time bridge for a project WITHOUT a human at
+        the keyboard — ONE tool, pick an `action`.
+
+        action:
+          - "arm"  — Execute StartBridge on the project's bridge NetLogic.
+          - "stop" — Execute StopBridge (frees its port for another instance).
+
+        `project` is REQUIRED and cannot be inferred: every other bridge tool
+        defaults it from the serving bridge, and the whole point here is that
+        no bridge is serving yet.
+
+        Studio executes NOTHING from the NetSolution until an explicit
+        right-click -> Execute, and its CLI has no execute verb, so this drives
+        the real GUI gesture through UI Automation. It briefly takes the
+        foreground and moves the cursor (same class of intrusion as optix_save's
+        Ctrl+S and optix_emulator(action="run")'s F5), then restores both.
+
+        Multi-instance safe by construction: the target window is resolved by
+        the project name exposed in its tree (NOT the Win32 caption, which is
+        'FactoryTalk Optix Studio' for every window), the fast-exit asks "is a
+        bridge serving THIS project" rather than "is the base port open", and
+        the verify asserts the newly-bound port's /bridge/health names this
+        project. Returns {ok, state: already_armed|armed|stopped, port, ...}.
+
+        If it answers studio_window_not_found, open the project first:
+        optix_project(action="open").
+
+        Use this when:
+          - optix_bridge_status says a project has no bridge and you want to
+            author into it — this is the whole cold-start path
+          - you need a port back: action="stop" frees one of the four so
+            another Studio instance can bind
+
+        Do NOT use this when:
+          - a bridge is already serving that project (it no-ops with
+            state=already_armed, but optix_bridge_status is the cheaper check)
+          - the project is not open in Studio — optix_project(action="open")
+            first; arming cannot conjure a window
+        """
+        if action not in ("arm", "stop"):
+            return {"ok": False, "error": "bad_action", "action": action}
+        return core.bridge_arm(cfg, project, action=action)
+
+    @mcp.tool(annotations=_RW, name="optix_project")
+    def _optix_project_tool(
+        action: Literal["open", "new"],
+        project: str,
+        template: str | None = None,
+    ) -> dict:
+        """Studio project lifecycle via its CLI — ONE tool, pick an `action`.
+
+        action:
+          - "open" — launch Studio on an existing project and WAIT until it is
+            really loaded. The CLI returns immediately while Studio is still
+            loading, so readiness is the window's project identity appearing,
+            not process existence and not a sleep. Returns state=already_open
+            when a window is already serving it.
+          - "new"  — create a project under the projects root. REFUSES if the
+            directory already exists; this tool never writes into one.
+            `template` maps to --template.
+
+        Pair with optix_bridge_arm to go from nothing to an authorable project
+        with no human at the keyboard: optix_project(action="open") then
+        optix_bridge_arm(action="arm").
+
+        Use this when:
+          - the project you need to author is not open in Studio yet
+          - you want a fresh project scaffolded under the projects root
+
+        Do NOT use this when:
+          - you only need to KNOW what exists (optix_list_projects) — this
+            launches Studio, which is slow and takes over the screen
+          - the project is already open (it returns already_open, but
+            optix_bridge_status usually answers the real question)
+        """
+        if action == "open":
+            return core.project_open(cfg, project)
+        if action == "new":
+            return core.project_new(cfg, project, template=template)
+        return {"ok": False, "error": "bad_action", "action": action}
+
     @mcp.tool(annotations=_RW, name="optix_emulator")
     def _optix_emulator_tool(
         action: Literal["run", "restart", "stop", "status", "log"],

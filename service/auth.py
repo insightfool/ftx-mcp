@@ -353,6 +353,11 @@ TOOL_SCOPES: dict[str, str] = {
     "optix_bridge_attach_expression": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
     "optix_bridge_wire_event": "author",  # gated: FTXMCP_BRIDGE_PRIMITIVES
     "optix_save": "author",
+    # Both drive Studio's GUI / CLI and change what is on the operator's
+    # screen, so "author" — never "read". optix_bridge_arm is the one bridge
+    # tool that is NOT read-tier (optix_bridge_status stays "read").
+    "optix_bridge_arm": "author",   # consolidated arm/stop
+    "optix_project": "author",      # consolidated open/new; new writes disk
     "optix_emulator": "author",  # consolidated run/restart/stop/status/log
     "optix_add_widget": "author",
     "optix_add_model_variable": "author",

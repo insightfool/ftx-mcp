@@ -3954,6 +3954,117 @@ def active_target(
     return resolve_active_target(cfg, bridge_pid=bp)
 
 
+# ---- bridge arming + Studio CLI ------------------------------------------
+
+def bridge_arm(cfg: Config, project: str, action: str = "arm") -> dict:
+    """Arm or stop the design-time bridge for `project` via the Studio GUI.
+
+    Studio executes nothing from the NetSolution until an explicit Execute, and
+    its CLI has no execute verb, so the right-click gesture is the only lever.
+    The service runs in session 1, which is the only thing that gesture needs —
+    see service/studio_arm.py for the measured facts it encodes.
+    """
+    from . import studio_arm
+    project_dir = resolve_project(cfg, project)
+    method = "StartBridge" if action == "arm" else "StopBridge"
+    audit(cfg, "bridge_arm", project=project, action=action)
+    out = studio_arm.execute_method(
+        project, str(project_dir), method=method,
+        base_port=cfg.bridge_port_base, port_range=cfg.bridge_port_range,
+    )
+    reset_bridge_cache()
+    return out
+
+
+def _studio_cli(cfg: Config, args: list[str], runner: Runner = _DEFAULT_RUNNER,
+                timeout: float = 60.0) -> dict:
+    """Run FTOptixStudio.exe with CLI args (1.7.4.32 verbs: open / new /
+    connect / deploy / export / --version).
+
+    NEVER pass an unrecognised flag: Studio launches and then CRASH-DUMPS on
+    one (measured with `/?`), which looks like a broken install.
+    """
+    if not cfg.studio_exe.is_file():
+        return {"ok": False, "error": "studio_exe_missing", "path": str(cfg.studio_exe)}
+    try:
+        proc = runner.run([str(cfg.studio_exe), *args], capture_output=True,
+                          text=True, timeout=timeout)
+        return {"ok": proc.returncode == 0, "returncode": proc.returncode,
+                "stdout": (proc.stdout or "")[-2000:],
+                "stderr": (proc.stderr or "")[-2000:]}
+    except Exception as e:
+        return {"ok": False, "error": "studio_cli_failed",
+                "detail": f"{type(e).__name__}: {e}"}
+
+
+def project_open(cfg: Config, project: str, wait_seconds: float = 90.0,
+                 runner: Runner = _DEFAULT_RUNNER) -> dict:
+    """`FTOptixStudio open <project>` and wait until the window is really there.
+
+    The CLI returns immediately while Studio loads, so a naive caller's next
+    bridge call fails confusingly. Readiness is the window's UIA project
+    identity appearing — the same bridge-free identity read arming uses — not a
+    sleep, and not process existence (the process exists long before the
+    project is loaded).
+    """
+    from . import studio_arm
+    project_dir = resolve_project(cfg, project)
+    candidates = sorted(project_dir.glob("*.optix"))
+    if not candidates:
+        return {"ok": False, "error": "no_optix_file", "project": project,
+                "searched": str(project_dir)}
+    already = None
+    try:
+        import uiautomation as auto
+        already = studio_arm._studio_window_for(auto, project)
+    except Exception:
+        pass
+    if already is not None:
+        return {"ok": True, "state": "already_open", "project": project}
+
+    audit(cfg, "project_open", project=project)
+    launched = _studio_cli(cfg, ["open", str(candidates[0]), "--silent"],
+                           runner=runner, timeout=30.0)
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline:
+        try:
+            import uiautomation as auto
+            if studio_arm._studio_window_for(auto, project) is not None:
+                return {"ok": True, "state": "opened", "project": project,
+                        "waited_seconds": round(wait_seconds - (deadline - time.time()), 1)}
+        except Exception:
+            pass
+        time.sleep(1.5)
+    return {"ok": False, "error": "open_timeout", "project": project,
+            "detail": f"no Studio window identified {project!r} within {wait_seconds:g}s",
+            "cli": launched}
+
+
+def project_new(cfg: Config, name: str, template: str | None = None,
+                runner: Runner = _DEFAULT_RUNNER) -> dict:
+    """`FTOptixStudio new <name> <projects_root>` — create a project.
+
+    Refuses when the target directory already exists: the CLI would otherwise
+    decide what to do with a populated directory, and this tool must never be
+    the reason someone's project is touched.
+    """
+    if ".." in name or "/" in name or "\\" in name:
+        return {"ok": False, "error": "invalid_project_name", "name": name}
+    dest = (cfg.projects_root / name)
+    if dest.exists():
+        return {"ok": False, "error": "already_exists", "path": str(dest),
+                "nudge": "pick another name; this tool never writes into an existing directory"}
+    args = ["new", name, str(cfg.projects_root)]
+    if template:
+        args.append(f"--template={template}")
+    args.append("--silent")
+    audit(cfg, "project_new", project=name, template=template)
+    out = _studio_cli(cfg, args, runner=runner, timeout=180.0)
+    out["created"] = dest.is_dir()
+    out["path"] = str(dest)
+    return out
+
+
 def run_emulator(
     cfg: Config,
     project: str,
