@@ -145,3 +145,39 @@ def test_project_open_without_an_optix_file(cfg: core.Config) -> None:
     (cfg.projects_root / "Empty").mkdir(parents=True, exist_ok=True)
     out = core.project_open(cfg, "Empty")
     assert out["ok"] is False and out["error"] == "no_optix_file"
+
+
+def test_project_new_polls_the_tree_not_process_exit(cfg: core.Config, monkeypatch) -> None:
+    """Studio's CLI verbs are GUI launches, not batch commands: `new` creates
+    the project then STAYS RUNNING with it open. Waiting for exit is wrong
+    twice -- it blocks for the life of the editor, and Runner.run tree-kills on
+    TimeoutExpired, so waiting actually kills the Studio the command started
+    (measured: all 25 files created, then the timeout reaped the editor).
+    Readiness must therefore be the .optix appearing on disk."""
+    dest = cfg.projects_root / "Fresh"
+
+    def fake_launch(_cfg, _args):
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "Fresh.optix").write_text("", encoding="utf-8")
+        return {"ok": True, "pid": 4321}
+
+    monkeypatch.setattr(core, "_studio_launch", fake_launch)
+    out = core.project_new(cfg, "Fresh", wait_seconds=5)
+    assert out["ok"] and out["state"] == "created"
+    assert out["pid"] == 4321 and out["studio_left_open"] is True
+
+
+def test_project_new_reports_timeout_without_the_optix(cfg: core.Config, monkeypatch) -> None:
+    monkeypatch.setattr(core, "_studio_launch", lambda *a: {"ok": True, "pid": 1})
+    out = core.project_new(cfg, "NeverLands", wait_seconds=0.2)
+    assert out["ok"] is False and out["error"] == "create_timeout"
+
+
+def test_project_open_surfaces_a_launch_failure(cfg: core.Config, monkeypatch) -> None:
+    d = cfg.projects_root / "HasOptix"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "HasOptix.optix").write_text("", encoding="utf-8")
+    monkeypatch.setattr(core, "_studio_launch",
+                        lambda *a: {"ok": False, "error": "studio_exe_missing"})
+    out = core.project_open(cfg, "HasOptix", wait_seconds=1)
+    assert out["ok"] is False and out["error"] == "studio_exe_missing"

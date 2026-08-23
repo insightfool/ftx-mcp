@@ -3976,24 +3976,40 @@ def bridge_arm(cfg: Config, project: str, action: str = "arm") -> dict:
     return out
 
 
-def _studio_cli(cfg: Config, args: list[str], runner: Runner = _DEFAULT_RUNNER,
-                timeout: float = 60.0) -> dict:
-    """Run FTOptixStudio.exe with CLI args (1.7.4.32 verbs: open / new /
-    connect / deploy / export / --version).
+def _studio_launch(cfg: Config, args: list[str]) -> dict:
+    """Launch FTOptixStudio.exe with CLI args and DO NOT WAIT.
+
+    Studio's CLI verbs are GUI launches, not batch commands: `new` creates the
+    project and then stays running with it open, and `open` obviously does. So
+    a waiting call is wrong twice over — it blocks for the life of the editor,
+    and Runner.run tree-kills on TimeoutExpired, which means waiting actually
+    KILLS the Studio the command just started (measured: `new` created all 25
+    files, then the timeout reaped the editor).
+
+    Detached + own process group so a signal to the service never propagates,
+    and stdio to DEVNULL so the service can exit without holding the child's
+    pipes. Same shape as _launch_runtime below. Returns {pid}.
 
     NEVER pass an unrecognised flag: Studio launches and then CRASH-DUMPS on
-    one (measured with `/?`), which looks like a broken install.
+    one (measured with `/?`), which reads like a broken install.
     """
     if not cfg.studio_exe.is_file():
         return {"ok": False, "error": "studio_exe_missing", "path": str(cfg.studio_exe)}
+    cmd = [str(cfg.studio_exe), *args]
     try:
-        proc = runner.run([str(cfg.studio_exe), *args], capture_output=True,
-                          text=True, timeout=timeout)
-        return {"ok": proc.returncode == 0, "returncode": proc.returncode,
-                "stdout": (proc.stdout or "")[-2000:],
-                "stderr": (proc.stderr or "")[-2000:]}
+        kwargs: dict[str, Any] = dict(
+            cwd=str(cfg.studio_exe.parent), close_fds=True,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if os.name == "nt":
+            kwargs["creationflags"] = (
+                subprocess.DETACHED_PROCESS  # type: ignore[attr-defined]
+                | subprocess.CREATE_NEW_PROCESS_GROUP)
+        proc = subprocess.Popen(cmd, **kwargs)
+        return {"ok": True, "pid": proc.pid}
     except Exception as e:
-        return {"ok": False, "error": "studio_cli_failed",
+        return {"ok": False, "error": "studio_launch_failed",
                 "detail": f"{type(e).__name__}: {e}"}
 
 
@@ -4023,8 +4039,10 @@ def project_open(cfg: Config, project: str, wait_seconds: float = 90.0,
         return {"ok": True, "state": "already_open", "project": project}
 
     audit(cfg, "project_open", project=project)
-    launched = _studio_cli(cfg, ["open", str(candidates[0]), "--silent"],
-                           runner=runner, timeout=30.0)
+    launched = _studio_launch(cfg, ["open", str(candidates[0]), "--silent"])
+    if not launched.get("ok"):
+        return {"ok": False, "error": launched.get("error", "launch_failed"),
+                "project": project, "cli": launched}
     deadline = time.time() + wait_seconds
     while time.time() < deadline:
         try:
@@ -4041,6 +4059,7 @@ def project_open(cfg: Config, project: str, wait_seconds: float = 90.0,
 
 
 def project_new(cfg: Config, name: str, template: str | None = None,
+                wait_seconds: float = 180.0,
                 runner: Runner = _DEFAULT_RUNNER) -> dict:
     """`FTOptixStudio new <name> <projects_root>` — create a project.
 
@@ -4059,8 +4078,22 @@ def project_new(cfg: Config, name: str, template: str | None = None,
         args.append(f"--template={template}")
     args.append("--silent")
     audit(cfg, "project_new", project=name, template=template)
-    out = _studio_cli(cfg, args, runner=runner, timeout=180.0)
-    out["created"] = dest.is_dir()
+    launched = _studio_launch(cfg, args)
+    if not launched.get("ok"):
+        return {**launched, "project": name}
+    # Readiness is the project TREE on disk, not process exit — Studio stays
+    # open on the project it just made (which is convenient: optix_bridge_arm
+    # can then arm it).
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline:
+        if (dest / f"{name}.optix").is_file():
+            return {"ok": True, "state": "created", "project": name,
+                    "path": str(dest), "pid": launched.get("pid"),
+                    "studio_left_open": True}
+        time.sleep(1.0)
+    out = {"ok": False, "error": "create_timeout", "project": name,
+           "path": str(dest), "created": dest.is_dir(),
+           "detail": f"no {name}.optix under the project dir within {wait_seconds:g}s"}
     out["path"] = str(dest)
     return out
 
