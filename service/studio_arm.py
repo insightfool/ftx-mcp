@@ -273,6 +273,8 @@ def execute_method(project: str, project_dir: str, method: str = "StartBridge",
     Returns a structured dict; never raises. `state` is one of already_armed /
     armed / stopped, or `error` names the failure.
     """
+    # Everything cheap and environment-independent runs BEFORE the
+    # uiautomation import: identity fast-exit, then the YAML lookup.
     # Fast exit BEFORE the uiautomation import: "is a bridge already serving
     # this project" is a pure loopback question. Answering it first means a box
     # without uiautomation still gets a useful already_armed/not_running
@@ -285,14 +287,25 @@ def execute_method(project: str, project_dir: str, method: str = "StartBridge",
     if not arming and already is None:
         return {"ok": True, "state": "not_running", "project": project}
 
+    yaml_path = find_bridge_yaml(project_dir, node_name)
+    if yaml_path is None:
+        # No YAML declares the node, so the project simply has no bridge
+        # NetLogic -- a fresh `optix_project(action="new")` project is exactly
+        # this. Distinguish it from "the row was not found in the tree": the
+        # fix is to ADD the NetLogic, not to hunt the UI.
+        return {"ok": False, "error": "bridge_netlogic_absent",
+                "project": project, "node": node_name,
+                "nudge": (f"{project!r} has no {node_name} NetLogic. Add it "
+                          f"(studio-bridge/StudioMCPBridge.cs as a DesignTime "
+                          f"NetLogic named {node_name}), then arm.")}
+    chain = derive_chain(yaml_path, method)
+    names = list(chain or [node_name])
+
+
     try:
         import uiautomation as auto  # lazy: Windows-only, may be absent
     except Exception as e:  # pragma: no cover - import guard
         return {"ok": False, "error": "uiautomation_unavailable", "detail": str(e)}
-
-    yaml_path = find_bridge_yaml(project_dir, node_name)
-    chain = derive_chain(yaml_path, method) if yaml_path else None
-    names = list(chain or [node_name])
 
     win = _studio_window_for(auto, project)
     if win is None:

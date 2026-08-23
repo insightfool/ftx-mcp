@@ -181,3 +181,13 @@ def test_project_open_surfaces_a_launch_failure(cfg: core.Config, monkeypatch) -
                         lambda *a: {"ok": False, "error": "studio_exe_missing"})
     out = core.project_open(cfg, "HasOptix", wait_seconds=1)
     assert out["ok"] is False and out["error"] == "studio_exe_missing"
+
+
+def test_arm_names_a_missing_netlogic_distinctly(tmp_path, monkeypatch) -> None:
+    """A freshly-created project has no bridge NetLogic. That must NOT read as
+    a navigation miss -- the fix is to add the node, not to hunt the UI."""
+    monkeypatch.setattr(studio_arm, "serving_port_for", lambda *a, **k: None)
+    (tmp_path / "Nodes").mkdir()
+    out = studio_arm.execute_method("Fresh", str(tmp_path), method="StartBridge")
+    assert out["ok"] is False and out["error"] == "bridge_netlogic_absent"
+    assert "StudioMCPBridge" in out["nudge"]
