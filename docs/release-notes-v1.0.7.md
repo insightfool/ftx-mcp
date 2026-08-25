@@ -146,8 +146,11 @@ own expectation of the runtime port is `OPTIX_RUNTIME_TEST_PORT`
 ## Credits
 
 The multi-instance bridge and the dashboard's multi-port evolution are
-Chuck's work, hardened here through a live multi-project field arc. Thanks
-also to the contributors whose fixes and field reports shaped this release.
+Chuck's work, hardened here through a live multi-project field arc. The
+DisplayName crash investigation and fix, the `rename` op, and the psutil
+emulator-lifecycle speedup came from Jonathan Callahan (@nahallac) via PRs
+#2 and #3. Thanks also to the contributors whose fixes and field reports
+shaped this release.
 
 The default tool surface is now **33 tools** (`optix_bridge_arm`,
 `optix_project`, `optix_bridge_log_tail`, `optix_build_check` are new);
