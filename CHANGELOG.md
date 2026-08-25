@@ -4,199 +4,74 @@ All notable changes to ftx-mcp. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Per-release detail lives in
 `docs/release-notes-v<version>.md`.
 
-## [1.0.11]
-
-Theme: the Bridge panel's per-port chip row (added v1.0.9) showed which
-ports were armed but not what each one was actually running — the only
-version number on the whole dashboard was the single "primary" (first
-armed port) big number, ambiguous with more than one bridge up. Full
-notes: `docs/release-notes-v1.0.11.md`.
-
-### Changed
-- **Every bridge socket chip now shows its own version and last-saved
-  age**, not just its project name — `:8768 v1.0.7 RCB_LV2_...`. Hovering
-  any chip (armed or not) now gives the full per-port detail: version,
-  project, last-saved age when armed; the specific failure reason when
-  not. Previously only unarmed chips had a tooltip at all.
-- **A port that's answering HTTP but hasn't finished loading its project
-  now renders as a distinct amber "loading" chip**, instead of looking
-  identical to a port with nothing listening on it at all. Uses the
-  `responded`/`available` distinction `_scan_bridge_ports()` was already
-  computing per port — no backend change, purely a dashboard render fix.
-
-## [1.0.10]
-
-Theme: Doctor checks were as ambiguous about the bridge as the panel v1.0.9
-just fixed, and nothing explained what the feature checks meant. Full
-notes: `docs/release-notes-v1.0.10.md`.
-
-### Changed
-- **Doctor checks now report one row per configured bridge port**
-  (`bridge :8768`, `bridge :8769`, ...) instead of a single ambiguous
-  `bridge` row that only ever said "is at least one of up to 4 armed."
-  Falls back to the exact original single `bridge` row name when only one
-  port is configured (the legacy `OPTIX_BRIDGE_URL`-pinned path) — no
-  change there, preserving back-compat for anything reading checks by name.
-- **Every Doctor check row now has a hover tooltip** on the `/ui` dashboard,
-  showing the `detail` (what was actually found) and, for a failing check,
-  the `fix` (the plain-English remedy) — `doctor()` always computed both,
-  the UI just never surfaced them. Answers "what does cdp / tesseract /
-  pillow mean" directly from the panel instead of needing to ask.
-
-## [1.0.9]
-
-Theme: dashboard fixes — duplicate tool chips, and the bridge panel only
-showed what was armed. Full notes: `docs/release-notes-v1.0.9.md`.
-
-### Fixed
-- **`/ui` "Capabilities" panel showed each tool 2, 3, or more times**
-  (AInsightfool). `http_app.py`'s `_tools_catalog()` lazily builds the tool
-  list on first use and caches it in a plain `list`, guarded by `if not
-  _tool_catalog`. FastAPI runs a sync route handler like this one in a
-  worker-thread pool, so concurrent `/ui/stats` requests can call it from
-  different threads at once — a classic check-then-act race: while the list
-  is still empty, every thread that checks it before the first one finishes
-  appending also sees it as empty and starts its own append pass, so the
-  catalog ends up with N full copies of every tool. Normally invisible (one
-  poller, fast responses), but very visible while `/ui/stats` was slow
-  (the v1.0.7/1.0.8 port-scan issues, fixed separately) — a 2s poll interval
-  racing a 16-100s response time meant many requests were in flight
-  simultaneously, each hitting the race. Fixed with double-checked locking.
-
-### Added
-- **The Bridge panel now always shows every configured port's status**, not
-  just the ones currently armed. `ui_stats()` exposes a new `sockets` field
-  (every port in the range, armed or not, with a `reason` for unarmed ones)
-  alongside the existing `bridges` (armed-only); the dashboard's chip row
-  renders all of them so "4 sockets configured, 1 armed" is visible at a
-  glance instead of looking identical to "nothing configured."
-
-## [1.0.8]
-
-Theme: the multi-instance scan shouldn't touch a live bridge's socket. Full
-notes: `docs/release-notes-v1.0.8.md`.
-
-### Fixed
-- **Multi-instance port scan aborted the live bridge's own connections**
-  (AInsightfool). `_bridge_health_at` (`service/core.py`, added in 1.0.7) did
-  a fast raw-socket pre-check (`_tcp_probe`: connect, then close immediately,
-  no data sent) against every port in the scanned range before falling back
-  to the real `/bridge/health` HTTP check — meant to skip ports with nothing
-  listening. Against a port that DID have the real, armed `StudioMCPBridge.cs`
-  listener behind it, that connect-then-abandon probe could race the C#
-  `TcpListener`'s single-threaded accept/read/write cycle: `AcceptTcpClient`
-  or the following `NetworkStream` write would throw "An established
-  connection was aborted by the software in your host machine," logged by
-  `Loop()`'s catch as a repeating `StudioBridge` "request error" Warning in
-  Studio's Output panel. Because the health cache TTL matches the `/ui`
-  dashboard's 2s poll interval, this fired continuously against the live
-  bridge for as long as the dashboard was open. The pre-check is removed —
-  every port now goes straight through the real HTTP health check, which
-  never touches a live listener's socket without sending an actual request.
-  A definitively-refused connection (nothing listening at all) still fails
-  fast without the retry-loop's `time.sleep`s, so a cold scan of an
-  otherwise-empty range isn't meaningfully slower.
-- **The fast-path in the fix above wasn't actually firing.** `_bridge_http`
-  raises `BridgeUnavailable(...) from e` where `e` is the caught
-  `urllib.error.URLError`, not the raw socket exception — `urlopen` stashes
-  a refused connection in `URLError.reason`, so the retry loop's
-  `isinstance(e.__cause__, ConnectionRefusedError)` check was always False
-  and every dead port still paid the full 3-attempt retry-with-sleep cost.
-  New helper `_is_connection_refused()` checks both `exc` and `exc.reason`.
-- **The port-range scan was sequential.** On a box where a refused
-  connection isn't near-instant (observed here: ~2s per refusal, endpoint
-  security intercepting even loopback traffic is one plausible cause),
-  scanning 4 ports one at a time took 30+ seconds, and by the time the scan
-  finished the first port's cache entry had already gone stale — so a
-  second caller in the same request (`doctor()` then `ui_stats()`, both
-  behind `/ui/stats`) re-scanned the whole range again. `list_bridges()` now
-  fans the per-port checks out across a small thread pool (`ThreadPoolExecutor`,
-  order-preserving) instead of looping.
-- **`ui_stats()` asked for the widget-type catalog even with nothing armed.**
-  With no bridge answering anywhere, `primary_port` is `None` — the code
-  fell back to `cfg`'s default single `bridge_url` and asked anyway, a
-  guaranteed-to-fail real network round trip on every `/ui/stats` poll. Now
-  skipped entirely when `primary_port` is `None`.
-
 ## [1.0.7]
 
-Theme: bridge more than one Studio at once. Full notes:
-`docs/release-notes-v1.0.7.md`.
+The largest release since 1.0.0, consolidating three development streams.
+1.0.6 was never published; internal work-in-progress labels up to "1.0.11"
+existed during development — everything below ships as **1.0.7**. Full
+notes: `docs/release-notes-v1.0.7.md`.
 
 ### Added
-- **Multi-instance design-time bridge (AInsightfool).** Up to 4 Studio
-  instances can now each have an ARMED bridge SIMULTANEOUSLY — no more
-  manual StopBridge-on-one-to-free-it-for-another when switching between
-  projects. `StudioMCPBridge.cs` self-binds the first free port in
-  `8768..8771` instead of exclusively owning `:8768`; the service discovers
-  which project lives on which port by scanning the range
-  (`OPTIX_BRIDGE_PORT_BASE`/`OPTIX_BRIDGE_PORT_RANGE`). Every bridge-routed
-  tool (`optix_describe_node`, `optix_bridge_edit`, `optix_save`,
-  `optix_emulator`, ...) now resolves the SPECIFIC bridge serving the
-  `project` you asked for, instead of assuming there's only one.
-  `optix_bridge_status` lists every currently-armed bridge (project + port),
-  and the `/ui` dashboard shows all of them.
-- **Fixes the "emulator started for the wrong (non-bridged) project" bug.**
-  Root cause: `optix_emulator`/`optix_save` already targeted the exact
-  Studio window owning the bridge serving a project — but with only one
-  bridge slot to go around, any project WITHOUT the bridge fell back to
-  "first focus-able Studio window," an arbitrary pick with several
-  instances open. Arming a bridge per open project (this release) gives
-  every one of them a resolvable target, eliminating the guess.
-
-### Changed
-- `optix_active_target()` takes an optional `project` param; with several
-  bridges armed and no `project` given, it now returns
-  `{known:false, reason:"ambiguous_bridge", armed_projects:[...]}` instead
-  of silently reading whichever bridge happens to be on the lowest port.
-- A caller that relies on the "act on whatever's open" convenience (omitting
-  `project`) now gets that only when exactly ONE bridge is armed — with
-  several armed at once, `project` must be passed explicitly.
-
-## [1.0.6]
-
-Theme: windowless means windowless. Full notes: `docs/release-notes-v1.0.6.md`.
+- **Multi-instance design-time bridge.** Up to 4 Studio instances armed
+  simultaneously — `StudioMCPBridge.cs` self-binds the first free port in
+  `8768..8771`; every bridge-routed tool resolves the specific bridge
+  serving the `project` you name. Fixes "emulator started for the wrong
+  (non-bridged) project": with a bridge armed per project, the "first
+  focus-able Studio window" fallback is no longer reachable.
+- **`DisplayName` is settable** via a dedicated attribute route, and a new
+  **`rename` op** lowers to the proven-safe `move` machinery. The crash
+  class behind them (node attributes materialized as orphan UA variables →
+  Studio access violation) is refused at both bridge and service.
+- **`optix_bridge_arm`** (arm/stop the bridge with no human at the
+  keyboard, collapsed-tree + BrowseName aware), **`optix_project`**
+  (open/create from MCP), **`optix_bridge_log_tail`** (transport
+  forensics), **`optix_build_check`** (isolated NetSolution compile check).
+- **`optix_bridge_invoke_method`** — generic `ExecuteMethod` wrapper for
+  exported NetLogic methods. Confirmed hazard: some built-in methods (e.g.
+  `SearchBrokenDynamicLinks`) can crash Studio — treat as crash-capable
+  until the bridge marshals `ExecuteMethod` to the main thread.
+- `/ui` dashboard: socket chip per configured port with per-port version +
+  last-saved age, a distinct "loading" state, per-port Doctor rows with
+  hover detail/fix tooltips.
 
 ### Fixed
-- **PowerShell/console windows flashing under the windowless service**
-  (AInsightfool). Every subprocess shell-out (`optix_doctor`,
-  `optix_services_status`, `optix_studio_version`, emulator/CDP status
-  checks, ...) is a console-subsystem tool; running under a windowless
-  `pythonw.exe` parent with no console of its own, Windows allocated a
-  brand-new console for each one and it flashed on screen — most visibly as
-  a repeating flash while the `/ui` dashboard was open and polling.
-  `Runner`'s subprocess wrapper (`service/core.py`) now defaults every
-  Windows child to `creationflags=CREATE_NO_WINDOW`. Also adds
-  `bootstrap/run_hidden.py`, the windowless launcher `setup.ps1`'s scheduled
-  task now runs under (`pythonw.exe` instead of `python.exe`), with stdout/
-  stderr redirected to log files since `pythonw` has neither.
-- **Nested project directories were unusable.** `resolve_project` rejected
-  any project name containing `/` or `\`, so a project reorganized into a
-  subfolder (e.g. `RCB/CELL 4/RCB_LV2_...`) could never resolve even though
-  the real security boundary (the post-`.resolve()` `is_relative_to` check)
-  already prevented escaping `projects_root`. `list_projects` now walks
-  recursively (capped depth, common junk dirs skipped) so nested projects
-  are discoverable too.
-- **`describe_node` reported populated dynamic-link/alias paths as empty
-  strings.** `ValueString` (`studio-bridge/StudioMCPBridge.cs`) called
-  `UAValue.ToString()` unconditionally, which returns blank for a
-  NodePath-boxed value — read as a false "broken link" on properties Studio's
-  own Properties panel showed fully populated. Now unwraps `UAValue.Value`
-  as a string first (matching the project-map tree's existing, correct
-  extraction), falling back to `ToString()` only for genuine value types.
+- **Emulator lifecycle is now in-process psutil** — status 2-4s → ~0.15s,
+  restart overhead 10-20s → sub-second, `/health` no longer starves under
+  slow scans. The `--application-name=Emulator` discrimination is
+  unchanged; deployed runtimes are never touched.
+- **Batch validation refuses unknown op FIELDS** (`unknown_op_field`)
+  instead of applying the op and reporting success.
+- **Deploy verification** no longer loses a succeeded deploy to filesystem
+  clock granularity.
+- **Port-range scan hardening:** no raw-socket pre-probe against live
+  listeners (was aborting the C# bridge's accept loop and spamming
+  Studio's Output panel), definitive refusals skip the retry sleeps,
+  per-port checks run concurrently, and the widget-type catalog is not
+  requested when no bridge is armed.
+- **`/ui` tool catalog no longer duplicates under concurrent polls**
+  (double-checked locking around the lazy build).
+- **Nested project directories resolve and list** — a project moved into a
+  subfolder is discoverable (recursive `list_projects`, capped depth) and
+  addressable; the security boundary remains the post-resolve
+  `is_relative_to` check.
+- **`describe_node` no longer reports populated dynamic-link/alias paths
+  as empty** — `ValueString` unwraps `UAValue.Value` before falling back
+  to `ToString()`.
+- **Console model finalized:** one launcher (`python.exe`) with
+  `--hide-console` / `OPTIX_HIDE_CONSOLE`, `services.ps1 start -Silent`
+  rewrites the task action (and recycles a running service on a mode
+  change), and every Windows child spawn defaults to `CREATE_NO_WINDOW` —
+  no console flashes, real stdout/stderr kept. (An interim windowless-
+  launcher approach from the 1.0.6-era stream was replaced by this.)
+- Bridge transport: transient write retries with backoff, HTTP-only
+  liveness probes, distinct missing-NetLogic diagnosis, post-rebuild drop
+  detection with a recovery nudge; the 72-hour Task Scheduler execution
+  limit is removed and service crashes land in a lifecycle log.
 
-### Added
-- **`optix_bridge_invoke_method`** — a generic wrapper around
-  `IUAObject.ExecuteMethod`, exposed via a new `/bridge/node/invoke` bridge
-  endpoint, so any exported NetLogic method (including Optix's own built-in
-  library tools) can be triggered without a manual Studio right-click ->
-  Execute. **Confirmed hazard:** calling
-  `SearchBrokenDynamicLinks.FindBrokenDynamicLink` through this endpoint has
-  been observed to crash `FTOptixStudio.exe` outright (believed thread-
-  affinity related — this call runs off Studio's main/UI thread). Treat any
-  call through this tool as able to crash Studio until the bridge gets
-  proper main-thread marshaling for `ExecuteMethod`. Never gated (no
-  `optix_bridge_edit` op verb covers it).
+### Changed
+- `optix_active_target()` (and the omit-`project` convenience everywhere)
+  refuses to guess with several bridges armed — explicit `project=` is
+  required once more than one is up.
 
 ## [1.0.5]
 

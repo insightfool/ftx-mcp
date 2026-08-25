@@ -110,6 +110,21 @@ hang `/health`). All process discovery is now in-process psutil:
 - A psutil warm-up runs at service boot so the first scan doesn't pay the
   cold process-map cost.
 
+## Also in this release
+
+- **`optix_bridge_invoke_method`** — a generic `ExecuteMethod` wrapper for
+  exported NetLogic methods (its own `/bridge/node/invoke` endpoint).
+  Confirmed hazard: some Studio built-ins (e.g. `SearchBrokenDynamicLinks`)
+  can crash Studio when invoked off the UI thread — treat calls as
+  crash-capable until main-thread marshaling lands.
+- **Nested project directories** are discoverable and addressable —
+  `list_projects` walks recursively (capped depth) and `resolve_project`
+  accepts subfolder paths; escape protection stays with the post-resolve
+  `is_relative_to` boundary.
+- **`describe_node` no longer shows populated dynamic-link/alias paths as
+  empty strings** (`ValueString` unwraps `UAValue.Value` first) — these
+  read as false "broken link" reports before.
+
 ## Correctness and resilience
 
 - **Batch validation hardening:** an op carrying an unknown FIELD (e.g. a
