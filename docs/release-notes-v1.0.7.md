@@ -143,6 +143,12 @@ setting, and two projects both on the default will collide. The service's
 own expectation of the runtime port is `OPTIX_RUNTIME_TEST_PORT`
 (default 8081).
 
+## Credits
+
+The multi-instance bridge and the dashboard's multi-port evolution are
+Chuck's work, hardened here through a live multi-project field arc. Thanks
+also to the contributors whose fixes and field reports shaped this release.
+
 The default tool surface is now **33 tools** (`optix_bridge_arm`,
 `optix_project`, `optix_bridge_log_tail`, `optix_build_check` are new);
 gate env vars can add more. See `docs/tool-reference.md`.
