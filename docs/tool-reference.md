@@ -1,6 +1,6 @@
 # Tool reference
 
-29 tools registered by default, grouped by where they sit in the loop
+33 tools registered by default, grouped by where they sit in the loop
 (gate env vars can add more — see the notes below each table). Every tool's
 docstring carries "Use when / Do NOT use when" guidance for the model, and MCP
 annotations (`readOnlyHint`/`destructiveHint`) so hosts can auto-run reads
@@ -13,13 +13,15 @@ project open in Studio.
 |---|---|
 | `optix_status` (`action="health"`/`"doctor"`/`"services"`/`"version"`) | Deploy-stack status family: fast preflight config (`health`), setup-fix checklist (`doctor`), live dashboard aggregate (`services`), raw Studio binary version (`version`) — heterogeneous, pick the action that matches the question |
 | `optix_list_projects` | Projects under the projects root |
+| `optix_project` (`action="open"`/`"create"`) | Open or create a Studio project from MCP — Studio's CLI verbs are GUI launches, so readiness is the window's UIA identity, not process exit |
 | `optix_list_screens` | Screen/Panel/Dialog nodes in the project |
 | `optix_get_project_map` | Whole-subtree component map in one call — overview with counts, then drill by path |
 | `optix_find` / `optix_read_file` | Search / read project files |
 | `optix_describe_node` | Live node: children, properties, values |
 | `optix_list_ui_types` / `optix_describe_type` | Widget catalog + per-type property legend (consult before setting); `type_names=[...]` batches a survey into one call |
 | `optix_schema` (`action="dump"`/`"list"`/`"diff"`) | Cache the full type-schema dump per Studio version (offline), list cached versions, diff two versions (upgrade intelligence) |
-| `optix_bridge_status` / `optix_active_target` | Bridge status; which deployment target Studio's dropdown has selected |
+| `optix_bridge_status` / `optix_active_target` | Bridge status (one entry per armed port); which deployment target Studio's dropdown has selected |
+| `optix_bridge_log_tail` | The bridge's transport diagnostics — the forensic view when a bridge drops mid-edit |
 | `optix_list_skills` / `optix_get_skill` | Bundled authoring playbooks — catalog + on-demand full content (served by the server itself, version-locked to the tools) |
 
 ## Authoring (live bridge — Studio open)
@@ -30,10 +32,13 @@ with the valid-property list rather than crashing Studio.
 `optix_bridge_edit` is the primary entry point — batch one or more ops
 (`set_property`, `bind`, `create_widget`, `create_variable`, `create_folder`,
 `create_object`, `create_type`, `create_alias`, `delete`, `move`, `reorder`,
-`wire_event`, `attach_expression`, `add_translation`), validated as a whole
+`wire_event`, `attach_expression`, `add_translation`, `rename`), validated as a whole
 before anything is applied. **A single edit is just a one-op list** — there
 is no separate "do one thing" tool for these verbs by default (see the gate
-note below the table).
+note below the table). `DisplayName` set_property routes to a dedicated
+attribute endpoint (never the crash-capable variable path); `BrowseName`
+changes only via the `rename` op, which lowers to a safe `move` (the node
+gets a new NodeId).
 
 | Tool | What it does |
 |---|---|
@@ -44,6 +49,8 @@ note below the table).
 | `optix_bridge_ensure_web_engine` | Ensure the web presentation engine exists so a deploy has a canvas to serve |
 | `optix_bridge_convert_to_type` | Promote an existing instance to a reusable ObjectType (Studio's "Convert to Type", with a link audit) |
 | `optix_bridge_validate_expression` | Syntax-check a formula before wiring it |
+| `optix_bridge_arm` (`action="arm"`/`"stop"`) | Arm or stop the design-time bridge for a project with no human at the keyboard — walks a collapsed project tree and routes by BrowseName as well as folder name |
+| `optix_build_check` | Compile the project's NetSolution C# against an isolated temp copy and report errors (with a stale-references hint) — the working tree is never touched |
 | `optix_bridge_invoke_method` | Execute an exported NetLogic method (`IUAObject.ExecuteMethod`) — the generic escape hatch for anything with no dedicated bridge verb. **Confirmed hazard:** can crash `FTOptixStudio.exe` for some built-in methods (e.g. `SearchBrokenDynamicLinks`) — see the CHANGELOG/release notes before use |
 
 **Per-noun bridge primitives (gated, off by default).** The 14 tools that are
